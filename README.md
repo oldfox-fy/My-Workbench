@@ -124,6 +124,7 @@ npm install
 cd frontend && npm run dev
 
 # 终端 2：启动后端服务
+conda activate lumneo
 python main.py
 
 # 提示：如果只需要测试 API 不需要 GUI 界面，可以使用 python main.py --no-gui
