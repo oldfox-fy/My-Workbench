@@ -82,7 +82,7 @@
           @dragenter="onDragEnter($event, isLoading)"
           @dragover="onDragOver"
           @dragleave="onDragLeave"
-          @drop="onDrop($event, chatStore.activeChatId)"
+          @drop="onDrop($event, chatStore.activeChatId, isLoading)"
         >
           <!-- 拖拽提示浮层 -->
           <div v-if="isDragging && chatStore.activeChatId" class="drag-overlay">
@@ -492,7 +492,7 @@ const onContainerClick = (e: any) => {
 watch( () => chatStore.currentChatMessages.length, () => {
     renderMermaidDiagrams()
     addCopyButtons()
-    scrollToBottom()    
+    scrollToBottom()
   }
 )
 
