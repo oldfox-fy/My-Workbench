@@ -91,10 +91,10 @@ export function useFileUpload() {
   const dragCounter = ref(0)
   const isDragging = computed(() => dragCounter.value > 0)
 
-  function onDragEnter(e: DragEvent) {
+  function onDragEnter(e: DragEvent, isLoading: boolean) {
     e.preventDefault()
     e.stopPropagation()
-    if (hasFilesInDrag(e)) {
+    if (hasFilesInDrag(e) && !isLoading) {
       dragCounter.value++
     }
   }
