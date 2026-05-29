@@ -434,7 +434,7 @@ const { showEditModal, editContent, copySvgName, copyContent,
   startEditMessage, saveEdit, renamingChatId, renameText, startRename, confirmRename 
 } = useMessageActions()
 
-const { messageListRef, addCopyButtons, renderMermaidDiagrams, startObserving, stopObserving } = useCodeEnhancer()
+const { messageListRef, addCopyButtons, renderMermaidDiagrams, startObserving, stopObserving, setStreaming } = useCodeEnhancer()
 
 // 绑定缓存逻辑：当流结束时，计算 HTML 并写入当前最新的历史消息中
 onStreamEnd.value = (fullText: string) => {
@@ -448,6 +448,7 @@ onStreamEnd.value = (fullText: string) => {
     msg.renderedHtml = renderMessageHtml(fullText, true)  // 缓存渲染结果
     regeneratingMsg.value = null   // 清空标记，恢复成普通消息显示
      nextTick(() => {
+      setStreaming(false)
         addCopyButtons()
         renderMermaidDiagrams()
       })
@@ -468,6 +469,7 @@ onStreamEnd.value = (fullText: string) => {
 }
 
 watch(streamingContent, (newVal) => {
+  setStreaming(!!newVal)
   if (!newVal) {
     streamDisplayHtml.value = ''
     if (renderRafId !== null) cancelAnimationFrame(renderRafId)
@@ -724,6 +726,7 @@ watch(
   () => {
     // 确保 DOM 更新后再渲染图表和按钮
     nextTick(() => {
+      addCopyButtons()
       renderMermaidDiagrams()
       // 如果处于自动滚动模式，则滚动到底部
       if (isAutoScrollEnabled.value) {
@@ -776,12 +779,9 @@ watch(() => route.params.id, (newId) => {
 })
 
 watch(() => chatStore.activeChatId, async (newId) => {
-    if (newId) {
+    if (newId) {     
       await chatStore.loadMessages(newId)      
       showWelcome.value = currentMessages.value.length === 0
-      addCopyButtons()
-      renderMermaidDiagrams()
-      scrollToBottom()
     } else {
       chatStore.loadChats()
     }

@@ -80,6 +80,7 @@ export const useChatStore = defineStore('chat', () => {
     if (!chat) return
     const res = await fetch(`/api/chats/${chatId}/messages`)
     const msgs = await res.json()
+    
     chat.messages = msgs    
   }
 
