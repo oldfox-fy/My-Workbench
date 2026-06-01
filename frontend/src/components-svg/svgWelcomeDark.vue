@@ -193,3 +193,10 @@ export default {
   name: 'NeonSign'
 }
 </script>
+
+<style scoped>
+.neon-sign {
+  position: relative;
+  top: -60px;
+}
+</style>
