@@ -33,6 +33,61 @@ class LLMService:
         params: Dict = None,
     ) -> AsyncGenerator[str, None]:
         params = params or {}
+        
+        # ---------- 图像生成分支 ----------
+        if "image" in self.model_name.lower():
+            # 提取用户消息作为提示词
+            prompt = ""
+            for msg in reversed(messages):
+                if msg.get("role") == "user":
+                    prompt = msg.get("content", "")
+                    break
+
+            if not prompt:
+                yield "❌ 未找到有效的用户提示词，无法生成图像。"
+                return
+
+            # 图像生成参数
+            size = params.get("size", "1024x768")
+            quality = params.get("quality", "standard")
+            n = params.get("n", 1)
+
+            try:
+                # 调用图像生成 API，不设置 response_format
+                response = await self.client.images.generate(
+                    model=self.model_name,
+                    prompt=prompt,
+                    size=size,
+                    quality=quality,
+                    n=n,
+                )
+
+                if not response.data or len(response.data) == 0:
+                    yield "❌ 图像生成服务未返回有效结果。"
+                    return
+
+                img_data = response.data[0]
+                
+                # 优先使用 url 字段（标准 OpenAI 图像 API 默认返回）
+                if hasattr(img_data, 'url') and img_data.url:
+                    image_url = img_data.url
+                    # 以 Markdown 图片格式输出，前端可直接渲染
+                    yield f"![生成的图片]({image_url})"
+                else:
+                    # 降级处理：如果确实没有 url，尝试 b64_json（但不符合用户要求，仅作提示）
+                    if hasattr(img_data, 'b64_json') and img_data.b64_json:
+                        yield "⚠️ 图像生成服务仅返回 base64 数据，无法提供直接链接。"
+                    else:
+                        yield "❌ 图像生成服务未返回图片 URL 或 base64 数据。"
+                return
+
+            except APIError as e:
+                yield f"❌ 图像生成 API 错误：{e.message}"
+            except Exception as e:
+                yield f"❌ 图像生成失败：{str(e)}"
+            return   # 结束，不再执行后续文本生成逻辑
+        
+        # ---------- 原有文本生成 + 工具调用分支 ----------
         current_messages = messages.copy()
 
         if tools is None and enable_tools:
@@ -46,8 +101,8 @@ class LLMService:
         MAX_STEPS = 6
         
         for step in range(MAX_STEPS):
-            tool_call_started = False  # 记录是否已经开始执行工具调用
-            tool_status_id = ""  # 记录工具调用的状态 ID
+            tool_call_started = False
+            tool_status_id = ""
             if request and await request.is_disconnected():
                 break
 
@@ -67,13 +122,10 @@ class LLMService:
                 "extra_body": {
                     "top_k": params.get('top_k', 20),
                     "chat_template_kwargs": {"enable_thinking": self.thinking == "enabled", "preserve_thinking": True},
-                    "thinking": {"type": self.thinking},
                     "enable_thinking": self.thinking == "enabled",
                     "preserve_thinking": True
                 }
             }
-
-            print(kwargs)
             
             if step == MAX_STEPS - 1:
                 yield "\n⚠️ 工具调用次数已达上限，正在基于已收集信息生成最终总结...\n"
@@ -82,7 +134,6 @@ class LLMService:
                     "content": "【系统指令】你的工具调用次数已达最大限制。请立即放弃尝试调用工具，根据上面已经收集到的上下文信息，直接回答我的问题并进行最终总结。"
                 })
                 kwargs["messages"] = current_messages
-                # 注意：这里不再向 kwargs 注入 tools，模型将被迫输出普通文本
             elif tools:
                 kwargs["tools"] = tools
                 kwargs["tool_choice"] = "auto"
@@ -94,7 +145,7 @@ class LLMService:
                 yield f"\n❌ 模型服务错误：{e.message}"
                 break
 
-            first_token_time = None  # 记录第一个有效 token 抵达的时间
+            first_token_time = None
 
             async for chunk in response:
                 if request and await request.is_disconnected():
@@ -153,10 +204,19 @@ class LLMService:
                         if tc_delta.function:
                             tool_calls[tc_id]["function"]["name"] += (tc_delta.function.name or "")
                             tool_calls[tc_id]["function"]["arguments"] += (tc_delta.function.arguments or "")
+
+                    # 每收到任何工具调用片段，立刻把当前 tool_calls 的快照发给前端
+                    if tool_calls:  # 如果有工具调用数据就发送
+                        snapshot = {}
+                        for tid, tc in tool_calls.items():
+                            snapshot[tid] = {
+                                "name": tc["function"]["name"],
+                                "arguments": tc["function"]["arguments"]
+                            }
+                        yield f"<!--tool_preview:{json.dumps(snapshot)}-->"
                 elif delta_content:
                     yield delta_content
 
-            # 单次流结束，计算 【当前时间 - 首字时间】 
             if first_token_time is not None:
                 pure_generation_time += (time.time() - first_token_time)
 
@@ -168,7 +228,6 @@ class LLMService:
                 if request and await request.is_disconnected():
                     break
 
-            # 如果本次没有工具调用（包含了最后一次被强制总结的情况），直接退出整个循环
             if not tool_calls:
                 break
 
@@ -208,7 +267,6 @@ class LLMService:
                     if len(error_msg) > 1000:
                         error_msg = error_msg[:1000] + "...(错误信息过长已截断)"
                     result = f"工具执行出错: {error_msg}"
-                # 确保 result 一定是字符串类型
                 result_str = str(result)
                 json_str = json.dumps({'name': func_name, 'arguments': args})
                 b64_str = base64.b64encode(json_str.encode('utf-8')).decode('utf-8')
