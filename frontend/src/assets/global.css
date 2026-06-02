@@ -45,6 +45,7 @@ p{margin:0;padding:4px;}
 
 .message-content img {
   width: 100%;
+  border-radius: 8px;
   cursor: pointer;
 }
 .message-content a {
@@ -299,7 +300,6 @@ thead {
 
 th {
   padding: 14px;
-  min-width: 80px;
   text-align: left;
   font-weight: 600;
   letter-spacing: 0.5px;
@@ -610,9 +610,6 @@ tr:last-child td:last-child {
   /* 消息容器缩小内边距 */
   .message-container {
     padding: 12px;
-  }
-  .message-main {
-    width: 96% !important;
   }
 
   /* 消息气泡最大宽度加大，让文字更容易阅读 */

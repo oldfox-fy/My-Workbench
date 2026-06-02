@@ -158,7 +158,7 @@
               </div>
               <div ref="virtualContainerRef" class="virtual-scroller" @scroll="handleScroll">
                 <div
-                  :style="{height: virtualizer.getTotalSize() + 'px', maxWidth: '1000px', position: 'relative', margin: '0 auto'}">
+                  :style="{height: virtualizer.getTotalSize() + 'px', width: isMobile? '90%' : '80%', maxWidth: '1000px', position: 'relative', margin: '0 auto'}">
                   <div
                     v-for="virtualRow in virtualizer.getVirtualItems()"
                     :key="<string>virtualRow.key"
@@ -382,7 +382,7 @@ import { useFileUpload } from '@/composables/useFileUpload'
 import { useChat } from '@/composables/useChat'
 import { useMessageActions } from '@/composables/useMessageActions'
 import { useCodeEnhancer } from '@/composables/useCodeEnhancer'
-import { localIP, renderMessageHtml, normalizeFileRef, addFileTypeClassToLinks } from '@/utils/message'
+import { localIP, renderMessageHtml, normalizeFileRef } from '@/utils/message'
 
 const route = useRoute()
 const router = useRouter()
@@ -397,6 +397,7 @@ const local_ip = ref('')
 const showQRCode = ref(true)
 const streamDisplayHtml = ref('')
 let renderRafId: number | null = null
+const messageListRef = ref<HTMLElement | null>(null)
 
 const isAutoScrollEnabled = ref(true)            // 自动滚动开关
 const SCROLL_THRESHOLD = 80                     // 距离底部的容差阈值（像素）
@@ -425,7 +426,7 @@ const { showEditModal, editContent, copySvgName, copyContent,
   startEditMessage, saveEdit, renamingChatId, renameText, startRename, confirmRename 
 } = useMessageActions()
 
-const { messageListRef, addCopyButtons, renderMermaidDiagrams, startObserving, stopObserving, setStreaming } = useCodeEnhancer()
+const { addCopyButtons, addFileTypeClassToLinks, renderMermaidDiagrams, startObserving, stopObserving, setStreaming } = useCodeEnhancer(messageListRef)
 
 const currentMessages = computed(() => chatStore.currentChatMessages)
 const virtualContainerRef = ref<HTMLElement | null>(null)   // 虚拟滚动容器（也是滚动元素）
@@ -458,6 +459,7 @@ onStreamEnd.value = (fullText: string) => {
       setStreaming(false)
       addCopyButtons()
       renderMermaidDiagrams()
+      addFileTypeClassToLinks(virtualContainerRef.value!)
       nextTick(() => virtualizer.value?.measure())
     })
     return
@@ -472,6 +474,7 @@ onStreamEnd.value = (fullText: string) => {
     nextTick(() => {
       addCopyButtons()
       renderMermaidDiagrams()
+      addFileTypeClassToLinks(virtualContainerRef.value!)
       virtualizer.value?.measure()
     })
   }
@@ -485,8 +488,7 @@ watch(streamingContent, (newVal) => {
     return
   }
 
-  // 已有待执行的帧，跳过
-  if (renderRafId !== null) return
+  if (renderRafId !== null) cancelAnimationFrame(renderRafId)
   
   renderRafId = requestAnimationFrame(() => {
     streamDisplayHtml.value = renderMessageHtml(newVal, true)
@@ -667,6 +669,7 @@ function onPaste(e: ClipboardEvent) {
 
 // ---------- 导航 ----------
 function openChat(chatId: string) {
+  if (isLoading.value) stopGeneration()
   chatStore.activeChatId = chatId  
   router.push({ name: 'chat', params: { id: chatId } })
   setTimeout(() => {
@@ -865,8 +868,11 @@ watch(
     nextTick(() => {
       addCopyButtons()
       renderMermaidDiagrams()
+      addFileTypeClassToLinks(virtualContainerRef.value!)
       // 如果处于自动滚动模式，则滚动到底部
       if (isAutoScrollEnabled.value) {
+        console.log("987896786");
+        
         scrollToBottom()
       }
     })
@@ -889,7 +895,7 @@ function triggerJelly() {
 // 用于清理事件监听的函数
 let cleanupListeners: (() => void) | null = null
 
-watch(virtualContainerRef, async (el) => {
+watch(virtualContainerRef, async (el) => {  
   // 清理旧的监听
   if (cleanupListeners) {
     cleanupListeners()
@@ -906,6 +912,7 @@ watch(virtualContainerRef, async (el) => {
     // 容器出现后强制测量一次（确保初始高度正确）
     await nextTick()
     virtualizer.value?.measure()
+    addCopyButtons()
   }
 }, { immediate: true })
 
@@ -925,7 +932,7 @@ onMounted(async () => {
   })
   
   setTimeout(() => {
-    addFileTypeClassToLinks(document.body)
+    addFileTypeClassToLinks(virtualContainerRef.value!)
     isRender.value = true
   }, 150)
 })
@@ -939,6 +946,7 @@ onUnmounted(() => {
 const showWelcome = ref(false)
 
 watch(() => route.params.id, (newId) => {
+  if (isLoading.value) stopGeneration()
   chatStore.activeChatId = newId as string
 })
 
@@ -947,6 +955,7 @@ watch(
   () => {
     nextTick(() => {
       virtualizer.value?.measure()
+      addCopyButtons()
     })
   }
 )
