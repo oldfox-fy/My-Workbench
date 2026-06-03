@@ -291,11 +291,14 @@ export function processMessageContent(text: string, isStreaming = false): string
       /<!--token_usage:(.*?)-->/g,
       (_, jsonStr) => {
         try {
-          const usage = JSON.parse(jsonStr);
-          const html = `<div class="token-usage">
-            <span title="速度">🚀 ${usage.speed}</span>
-            <span title="总计">📊 ${usage.total_tokens} token</span>
-          </div>`
+          const data = JSON.parse(jsonStr)
+          const speed = data.speed || '0 token/s'
+          const completionTokens = data.final_answer_usage?.completion_tokens ?? 0
+          // const totalTokens = data.total_usage_all_steps?.total_tokens ?? 0
+
+          let html = `<div class="token-usage"><span title="生成速度">🚀 ${speed}</span><span title="本次回答消耗"> 📈 ${completionTokens} token</span>`
+
+          html += `</div>`
           const key = `<!--BLOCK_${blockMap.size}-->`
           blockMap.set(key, html)
           return key
@@ -305,6 +308,8 @@ export function processMessageContent(text: string, isStreaming = false): string
       }
     )
   } else {
+    // 有工具调用的场景：你也可以选择显示 token 统计，例如在工具调用结果之后展示
+    // 这里保留原逻辑，直接移除 token_usage 注释
     processedText = processedText.replace(/<!--token_usage:.*?-->/g, '')
   }
 

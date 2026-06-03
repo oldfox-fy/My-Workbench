@@ -276,9 +276,9 @@
               <div v-if="!isLoading && currentMessages.length >=1 && currentMessages[currentMessages.length - 1].role === 'user'" style="width:100%;text-align:center;position: absolute;top:-30px;">
                 <n-button text @click="onRegenerateFromCurrentHistory">
                   <template #icon>
-                    <n-icon size="22"><BarcodeOutline /></n-icon>
+                    <n-icon size="22"><m-svg name="wave" /></n-icon>
                   </template>
-                  重新生成AI响应
+                  点击重新生成AI响应
                 </n-button>
               </div>
               <n-input
@@ -529,11 +529,13 @@ function scrollToBottom() {
 function updateScrollState() {
   const target = virtualContainerRef.value
   if (!target) return
-  const scrollTop = target.scrollTop
-  const scrollHeight = target.scrollHeight
-  const clientHeight = target.clientHeight
-  const isAtBottom = (scrollHeight - scrollTop - clientHeight) <= SCROLL_THRESHOLD
-  isAutoScrollEnabled.value = isAtBottom
+  requestAnimationFrame(() => {
+    const scrollTop = target.scrollTop
+    const scrollHeight = target.scrollHeight
+    const clientHeight = target.clientHeight
+    const isAtBottom = (scrollHeight - scrollTop - clientHeight) <= SCROLL_THRESHOLD
+    isAutoScrollEnabled.value = isAtBottom
+  })
 }
 
 function handleScroll() {
