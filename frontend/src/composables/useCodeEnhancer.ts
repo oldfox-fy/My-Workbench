@@ -2,6 +2,30 @@ import { ref, nextTick, type Ref } from 'vue'
 import mermaid from 'mermaid'
 import { useMessage } from 'naive-ui'
 
+
+/**
+ * 判断一个路径是否代表本地文件
+ * 支持：
+ * - file:///C:/path/file.txt
+ * - C:\path\file.txt 或 D:/path/file.txt
+ * - /home/user/file.pdf (Linux/macOS 绝对路径)
+ */
+function isLocalFilePath(path: string): boolean {
+  if (path.startsWith('file://')) return true
+  if (/^[a-zA-Z]:[\\/]/.test(path)) return true // Windows 盘符
+  return false
+}
+
+
+export function isRunningInPyWebView(): boolean {
+  // 优先检查 pywebview 对象（最准确）
+  if (typeof window !== 'undefined' && (window as any).pywebview) {
+    return true;
+  }
+  // 后备检查 UA（某些旧版本可能没有 pywebview 全局对象）
+  return /pywebview/i.test(navigator.userAgent);
+}
+
 export function useCodeEnhancer(containerRef: Ref<HTMLElement | null>) {
   const message = useMessage()
 
@@ -13,6 +37,7 @@ export function useCodeEnhancer(containerRef: Ref<HTMLElement | null>) {
   const succIcon =
       '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M15.0498 3.92579L8.49512 12.3818C8.25774 12.6881 8.04517 12.9645 7.84668 13.1689C7.63957 13.3823 7.38732 13.5841 7.04492 13.6719C6.86373 13.7183 6.6757 13.7346 6.48926 13.7197C6.13666 13.6915 5.8528 13.5355 5.6123 13.3604C5.38201 13.1926 5.12573 12.9567 4.83984 12.6953L1.03125 9.21289L1.96875 8.1875L5.77734 11.6699C6.08684 11.9529 6.27773 12.1249 6.43066 12.2363C6.50183 12.2882 6.54699 12.3135 6.57324 12.3252C6.58525 12.3305 6.59269 12.3322 6.5957 12.333C6.59802 12.3336 6.59961 12.334 6.59961 12.334C6.63317 12.3367 6.66758 12.3335 6.7002 12.3252C6.7002 12.3252 6.70211 12.3251 6.7041 12.3242C6.70698 12.3229 6.71348 12.319 6.72461 12.3115C6.74849 12.2956 6.78843 12.2642 6.84961 12.2012C6.98138 12.0654 7.13957 11.8628 7.39648 11.5313L13.9502 3.07422L15.0498 3.92579Z" fill="currentColor"></path></svg>'
 
+  let smartClickBound = false // 全局标志，确保只绑定一次事件监听
 
   /**
    * 为所有匹配的 a 标签根据文件类型添加 class
@@ -46,9 +71,21 @@ export function useCodeEnhancer(containerRef: Ref<HTMLElement | null>) {
     ]
 
     links.forEach((link: HTMLElement) => {
-      const href = link.getAttribute('href')
-      
+      let href = link.getAttribute('href')
       if (!href) return
+
+      if (href.includes('%')) {
+        try {
+          const decoded = decodeURIComponent(href)
+          console.log(isLocalFilePath(decoded));
+          
+          if (isLocalFilePath(decoded)) {
+            href = decodeURIComponent(href)
+            link.setAttribute('href', href)   // 直接修改 DOM
+          }
+        } catch (e) {}
+      }
+      
 
       // 提取文件扩展名（忽略查询参数和哈希）
       let ext = href.split('?')[0].split('#')[0].split('.').pop()
@@ -65,6 +102,31 @@ export function useCodeEnhancer(containerRef: Ref<HTMLElement | null>) {
       }
       link.setAttribute('target', '_blank')
       link.setAttribute('download', link.textContent?.trim() || '')
+      if (!smartClickBound) {
+        document.body.addEventListener('click', async (e) => {
+          const link = (e.target as HTMLElement).closest('a')
+          if (!link) return
+
+          const href = link.getAttribute('href')
+          if (!href || href.startsWith('javascript:') || href === '#') return
+          
+          if (isRunningInPyWebView()) {
+            if (isLocalFilePath(href)) {
+              e.preventDefault()
+              // 调用 pywebview 打开本地文件（注意：路径可能需要解码）
+              const decodedPath = decodeURI(href.replace(/^file:\/\//, ''))
+              await window.pywebview.api.open_with_default_app(decodedPath)
+            } else if (href.startsWith('http://') || href.startsWith('https://') || href.startsWith('/files/generate/')) {
+              e.preventDefault()
+              // 调用 pywebview 下载文件
+              const fullUrl = href.startsWith('/') ? window.location.origin + href : href            
+              await window.pywebview.api.download_file(fullUrl, link.textContent?.trim() || '')
+            }
+            // 其他协议（mailto, tel 等）保持默认行为
+          }
+        })
+        smartClickBound = true
+      }
     })
   }
   /**
@@ -147,10 +209,8 @@ export function useCodeEnhancer(containerRef: Ref<HTMLElement | null>) {
   // 启动自动观察
   function startObserving() {
     if (!containerRef.value) return
-    // 立即添加一次已有代码块
-    addCopyButtons()
     // 监听新节点
-    observer = new MutationObserver(() => {
+    observer = new MutationObserver(async () => {
       addCopyButtons()
       renderMermaidDiagrams()
       addFileTypeClassToLinks(containerRef.value!)

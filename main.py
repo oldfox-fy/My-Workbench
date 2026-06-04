@@ -120,7 +120,7 @@ if IS_FROZEN:
     mimetypes.add_type("application/javascript", ".js")
     SERVER_PORT = 52025
     FRONTEND_URL = f"http://127.0.0.1:{SERVER_PORT}/app/"
-    DEBUG_MODE = True
+    DEBUG_MODE = False
 else:
     SERVER_PORT = 8080
     FRONTEND_URL = "http://localhost:5173"
@@ -135,6 +135,8 @@ def start_fastapi():
 def start_gui():
     import webview
     import threading
+    import subprocess
+    from urllib.parse import unquote
 
     class Api:
         """暴露给前端的Python API"""
@@ -145,10 +147,70 @@ def start_gui():
                 allow_multiple=False
             )
             return result[0] if result else None
+        def open_with_default_app(self, file_path: str):
+            """使用系统默认程序打开本地文件"""
+            # 解码 URL 编码（例如 %5C 转为 \，%E8%BD%AC 转为中文字符）
+            decoded_path = unquote(file_path)
+            # 去除可能的 file:// 前缀
+            if decoded_path.startswith('file://'):
+                decoded_path = decoded_path[7:]
+            # 确保路径存在
+            if not os.path.exists(decoded_path):
+                return {"success": False, "error": f"文件不存在: {decoded_path}"}
+            try:
+                if sys.platform == "win32":
+                    os.startfile(decoded_path)
+                elif sys.platform == "darwin":
+                    subprocess.run(["open", decoded_path])
+                else:
+                    subprocess.run(["xdg-open", decoded_path])
+                return {"success": True}
+            except Exception as e:
+                return {"success": False, "error": str(e)}
+
+        def download_file(self, url: str, name: str):
+            """下载普通 http/https 文件，弹出保存对话框"""
+            try:
+                # 从 URL 中提取文件名
+                filename = name or url.split('/')[-1].split('?')[0]
+                if not filename:
+                    filename = "downloaded_file"
+                print(f"准备下载: {filename}")
+
+                # 1. 修复：使用 webview.windows[0].create_file_dialog 和 webview.SAVE_DIALOG
+                # 2. 修复：pywebview 的 file_types 需要是字符串元组或列表，例如 ('所有文件 (*.*)',)
+                result = webview.windows[0].create_file_dialog(
+                    dialog_type=webview.SAVE_DIALOG,
+                    save_filename=filename,
+                    file_types=('所有文件 (*.*)',)
+                )
+
+                # result 正常返回的是一个包含路径的元组，如果用户取消则返回 None
+                save_path = result[0] if result else None
+
+                if not save_path:
+                    return {"success": False, "error": "用户取消了保存"}
+                
+                # 使用 httpx 同步客户端下载（避免阻塞主线程，但此处 API 方法本身在后台线程）
+                with httpx.Client(follow_redirects=True, timeout=60.0) as client:
+                    with client.stream("GET", url) as response:
+                        response.raise_for_status()
+                        with open(save_path, "wb") as f:
+                            for chunk in response.iter_bytes(chunk_size=8192):
+                                f.write(chunk)
+                return {"success": True, "path": save_path}
+            
+            except Exception as e:
+                # 打印出具体错误，避免下次再被 except 静默吃掉报错导致无法排查
+                print(f"下载文件时发生错误: {e}") 
+                return {"success": False, "error": str(e)}
 
     # FastAPI 放在守护线程
     server_thread = threading.Thread(target=start_fastapi, daemon=True)
     server_thread.start()
+
+    # 允许在 WebView 中进行文件下载
+    webview.settings['ALLOW_DOWNLOADS'] = True
 
     webview.create_window(
         title="LumNeo",

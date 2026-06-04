@@ -372,7 +372,11 @@ async function fetchModels() {
     })
     const data = await res.json()
     if(data.detail) {
-      message.error("请正确填写API Key")
+      if (data.detail.indexOf('timed out') !== -1) {
+        message.error('请求超时，请检查网络')
+      } else {
+        message.error("请正确填写API Key")
+      }
       modelOptions.value = []
       return
     }
@@ -421,7 +425,6 @@ function saveModel() {
 const workspacePath = ref(localStorage.getItem('workspacePath') || '')
 async function selectFolder() {
   try {
-    // @ts-ignore
     const folder = await window.pywebview.api.select_folder()
     if (folder) {
       workspacePath.value = folder

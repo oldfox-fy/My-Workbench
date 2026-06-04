@@ -11,7 +11,6 @@ class WorkspaceRequest(BaseModel):
 
 @router.post("/workspace/set")
 async def set_workspace(req: WorkspaceRequest):
-
     if not os.path.isdir(req.path):
         raise HTTPException(400, "提供的路径不是一个有效目录")
     backend.workspace_path = req.path
