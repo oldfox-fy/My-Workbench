@@ -1,3 +1,5 @@
+# backend/routes/__init__.py
+# 需要手动导入所有模块，解决打包路由失效的问题
 from fastapi import FastAPI
 
 from . import chat, chats, files, model, models, profiles, workspace

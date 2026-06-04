@@ -1,6 +1,6 @@
 <template>
     <div>
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 600" width="100%" height="70vh" preserveAspectRatio="xMidYMid meet">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 600" preserveAspectRatio="xMidYMid meet">
             <defs>
                 <!-- 中心光晕 - 浅紫色 -->
                 <radialGradient id="centerGlowLight" cx="50%" cy="45%" r="55%">
@@ -248,6 +248,14 @@ export default {
 <style scoped>
 .neon-sign {
   position: relative;
-  top: -60px;
+  display: flex;
+  justify-content: center;
+  width: 100%;
+}
+
+.neon-sign svg {
+  min-width: 680px;
+  max-width: 980px;
+  height: auto;
 }
 </style>

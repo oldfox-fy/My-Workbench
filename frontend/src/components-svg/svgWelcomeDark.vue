@@ -1,6 +1,6 @@
 <template>
   <div class="neon-sign">
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 600" width="100%" height="70vh" preserveAspectRatio="xMidYMid meet">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 600" preserveAspectRatio="xMidYMid meet">
       <defs>
         <radialGradient id="bgGlow" cx="50%" cy="40%" r="60%">
           <stop offset="0%" stop-color="#2d1b69" stop-opacity="0.4"/>
@@ -197,6 +197,14 @@ export default {
 <style scoped>
 .neon-sign {
   position: relative;
-  top: -60px;
+  display: flex;
+  justify-content: center;
+  width: 100%;
+}
+
+.neon-sign svg {
+  min-width: 680px;
+  max-width: 980px;
+  height: auto;
 }
 </style>
