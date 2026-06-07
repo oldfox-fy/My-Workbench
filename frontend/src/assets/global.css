@@ -77,6 +77,10 @@ p{margin:0;padding:4px;}
   background-color: #666;
 }
 
+[data-node-type="html_block"] .node-content {
+  margin-bottom: 10px;
+}
+
 .message-content .file-pdf::before {
   content: '';
   display: inline-block;
@@ -286,24 +290,24 @@ table {
   border-spacing: 0;
   margin: 16px 0;
   font-size: 0.9rem;
-  border-radius: 10px;
+  border-radius: 8px;
   overflow: hidden;
-  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.25);
-  background: linear-gradient(135deg, #161a24 0%, #1a1e2a 100%);
-  border: 1px solid var(--border-color);
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.25)!important;
+  background: linear-gradient(135deg, #161a24 0%, #1a1e2a 100%)!important;
+  border: 1px solid var(--border-color)!important;
 }
 [theme-mode="light"] table {
   background: #fff;
-  border-color: var(--border-color);
-  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.1);
+  border-color: var(--border-color)!important;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.1)!important;
 }
 
 thead {
-  background: linear-gradient(135deg, #2d3150bb 0%, #3b3060af 100%);
+  background: linear-gradient(135deg, #2d3150bb 0%, #3b3060af 100%)!important;
   backdrop-filter: blur(10px);
 }
 [theme-mode="light"] thead {
-  background: linear-gradient(-120deg, #5f8ff5, #8f5fff);
+  background: linear-gradient(-120deg, #5f8ff5, #8f5fff)!important;
   border-color: var(--border-color);
 }
 
@@ -313,6 +317,8 @@ th {
   font-weight: 600;
   letter-spacing: 0.5px;
   color: #fff;
+  border:unset!important;
+  background-color:unset!important;
 }
 
 td {
@@ -326,20 +332,20 @@ tbody tr {
   transition: background 0.2s ease;
 }
 tbody tr:hover {
-  background: rgba(99, 102, 241, 0.12);
+  background: rgba(99, 102, 241, 0.12)!important;
   box-shadow: inset 0 0 0 1px rgba(99, 102, 241, 0.2);
 }
 [theme-mode="light"] tbody tr:hover {
-  background: rgba(99, 102, 241, 0.04);
+  background: rgba(99, 102, 241, 0.04)!important;
   box-shadow: inset 0 0 0 1px rgba(99, 102, 241, 0.1);
 }
 
 /* 斑马纹（柔和版） */
 tbody tr:nth-child(even) {
-  background: rgba(255, 255, 255, 0.02);
+  background: rgba(255, 255, 255, 0.02)!important;
 }
 tbody tr:nth-child(even):hover {
-  background: rgba(99, 102, 241, 0.12);
+  background: rgba(99, 102, 241, 0.12)!important;
 }
 [theme-mode="light"] tbody tr:nth-child(even) {
   background: rgba(99, 102, 241, 0.04);
@@ -439,10 +445,21 @@ tr:last-child td:last-child {
     transform: translateY(-50%); /* 向上移动一半高度，让第二段顶上来 */
   }
 }
+.html-block-node .reasoning-summary:has(> .reasoning-summary) {
+  all: unset;
+  display: contents;
+}
+.html-block-node .reasoning-summary:has(> .reasoning-summary)::before {
+  display: none;
+  content: none;
+}
+.html-block-node .reasoning-summary:has(> .reasoning-summary)::after {
+  display: none;
+  content: none;
+}
 
 /* 思考块 */
 .reasoning-block {
-  margin: 12px 0;
   background: rgba(129, 78, 247, 0.06);
   border-radius: 6px;
   overflow: hidden;
@@ -459,7 +476,7 @@ tr:last-child td:last-child {
 .reasoning-block .reasoning-summary:hover {
   background: rgba(99, 102, 241, 0.05);
 }
-.reasoning-inner {
+.reasoning-content {
   padding: 12px;
 }
 .reasoning-summary::before {
@@ -494,12 +511,16 @@ tr:last-child td:last-child {
   -webkit-mask-repeat: no-repeat;
   -webkit-mask-position: center;
 }
-.reasoning-content {
+.reasoning-container {
   font-size: 0.9rem;
   color: var(--text-secondary);
-  max-height: 0;
-  transition: max-height 0.3s ease;
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.3s ease;
   overflow: hidden;
+}
+.reasoning-container > .reasoning-inner {
+  min-height: 0; /* 必须，否则 grid 不会折叠 */
 }
 .reasoning-block[data-reasoning="open"] .reasoning-summary {
   background: rgba(99, 102, 241, 0.1);
@@ -507,8 +528,8 @@ tr:last-child td:last-child {
 .reasoning-block[data-reasoning="open"] .reasoning-summary::before {
   transform: rotate(90deg);
 }
-.reasoning-block[data-reasoning="open"] .reasoning-content {
-  max-height: 200000px; /* 足够大即可 */
+.reasoning-block[data-reasoning="open"] .reasoning-container {
+  grid-template-rows: 1fr;
 }
 
 /* 工具调用卡片 */
@@ -618,8 +639,7 @@ tr:last-child td:last-child {
   background-position: center;
 }
 
-.tool-calls-block {
-  margin: 12px 0;
+.tool-calls-block .tool-calls-block {
   border: 1px solid var(--border-color);
   border-radius: 8px;
   background: var(--bg-secondary);
@@ -669,19 +689,22 @@ tr:last-child td:last-child {
   background: rgba(99, 102, 241, 0.05);
 }
 .tool-calls-block .tool-calls-container {
-  max-height: 0;
-  transition: max-height 0.3s ease;
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.3s ease;
   overflow: hidden;
 }
-.tool-inner {
+.tool-content {
   padding: 12px;
 }
-
+.tool-calls-container > .tool-inner {
+  min-height: 0;
+}
 .tool-calls-block[data-tool="open"] .tool-summary::before {
   transform: rotate(90deg);
 }
 .tool-calls-block[data-tool="open"] .tool-calls-container {
-  max-height: 200000px; /* 足够大即可 */
+  grid-template-rows: 1fr;
 }
 
 .jelly-effect {

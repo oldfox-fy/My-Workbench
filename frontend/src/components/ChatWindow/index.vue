@@ -147,7 +147,7 @@
           </header>
 
           <!-- 消息列表 -->
-          <div class="message-container" ref="messageListRef">
+          <div class="message-container">
             <div class="introduction" v-if="!chatStore.activeChatId">
               <Introduction v-if="isRender" @click="sidebarOpen=true;sidebarCollapsed=false" />
             </div>
@@ -169,7 +169,19 @@
                     <!-- 流式输出气泡（列表最后一项） -->
                     <template v-if="listItems[virtualRow.index]?.__streaming">
                       <div class="streaming-after-item message-row assistant">
-                        <div v-if="streamDisplayHtml" class="bubble streaming" v-html="streamDisplayHtml"></div>
+                        <div v-if="streamingContent" class="bubble streaming">
+                          <MarkdownRender
+                            custom-id="chat-streaming"
+                            :content="renderMessageRaw(streamingContent, true)"
+                            :final="false"
+                            mode="chat"
+                            smooth-streaming="auto"
+                            :fade="false"
+                            :typewriter="true"
+                            :max-live-nodes="0"
+                            :batch-rendering="true"
+                          />
+                        </div>
                         <svgLoading v-else />
                       </div>
                     </template>
@@ -198,9 +210,16 @@
                               <div class="message-content user-content" v-text="listItems[virtualRow.index].content.trim()"></div>
                             </template>
                             <template v-else>
-                              <div class="message-content" v-html="listItems[virtualRow.index].renderedHtml || renderMessageHtml(listItems[virtualRow.index].content.trim(),false)"
-                                @click="onContainerClick"
-                              ></div>
+                              <div class="message-content" @click="onContainerClick">
+                                <MarkdownRender
+                                  custom-id="chat"
+                                  :content="listItems[virtualRow.index].renderedRaw || renderMessageRaw(listItems[virtualRow.index].content.trim(), false)"
+                                  :final="true"
+                                  :fade="true"
+                                  :typewriter="false"
+                                  :max-live-nodes="500"
+                                />
+                              </div>
                             </template>
                           </template>
 
@@ -362,7 +381,9 @@ import { NConfigProvider, NMessageProvider, NButton, NInput,
   NUpload, NList, NListItem, NIcon, NScrollbar, NImage, NFlex,
   NSelect, NModal, NPopconfirm, NPopover, NQrCode
 } from 'naive-ui'
-import { SettingsOutline, DocumentOutline, MenuOutline, QrCodeOutline, BarcodeOutline, ArrowDownOutline } from '@vicons/ionicons5'
+import { SettingsOutline, DocumentOutline, MenuOutline, QrCodeOutline, ArrowDownOutline } from '@vicons/ionicons5'
+import { MarkdownRender } from 'markstream-vue'
+import 'markstream-vue/index.css'
 
 import { useVirtualizer } from '@tanstack/vue-virtual'
 
@@ -382,7 +403,7 @@ import { useFileUpload } from '@/composables/useFileUpload'
 import { useChat } from '@/composables/useChat'
 import { useMessageActions } from '@/composables/useMessageActions'
 import { useCodeEnhancer } from '@/composables/useCodeEnhancer'
-import { localIP, renderMessageHtml, normalizeFileRef } from '@/utils/message'
+import { localIP, renderMessageRaw, normalizeFileRef } from '@/utils/message'
 
 const route = useRoute()
 const router = useRouter()
@@ -395,9 +416,6 @@ const sidebarOpen = ref(false)
 const qrCodeUrl = ref('')
 const local_ip = ref('')
 const showQRCode = ref(true)
-const streamDisplayHtml = ref('')
-let renderRafId: number | null = null
-const messageListRef = ref<HTMLElement | null>(null)
 
 const isAutoScrollEnabled = ref(true)            // 自动滚动开关
 const SCROLL_THRESHOLD = 80                     // 距离底部的容差阈值（像素）
@@ -454,7 +472,7 @@ onStreamEnd.value = (fullText: string) => {
   if (regeneratingMsg.value) {
     const msg = regeneratingMsg.value
     msg.content = fullText
-    msg.renderedHtml = renderMessageHtml(fullText, true)  // 缓存渲染结果
+    msg.renderedRaw = renderMessageRaw(fullText, true)  // 缓存渲染结果
     regeneratingMsg.value = null   // 清空标记，恢复成普通消息显示
     nextTick(async () => {
       setStreaming(false)
@@ -470,7 +488,7 @@ onStreamEnd.value = (fullText: string) => {
   if (lastMsg && lastMsg.role === 'assistant' && lastMsg.content === fullText) {
     // 如果还没有缓存，就进行一次性完整渲染并存入
     if (!lastMsg.renderedHtml) {
-      lastMsg.renderedHtml = renderMessageHtml(fullText, true)
+      lastMsg.renderedHtml = renderMessageRaw(fullText, true)
     }
     nextTick(async () => {
       addCopyButtons()
@@ -483,18 +501,6 @@ onStreamEnd.value = (fullText: string) => {
 
 watch(streamingContent, (newVal) => {
   setStreaming(!!newVal)
-  if (!newVal) {
-    streamDisplayHtml.value = ''
-    if (renderRafId !== null) cancelAnimationFrame(renderRafId)
-    return
-  }
-
-  if (renderRafId !== null) cancelAnimationFrame(renderRafId)
-  
-  renderRafId = requestAnimationFrame(() => {
-    streamDisplayHtml.value = renderMessageHtml(newVal, true)
-    renderRafId = null
-  })
 })
 
 watch(() => selected.value, (newVal) => {
@@ -767,10 +773,8 @@ function handleReasoningClick(e: MouseEvent) {
   if (!summary) return
   
   const block = summary.closest('.reasoning-block') as HTMLElement | null
-  
   if (!block) return
   
-  // 切换状态
   const isOpen = block.dataset.reasoning === 'open'
   const container = block.closest('.message-content')
   let blockIndex = -1
@@ -778,21 +782,23 @@ function handleReasoningClick(e: MouseEvent) {
     const blocks = Array.from(container.querySelectorAll('.reasoning-block'))
     blockIndex = blocks.indexOf(block)
   }
+  
+  // 先切换 DOM 状态（即时反馈）
   if (isOpen) {
     block.removeAttribute('data-reasoning')
   } else {
     block.setAttribute('data-reasoning', 'open')
   }
 
+  // 同步更新缓存，防止虚拟滚动回收后状态丢失
   if (blockIndex !== -1) {
     const scrollerItem = target.closest('[data-index]')
     if (scrollerItem) {
       const idx = parseInt(scrollerItem.getAttribute('data-index') || '0', 10)
       const msg = chatStore.currentChatMessages[idx]
       if (msg) {
-        let html = msg.renderedHtml || renderMessageHtml(msg.content.trim(), false)
-        // 通过特征字符串切分，精准修改目标块的属性
-        const parts = html.split('<div class="reasoning-block"')
+        let raw = msg.renderedRaw || renderMessageRaw(msg.content.trim(), false)
+        const parts = raw.split('<div class="reasoning-block"')
         if (blockIndex >= 0 && blockIndex + 1 < parts.length) {
           let part = parts[blockIndex + 1]
           if (isOpen) {
@@ -801,8 +807,7 @@ function handleReasoningClick(e: MouseEvent) {
             part = part.replace(/^>/, ' data-reasoning="open">')
           }
           parts[blockIndex + 1] = part
-          msg.renderedHtml = parts.join('<div class="reasoning-block"') // 防止虚拟滚动后展开状态丢失
-
+          msg.renderedRaw = parts.join('<div class="reasoning-block"')
           requestAnimationFrame(() => {
             updateScrollState()
           })
@@ -821,7 +826,6 @@ function handleToolClick(e: MouseEvent) {
   if (!block) return
   
   const isOpen = block.dataset.tool === 'open'
-
   const container = block.closest('.message-content')
   let blockIndex = -1
   if (container) {
@@ -841,8 +845,8 @@ function handleToolClick(e: MouseEvent) {
       const idx = parseInt(scrollerItem.getAttribute('data-index') || '0', 10)
       const msg = chatStore.currentChatMessages[idx]
       if (msg) {
-        let html = msg.renderedHtml || renderMessageHtml(msg.content.trim(), false)
-        const parts = html.split('<div class="tool-calls-block"')
+        let raw = msg.renderedRaw || renderMessageRaw(msg.content.trim(), false)
+        const parts = raw.split('<div class="tool-calls-block"')
         if (blockIndex >= 0 && blockIndex + 1 < parts.length) {
           let part = parts[blockIndex + 1]
           if (isOpen) {
@@ -851,7 +855,7 @@ function handleToolClick(e: MouseEvent) {
             part = part.replace(/^>/, ' data-tool="open">')
           }
           parts[blockIndex + 1] = part
-          msg.renderedHtml = parts.join('<div class="tool-calls-block"')
+          msg.renderedRaw = parts.join('<div class="tool-calls-block"')
           requestAnimationFrame(() => {
             updateScrollState()
           })

@@ -1,61 +1,8 @@
 // src/utils/message.ts
 import { ref } from 'vue'
-import { marked } from 'marked'
-import { markedHighlight } from 'marked-highlight'
 import { type Message } from '@/stores/chat'
 import type { UploadedFile } from '@/composables/useFileUpload'
-import hljs from 'highlight.js'
-import markedKatex from 'marked-katex-extension'
-import 'katex/dist/katex.min.css'
-import 'highlight.js/styles/atom-one-dark.css'
 
-
-marked.use({
-  extensions: [
-      {
-          name: 'no-single-tilde-strikethrough',
-          level: 'inline',           // 规则作用范围为行内元素
-          start(src) {
-              // 查找单个波浪号的位置
-              return src.match(/~[^~]/)?.index
-          },
-          tokenizer(src, _tokens) {
-              // 匹配被单个波浪号包裹的内容（非贪婪模式）
-              const match = src.match(/^~([^~]+)~/)
-              if (match) {
-                  // 若匹配成功，则返回一个普通的文本节点，保持原样
-                  return {
-                      type: 'text',
-                      raw: match[0],
-                      text: match[0],
-                  }
-              }
-              return undefined; // 未匹配则返回 undefined，交由其他解析器处理
-          },
-      },
-  ],
-  tokenizer: {
-    code() {
-      return undefined // 拒绝识别空格缩进的代码块，直接跳过
-    }
-  }
-})
-
-marked.use(markedHighlight({
-  langPrefix: 'hljs language-',
-  highlight(code, lang) {
-    if (lang === 'mermaid') return code
-    const language = hljs.getLanguage(lang) ? lang : 'plaintext'
-    return hljs.highlight(code, { language }).value
-  }
-}))
-
-marked.use(markedKatex({
-  throwOnError: false,       // 报错时显示原始公式而不是中断
-  output: 'html',           // 使用 KaTeX 生成 HTML 而不是 MathML
-  nonStandard: true,       // 允许使用非标准 KaTeX 命令
-  strict: 'ignore'
-}))
 
 /** 转义 HTML 特殊字符，防止被浏览器渲染 */
 function escapeHtml(text: string): string {
@@ -63,8 +10,6 @@ function escapeHtml(text: string): string {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;')
 }
 
 export const localIP = ref('')
@@ -84,7 +29,8 @@ export function processMessageContent(text: string, isStreaming = false): string
     (_, content, time) => {
       const key = `<!--BLOCK_0${blockMap.size}-->` // 使用 HTML 注释占位符
       const timeStr = time ? ` (${time}秒)` : ''
-      const html = `<div class="reasoning-block"><div class="reasoning-summary no-select">已思考 ${timeStr}</div><div class="reasoning-content"><div class="reasoning-inner">${marked.parse(content)}</div></div></div>`
+      content = content.replace(/```mermaid(\s|$)/g, '```text$1')
+      const html = `<div class="reasoning-block"><div class="reasoning-summary no-select">已思考 ${timeStr}</div><div class="reasoning-container"><div class="reasoning-inner"><div class="reasoning-content">${content}</div></div></div></div>`
       blockMap.set(key, html)
       return key
     }
@@ -92,11 +38,13 @@ export function processMessageContent(text: string, isStreaming = false): string
 
   // 2. 处理流式未闭合的思考块
   if (isStreaming) {
-    const startIdx = processedText.indexOf('<!--reasoning:start-->');
+    const startIdx = processedText.indexOf('<!--reasoning:start-->')
     if (startIdx !== -1 && !processedText.includes('<!--reasoning:end:-->')) {
-      const afterStart = processedText.substring(startIdx + '<!--reasoning:start-->'.length)
+      let afterStart = processedText.substring(startIdx + '<!--reasoning:start-->'.length)
       const key = `<!--BLOCK_${blockMap.size}-->`
-      const html = `<div class="reasoning-block" data-reasoning="open"><div class="reasoning-summary no-select">思考中...</div><div class="reasoning-content"><div class="reasoning-inner">${marked.parse(afterStart)}</div></div></div>`
+      afterStart = afterStart.replace(/```mermaid(\s|$)/g, '```text$1')
+      const html = `<div class="reasoning-block" data-reasoning="open"><div class="reasoning-summary no-select">思考中...</div><div class="reasoning-container"><div class="reasoning-inner"><div class="reasoning-content">${afterStart}</div></div></div></div>`
+      
       // 移除原始标记，只保留占位符
       processedText = processedText.substring(0, startIdx) + key
       blockMap.set(key, html)
@@ -195,7 +143,7 @@ export function processMessageContent(text: string, isStreaming = false): string
       const blockHtml = `<div class="tool-calls-block" data-tool="open">
         <div class="tool-summary no-select">${title}</div>
         <div class="tool-calls-container">
-          <div class="tool-inner">${cardsHtml}</div>
+          <div class="tool-inner"><div class="tool-content">${cardsHtml}</div></div>
         </div>
       </div>`
 
@@ -264,7 +212,7 @@ export function processMessageContent(text: string, isStreaming = false): string
       const toolCount = (cardsHtml.match(/tool-call-card/g) || []).length
       const title = toolCount > 0 ? `工具调用 (${toolCount}个)` : '工具调用'
 
-      const html = `<div class="tool-calls-block"><div class="tool-summary no-select">${title}</div><div class="tool-calls-container"><div class="tool-inner">${cardsHtml}</div></div></div>`
+      const html = `<div class="tool-calls-block"><div class="tool-summary no-select">${title}</div><div class="tool-calls-container"><div class="tool-inner"><div class="tool-content">${cardsHtml}</div></div></div></div>`
       const key = `<!--BLOCK_${blockMap.size}-->`
       blockMap.set(key, html)
       return key
@@ -300,21 +248,19 @@ export function processMessageContent(text: string, isStreaming = false): string
     processedText = processedText.replace(/<!--token_usage:.*?-->/g, '')
   }
 
-  processedText = processedText.replace(/(\*\*.*?\*\*)/g, ' $1 ')
-  processedText = processedText.replace(/^(\s*[*\-+]) {4}/gm, '$1   ')
+  // processedText = processedText.replace(/(\*\*.*?\*\*)/g, ' $1 ')
+  // processedText = processedText.replace(/^(\s*[*\-+]) {4}/gm, '$1   ')
 
-  // 5. 用 marked 渲染剩余纯文本
-  let finalHtml: any = marked.parse(processedText.trim())
-
-  // 6. 将占位符替换为实际 HTML
   blockMap.forEach((html, key) => {
-    finalHtml = finalHtml.replace(key, html)
+    processedText = processedText.replace(key, '\n\n' + html.trim() + '\n\n')
   })
 
-  return finalHtml
+  processedText = processedText.replace(/\n{3,}/g, '\n\n')
+
+  return processedText.trim()
 }
 
-export function renderMessageHtml(text: string, isStreaming = false) {
+export function renderMessageRaw(text: string, isStreaming = false) {
   return processMessageContent(text, isStreaming)
 }
 

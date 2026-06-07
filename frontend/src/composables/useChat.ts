@@ -1,9 +1,9 @@
-import { ref, watch } from 'vue'
+import { ref } from 'vue'
 import { useChatStore, type Message } from '@/stores/chat'
 import { useConfigStore } from '@/stores/config'
 import { useProfileStore } from '@/stores/profiles'
 import { useMessage } from 'naive-ui'
-import { cleanMessages, renderMessageHtml } from '@/utils/message'
+import { cleanMessages } from '@/utils/message'
 import type { UploadedFile } from '@/composables/useFileUpload'
 
 
@@ -144,7 +144,6 @@ export function useChat() {
 
       if (chatStore.activeChatId === chatId) {
         const assistantMsg: Message = { role: 'assistant', content: fullText }
-        assistantMsg.renderedHtml = renderMessageHtml(fullText, true)
         chatStore.addMessageToLocal(assistantMsg)
         chatStore.saveMessageToBackend(assistantMsg).catch((e) => console.warn('保存助手消息失败', e))
       }
@@ -281,7 +280,6 @@ export function useChat() {
 
       // 直接更新原消息对象
       assistantMsg.content = fullText
-      assistantMsg.renderedHtml = renderMessageHtml(fullText, true)
       if (assistantMsg.id) {
         fetch(`/api/chats/${chatStore.activeChatId}/messages/${assistantMsg.id}`, {
           method: 'PUT',
