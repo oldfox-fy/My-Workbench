@@ -287,7 +287,7 @@ export async function cleanMessages(msgs: Message[]): Promise<{ role: string; co
         const mcp_fileTips = nonImageFiles.map(f => f.url.replace('/files/', `http://${urlhost}/files/`)).join('\n')
         contentArray.push({
           type: 'text',
-          text: `\n\n 如果调用【系统内置工具】使用文件路径：\n ${fileTips} \n\n 否则使用url：${mcp_fileTips}`
+          text: `\n\n 调用工具读取文件，如果调用【系统内置工具】使用文件路径：\n ${fileTips} \n\n 否则使用url：${mcp_fileTips}`
         })
       }
 
@@ -298,7 +298,7 @@ export async function cleanMessages(msgs: Message[]): Promise<{ role: string; co
       if (nonImageFiles.length > 0) {
         const fileTips = nonImageFiles.map(f => f.url.replace('/files/', '/data/')).join('\n')
         const mcp_fileTips = nonImageFiles.map(f => f.url.replace('/files/', `http://${urlhost}/files/`)).join('\n')
-        text += `\n\n 如果调用【系统内置工具】使用文件路径：\n ${fileTips} \n\n 否则使用url：${mcp_fileTips}`
+        text += `\n\n 调用工具读取文件，如果调用【系统内置工具】使用文件路径：\n ${fileTips} \n\n 否则使用url：${mcp_fileTips}`
       }
       contentForModel = text
     }

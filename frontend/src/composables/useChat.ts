@@ -31,16 +31,12 @@ export function useChat() {
 
   const onStreamEnd = ref<((fullText: string) => void) | null>(null)
 
-  async function readStream(
-    response: Response, 
-    scrollToBottom?: () => void
-  ): Promise<string> {
+  async function readStream(response: Response): Promise<string> {
     if (!response.ok || !response.body) throw new Error('网络响应失败')
     
     const reader = response.body.getReader()
     const decoder = new TextDecoder()
     let fullText = ''
-    let pendingScroll = false
 
     while (true) {
       const { done, value } = await reader.read()
@@ -49,15 +45,6 @@ export function useChat() {
       fullText += decoder.decode(value, { stream: true })
       // ✅ 只更新原始文本，绝不等待 DOM 更新
       streamingContent.value = fullText
-      
-      // ✅ 滚动也做 RAF 节流，避免频繁触发布局重排阻塞 JS
-      if (scrollToBottom  && !pendingScroll) {
-        pendingScroll = true
-        requestAnimationFrame(() => {
-          pendingScroll = false
-          scrollToBottom()
-        })
-      }
     }
     
     return fullText
@@ -140,7 +127,7 @@ export function useChat() {
         signal: controller.signal,
       })
 
-      fullText = await readStream(response, scrollToBottom)
+      fullText = await readStream(response)
 
       if (chatStore.activeChatId === chatId) {
         const assistantMsg: Message = { role: 'assistant', content: fullText }
@@ -209,7 +196,7 @@ export function useChat() {
         signal: controller.signal,
       })
 
-      const fullText = await readStream(response, scrollToBottom)
+      const fullText = await readStream(response)
       
       const assistantMsg: Message = { role: 'assistant', content: fullText }
       chatStore.addMessageToLocal(assistantMsg)
@@ -276,7 +263,7 @@ export function useChat() {
         signal: controller.signal,
       })
 
-      const fullText = await readStream(response, scrollToBottom)
+      const fullText = await readStream(response)
 
       // 直接更新原消息对象
       assistantMsg.content = fullText

@@ -14,7 +14,7 @@
           >
             <span class="tool-name">{{ tool.name }}</span>
             <div class="code-block-wrapper">
-              <n-button class="copy-code-btn" @click="handleCopy(formatArgs(tool.arguments))">
+              <n-button class="copy-code-btn" size="small" @click="handleCopy(formatArgs(tool.arguments))">
                 <template #icon>
                   <m-svg :name="copySuccess ? 'succ' : 'copy'"/>
                 </template>
@@ -26,7 +26,7 @@
             <div v-if="tool.result !== undefined" class="tool-result">
               <span class="result-label">结果：</span>
               <div class="code-block-wrapper">
-                <n-button class="copy-code-btn" @click="handleCopy(formatResult(tool.result))">
+                <n-button class="copy-code-btn" size="small" @click="handleCopy(formatResult(tool.result))">
                   <template #icon>
                     <m-svg :name="copySuccess ? 'succ' : 'copy'"/>
                   </template>
@@ -247,7 +247,7 @@ const title = computed(() => {
   max-height: 320px;
   border-radius: 4px;
   font-size: 0.85rem;
-  white-space: pre-wrap;
+  /* white-space: pre-wrap; */
   word-break: break-all;
   font-family: Consolas, '微软雅黑', monospace;
   margin: 6px 0 0;

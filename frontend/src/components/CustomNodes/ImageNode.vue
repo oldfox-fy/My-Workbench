@@ -1,10 +1,10 @@
 <template>
    <n-image
+    lazy
+    width="100%"
+    show-toolbar-tooltip
     class="image-node"
-    width="512"
     :src="node.src"
-    :title="node.title"
-    :loading="node.loading"
     :alt="node.alt"
   />
 </template>
@@ -25,6 +25,7 @@ const props = defineProps<{
 
 <style scoped>
 .image-node {
+  max-width: 512px;
   border-radius: 8px;
   cursor: pointer;
 }

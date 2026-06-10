@@ -89,7 +89,8 @@ table {
   table-layout: unset!important;
   overflow: hidden;
   background: linear-gradient(135deg, #161a24 0%, #1a1e2a 100%)!important;
-  border: 1px solid var(--border-color)!important;
+  border: unset!important;
+  box-shadow: var(--shadow-glow);
 }
 [theme-mode="light"] table {
   background: #fff!important;
@@ -277,7 +278,7 @@ tr:last-child td:last-child {
     position: fixed;
     inset: 0;
     background: rgba(0,0,0,0.5);
-    z-index: 998;
+    z-index: 30;
   }
   .sidebar-panel.sidebar-open ~ .sidebar-overlay {
     display: block;
