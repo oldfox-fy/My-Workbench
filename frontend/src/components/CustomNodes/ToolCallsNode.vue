@@ -32,9 +32,7 @@
                   </template>
                   复制
                 </n-button>
-                <pre class="result-content">
-                  <code>{{ formatResult(tool.result) }}</code>
-                </pre>
+                <pre class="result-content"><code>{{ formatResult(tool.result) }}</code></pre>
               </div>
             </div>
           </div>
@@ -247,7 +245,7 @@ const title = computed(() => {
   max-height: 320px;
   border-radius: 4px;
   font-size: 0.85rem;
-  /* white-space: pre-wrap; */
+  white-space: pre-wrap;
   word-break: break-all;
   font-family: Consolas, '微软雅黑', monospace;
   margin: 6px 0 0;

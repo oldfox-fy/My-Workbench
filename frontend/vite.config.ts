@@ -18,13 +18,16 @@ export default defineConfig(({ mode }) => ({
             if (id.includes('naive-ui') || id.includes('vueuc') || id.includes('css-render')) {
               return 'vendor-naive-ui';
             }
+            if (id.includes('markstream-vue') || id.includes('stream-monaco')) {
+              return 'vendor-markstream';
+            }
             // mermaid 图表库单独打包（体积巨大）
             if (id.includes('mermaid') || id.includes('d3') || id.includes('khroma')) {
               return 'vendor-mermaid';
             }
-            // Markdown 相关全家桶
-            if (id.includes('marked') || id.includes('highlight.js') || id.includes('katex')) {
-              return 'vendor-markdown';
+            // katex 公式库单独打包（体积大）
+            if (id.includes('katex')) {
+              return 'vendor-katex';
             }
             // 虚拟滚动库
             if (id.includes('@tanstack/vue-virtual')) {
