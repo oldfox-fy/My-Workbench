@@ -98,12 +98,10 @@
 
 <script setup lang="ts">
 import { ref, PropType } from 'vue'
-import {
-  NButton, NInput, NUpload, NIcon
-} from 'naive-ui'
+import { NButton, NInput, NUpload, NIcon, type UploadFileInfo } from 'naive-ui'
 import { ArrowDownOutline, DocumentOutline } from '@vicons/ionicons5'
 import mSvg from '@/components/MSvg.vue'
-import type { UploadFileInfo } from 'naive-ui'
+
 
 const props = defineProps({
   modelValue: { type: String, required: true },

@@ -12,10 +12,10 @@
     "@tanstack/vue-virtual": "^3.13.28",
     "@vicons/ionicons5": "^0.13.0",
     "katex": "^0.17.0",
+    "markstream-vue": "^1.0.1-beta.5",
     "mermaid": "^11.14.0",
     "naive-ui": "^2.44.1",
     "pinia": "^3.0.4",
-    "markstream-vue": "^1.0.1-beta.5",
     "stream-monaco": "^0.0.42",
     "vue": "^3.5.35",
     "vue-router": "^5.1.0"
@@ -25,6 +25,7 @@
     "fast-glob": "^3.3.3",
     "typescript": "^6.0.3",
     "vite": "^8.0.16",
+    "vite-plugin-compression": "^0.5.1",
     "vite-plugin-svg-icons": "^2.0.1",
     "vue-tsc": "^2.0.0"
   }

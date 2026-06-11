@@ -61,7 +61,7 @@ onMounted(() => {
 
 <style scoped>
 .intro-card {
-  background: #131720;
+  background: var(--bg-primary);
   border: 1px solid rgba(99, 102, 241, 0.2);
   border-radius: 16px;
   padding: 32px;

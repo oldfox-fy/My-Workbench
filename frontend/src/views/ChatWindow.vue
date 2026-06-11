@@ -149,6 +149,7 @@
         ref="messageListRef"
         v-if="chatStore.activeChatId"
         :messages="currentMessages"
+        :is-mobile="isMobile"
         :is-loading="isLoading"
         :streaming-content="streamingContent"
         :regenerating-msg="regeneratingMsg"
@@ -221,7 +222,7 @@ import { useModel } from '@/composables/useModel'
 import { useFileUpload } from '@/composables/useFileUpload'
 import { useChat } from '@/composables/useChat'
 import { useMessageActions } from '@/composables/useMessageActions'
-import { localIP } from '@/utils/message'
+import { localIP, uploadDir } from '@/utils/message'
 
 const route = useRoute()
 const router = useRouter()
@@ -336,9 +337,12 @@ onMounted(async () => {
     }, 150)
   })
   await profileStore.loadProfiles()
-  fetch('/api/local-ip').then(async (res) => {
-    local_ip.value = await res.json()
-    localIP.value = local_ip.value
+  fetch('/api/system-info').then(async (res) => {
+    const data = await res.json()
+    console.log(data);
+    
+    localIP.value = data.local_ip
+    uploadDir.value = data.upload_dir
     setQRCodeUrl()
   })
   setTimeout(() => {
@@ -352,7 +356,7 @@ onUnmounted(() => {
 
 const showWelcome = ref(false)
 
-watch(() => route.params.id, (newId) => {  
+watch(() => route.params.id, (newId) => {
   if (isLoading.value) stopGeneration()
   chatStore.activeChatId = newId as string
 }, { immediate: true })

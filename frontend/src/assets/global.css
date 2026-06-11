@@ -17,7 +17,7 @@
 }
 
 [theme-mode="light"] {
-  --bg-primary: #ffffff;
+  --bg-primary: #f8f7fc;
   --bg-secondary: #fcfcfc;
   --bg-panel: rgba(255, 255, 255, 0.85);
   --border-color: #e2e5e9;

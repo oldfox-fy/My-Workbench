@@ -4,15 +4,8 @@ import { type Message } from '@/stores/chat'
 import type { UploadedFile } from '@/composables/useFileUpload'
 
 
-/** 转义 HTML 特殊字符，防止被浏览器渲染 */
-function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-}
-
 export const localIP = ref('')
+export const uploadDir = ref('')
 
 
 /** 解析思考块和工具调用，输出 markstream-vue 自定义标签格式 */
@@ -29,7 +22,7 @@ export function processMessageContent(text: string, isStreaming = false): string
       content = content.replace(/```mermaid(\s|$)/g, '```text$1')
       // 转义内容中的 </reasoning> 避免提前闭合
       const safeContent = content.replace(/<\/reasoning>/g, '\u003c/reasoning>')
-      return `<reasoning time="${escapeHtml(time)}">${safeContent}</reasoning>`
+      return `<reasoning time="${time}">${safeContent}</reasoning>`
     }
   )
 
@@ -143,7 +136,7 @@ export function processMessageContent(text: string, isStreaming = false): string
       })
 
       // 注意：标签名使用 toolpreview（不带下划线）
-      const key = `<toolpreview>${escapeHtml(tagContent)}</toolpreview>`
+      const key = `<toolpreview>${tagContent}</toolpreview>`
       processedText = processedText.substring(0, firstStart) + key + processedText.substring(previewRegionEnd)
     }
   }
@@ -198,7 +191,7 @@ export function processMessageContent(text: string, isStreaming = false): string
 
       // 注意：标签名使用 toolcalls（不带下划线）
       const tagContent = JSON.stringify(tools)
-      return `<toolcalls>${escapeHtml(tagContent)}</toolcalls>`
+      return `<toolcalls>${tagContent}</toolcalls>`
     }
   )
 
@@ -212,7 +205,7 @@ export function processMessageContent(text: string, isStreaming = false): string
           speed: data.speed || '0 token/s',
           completion_tokens: data.final_answer_usage?.completion_tokens ?? 0
         })
-        return `<tokenusage>${escapeHtml(tagContent)}</tokenusage>`
+        return `<tokenusage>${tagContent}</tokenusage>`
       } catch {
         return ''
       }
@@ -283,11 +276,11 @@ export async function cleanMessages(msgs: Message[]): Promise<{ role: string; co
 
       // 3. 非图片文件提示（如果有）
       if (nonImageFiles.length > 0) {
-        const fileTips = nonImageFiles.map(f => f.url.replace('/files/', '/data/')).join('\n')
+        const fileTips = nonImageFiles.map(f => f.url.replace('/files/uploads', uploadDir.value)).join('\n')
         const mcp_fileTips = nonImageFiles.map(f => f.url.replace('/files/', `http://${urlhost}/files/`)).join('\n')
         contentArray.push({
           type: 'text',
-          text: `\n\n 调用工具读取文件，如果调用【系统内置工具】使用文件路径：\n ${fileTips} \n\n 否则使用url：${mcp_fileTips}`
+          text: `\n\n 读取上传文件，若使用系统内置工具(system_)，路径为：\n ${fileTips} \n\n 否则使用url：${mcp_fileTips}`
         })
       }
 
@@ -296,9 +289,9 @@ export async function cleanMessages(msgs: Message[]): Promise<{ role: string; co
       // --- 纯文本 + 文档提示 ---
       let text = typeof msg.content === 'string' ? msg.content : ''
       if (nonImageFiles.length > 0) {
-        const fileTips = nonImageFiles.map(f => f.url.replace('/files/', '/data/')).join('\n')
+        const fileTips = nonImageFiles.map(f => f.url.replace('/files/uploads', uploadDir.value)).join('\n')
         const mcp_fileTips = nonImageFiles.map(f => f.url.replace('/files/', `http://${urlhost}/files/`)).join('\n')
-        text += `\n\n 调用工具读取文件，如果调用【系统内置工具】使用文件路径：\n ${fileTips} \n\n 否则使用url：${mcp_fileTips}`
+        text += `\n\n 读取上传文件，若使用系统内置工具(system_)，路径为：\n ${fileTips} \n\n 否则使用url：${mcp_fileTips}`
       }
       contentForModel = text
     }

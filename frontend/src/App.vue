@@ -20,5 +20,6 @@ const configStore = useConfigStore()
 // 同步 HTML 属性，使全局 CSS 变量生效
 watch(() => configStore.themeMode, (mode) => {
   document.documentElement.setAttribute('theme-mode', mode)
+  document.body.setAttribute('style', mode === 'dark' ? 'background:#0b0e14' : 'background:#f8f7fc')
 }, { immediate: true })
 </script>

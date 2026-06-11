@@ -11,27 +11,12 @@
 
     <div v-else class="message-main">
       <div ref="virtualContainerRef" class="virtual-scroller" @scroll="onScroll">
-        <div
-          :style="{
-            minHeight: virtualizer.getTotalSize() + 'px',
-            width: isMobile ? '90%' : '80%',
-            maxWidth: '1000px',
-            position: 'relative',
-            margin: '0 auto'
-          }"
-        >
-          <div
-            v-for="virtualRow in virtualItems"
+        <div :style="{ minHeight: virtualizer.getTotalSize() + 'px', width: isMobile ? '90%' : '80%', maxWidth: '1000px', position: 'relative', margin: '0 auto' }">
+          <div v-for="virtualRow in virtualItems"
             :key="String(virtualRow.key)"
             :ref="(el: any) => measureItem(virtualRow.index, el)"
             :data-index="virtualRow.index"
-            :style="{
-              position: 'absolute',
-              top: 0,
-              left: 0,
-              width: '100%',
-              transform: `translateY(${virtualRow.start}px)`
-            }"
+            :style="{ position: 'absolute', top: 0, left: 0, width: '100%', transform: `translateY(${virtualRow.start}px)` }"
           >
             <!-- 流式输出占位（列表最后一项） -->
             <template v-if="listItems[virtualRow.index]?.__streaming">
@@ -147,10 +132,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch, nextTick, type PropType } from 'vue'
-import {
-  NButton, NIcon, NImage, NPopconfirm
-} from 'naive-ui'
+import { ref, computed, onMounted, onUnmounted, type PropType } from 'vue'
+import { NButton, NIcon, NImage, NPopconfirm } from 'naive-ui'
 import { DocumentOutline } from '@vicons/ionicons5'
 import { MarkdownRender, setCustomComponents, removeCustomComponents } from 'markstream-vue'
 import 'markstream-vue/index.css'
@@ -172,6 +155,7 @@ const customHtmlTags = ['reasoning', 'toolcalls', 'toolpreview', 'tokenusage']
 
 const props = defineProps({
   messages: { type: Array as PropType<Message[]>, required: true },
+  isMobile: { type: Boolean, required: false },
   isLoading: { type: Boolean, required: true },
   streamingContent: { type: String, default: '' },
   regeneratingMsg: { type: Object as PropType<Message | null>, default: null },
@@ -187,7 +171,6 @@ defineEmits<{
   delete: [id: number]
 }>()
 
-const isMobile = ref(false)
 const virtualContainerRef = ref<HTMLElement | null>(null)
 
 const currentMessages = computed(() => props.messages)
@@ -241,7 +224,6 @@ const virtualizerOptions: any = computed(() => ({
     return Math.max(200, Math.min(estimate, 5000))
   },
   overscan: 15,
-  paddingEnd: 60,
   measureElement: (el: any) => el.getBoundingClientRect().height,
   anchorTo: isStreaming.value && !autoFollow.value ? 'start' : 'end',
   followOnAppend: false,

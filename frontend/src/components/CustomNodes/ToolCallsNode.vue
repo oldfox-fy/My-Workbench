@@ -72,6 +72,8 @@ const copySuccess = ref(false)
 const tools = computed<ToolCall[]>(() => {
   try {
     const content = props.node.content || '[]'
+    console.log(content);
+    
     const parsed = JSON.parse(content)
     if (Array.isArray(parsed)) {
       return parsed.map(t => ({
