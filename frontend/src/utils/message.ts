@@ -7,6 +7,15 @@ import type { UploadedFile } from '@/composables/useFileUpload'
 export const localIP = ref('')
 export const uploadDir = ref('')
 
+function escapeMarkdownSensitive(str: string): string {
+  // 对 *、_、`、~ 等可能导致解析器回溯的符号进行转义
+  return str
+    .replace(/\*/g, '\\*')
+    .replace(/_/g, '\\_')
+    .replace(/`/g, '\\`')
+    .replace(/~/g, '\\~')
+}
+
 
 /** 解析思考块和工具调用，输出 markstream-vue 自定义标签格式 */
 export function processMessageContent(text: string, isStreaming = false): string {
@@ -161,7 +170,7 @@ export function processMessageContent(text: string, isStreaming = false): string
             const tool = JSON.parse(decodedJson)
             currentTool = {
               name: tool.name || '未知工具',
-              arguments: tool.arguments || {},
+              arguments: typeof tool.arguments === 'string' ? escapeMarkdownSensitive(tool.arguments) : tool.arguments,
               result: undefined
             }
             tools.push(currentTool)
