@@ -355,6 +355,10 @@ tr:last-child td:last-child {
     word-break: break-all;
   }
 
+  .message-list {
+    padding-bottom: 160px!important;
+  }
+
   /* 消息内操作按钮调整间距 */
   .message-actions .n-button {
     padding: 2px 4px;
