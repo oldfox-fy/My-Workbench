@@ -25,7 +25,6 @@ export function useChat() {
       abortController.value = null
     }
     isLoading.value = false
-    streamingContent.value = ''
     regeneratingMsg.value = null
   }
 
@@ -136,7 +135,20 @@ export function useChat() {
       }
 
     } catch (error: any) {
-      if (error.name === 'AbortError') return
+      if (error.name === 'AbortError') {
+        if (streamingContent.value.trim()) {
+          const partialMsg: Message = {
+            role: 'assistant',
+            content: streamingContent.value.trim() + '\n\n[已停止]',  // 可加标记
+          }
+          chatStore.addMessageToLocal(partialMsg)
+          chatStore.saveMessageToBackend(partialMsg).catch((e) =>
+            console.warn('保存截断消息失败', e)
+          )
+          streamingContent.value = ''   // 保存后再清空
+        }
+        return
+      }
       if (chatStore.activeChatId === chatId) {
         console.error('发送失败:', error)
         const errorMsg: Message = { role: 'assistant', content: `**错误：** ${error.message}` }
@@ -157,7 +169,7 @@ export function useChat() {
   /**
    * 重新生成当前对话（通常用于编辑用户消息后）
    */
-  async function regenerateFromCurrentHistory(scrollToBottom: () => void) {
+  async function regenerateFromCurrentHistory() {
     if (!chatStore.activeChatId) return
     const currentModel = configStore.activeModel
     if (!currentModel) {
@@ -166,7 +178,6 @@ export function useChat() {
     }
 
     isLoading.value = true
-    streamingContent.value = ''
 
     if (abortController.value) {
       abortController.value.abort()
@@ -203,7 +214,20 @@ export function useChat() {
       chatStore.saveMessageToBackend(assistantMsg).catch((e) => console.warn(e))
 
     } catch (error: any) {
-      if (error.name === 'AbortError') return
+      if (error.name === 'AbortError') {
+        if (streamingContent.value.trim()) {
+          const partialMsg: Message = {
+            role: 'assistant',
+            content: streamingContent.value.trim() + '\n\n[已停止]',  // 可加标记
+          }
+          chatStore.addMessageToLocal(partialMsg)
+          chatStore.saveMessageToBackend(partialMsg).catch((e) =>
+            console.warn('保存截断消息失败', e)
+          )
+          streamingContent.value = ''   // 保存后再清空
+        }
+        return
+      }
       const errMsg: Message = { role: 'assistant', content: `错误：${error.message}` }
       chatStore.addMessageToLocal(errMsg)
       chatStore.saveMessageToBackend(errMsg).catch((e) => console.warn(e))
@@ -217,7 +241,7 @@ export function useChat() {
   /**
    * 针对某条助手消息重新生成（使用该消息前的历史）
    */
-  async function regenerateResponse(assistantMsg: Message, scrollToBottom: () => void) {
+  async function regenerateResponse(assistantMsg: Message) {
     if (!chatStore.activeChatId) return
     const currentModel = configStore.activeModel
     if (!currentModel) {
@@ -233,7 +257,6 @@ export function useChat() {
     regeneratingMsg.value = assistantMsg
 
     isLoading.value = true
-    streamingContent.value = ''
 
     if (abortController.value) {
       abortController.value.abort()
@@ -279,7 +302,20 @@ export function useChat() {
         onStreamEnd.value(fullText)
       }
     } catch (error: any) {
-      if (error.name === 'AbortError') return
+      if (error.name === 'AbortError') {
+        if (streamingContent.value.trim()) {
+          const partialMsg: Message = {
+            role: 'assistant',
+            content: streamingContent.value.trim() + '\n\n[已停止]',  // 可加标记
+          }
+          chatStore.addMessageToLocal(partialMsg)
+          chatStore.saveMessageToBackend(partialMsg).catch((e) =>
+            console.warn('保存截断消息失败', e)
+          )
+          streamingContent.value = ''   // 保存后再清空
+        }
+        return
+      }
       console.error('重新生成失败:', error)
     } finally {
       abortController.value = null

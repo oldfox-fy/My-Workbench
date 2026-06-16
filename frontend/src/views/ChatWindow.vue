@@ -177,7 +177,7 @@
         :is-loading="isLoading"
         :disabled="isLoading || !chatStore.activeChatId || !activeModelId"
         :uploaded-files="uploadedFiles"
-        :show-scroll-btn="messageListRef?.showScrollBtn"
+        :show-scroll-btn="messageListRef?.showScrollBtn && currentMessages.length > 0"
         :show-regenerate-hint="!isLoading && currentMessages.length >= 1 && currentMessages[currentMessages.length - 1]?.role === 'user'"
         :show-deep-think="configStore.activeModel?.type === 'online'"
         :max-files="fileConfig.max"
@@ -308,16 +308,12 @@ const onSendMessage = () => {
 
 // 重新生成当前响应
 const onRegenerateFromCurrentHistory = async () => {
-  await regenerateFromCurrentHistory(() => {
-    messageListRef.value?.scrollToLatest()
-  })
+  await regenerateFromCurrentHistory()
 }
 
 // 重新生成特定消息
 const handleRegenerateResponse = async (msg: Message) => {
-  await regenerateResponse(msg, () => {
-    messageListRef.value?.scrollToLatest()
-  })
+  await regenerateResponse(msg)
 }
 
 // 编辑后保存并重新生成
