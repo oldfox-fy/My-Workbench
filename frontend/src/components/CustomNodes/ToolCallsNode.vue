@@ -1,145 +1,102 @@
 <template>
-  <div class="toolcalls-block" :data-tool="props.node.loading ? 'open' : undefined">
-    <div class="toolcalls-summary no-select" @click="toggle">
-      {{ title }}
+  <div class="toolcalls-block" :class="{ 'streaming': isLoading }">
+    <div class="toolcalls-summary no-select" @click="toggleExpand">
+      <span class="summary-icon">
+        <m-svg name="tools" />
+      </span>
+      <span class="summary-text">{{ title }}</span>
+      <span class="summary-count" v-if="callIds.length > 0">
+        {{ callIds.length }}个
+      </span>
+      <span class="expand-icon" :class="{ 'expanded': expanded }">
+        <m-svg name="chevron-down" />
+      </span>
     </div>
-    <div class="toolcalls-container">
-      <div class="toolcalls-inner">
-        <div class="toolcalls-content">
-          <div 
-            v-for="(tool, index) in tools" 
-            :key="index"
-            class="toolcall-card"
-            :class="{ 'streaming': tool.status === 'calling' }"
-          >
-            <span class="tool-name">{{ tool.name }}</span>
-            <div class="code-block-wrapper">
-              <n-button class="copy-code-btn" size="small" @click="handleCopy(formatArgs(tool.arguments))">
-                <template #icon>
-                  <m-svg :name="copySuccess ? 'succ' : 'copy'"/>
-                </template>
-                复制
-              </n-button>
-              <pre class="tool-args"><code>{{ formatArgs(tool.arguments) }}</code></pre>
-            </div>
-
-            <div v-if="tool.result !== undefined" class="tool-result">
-              <span class="result-label">结果：</span>
-              <div class="code-block-wrapper">
-                <n-button class="copy-code-btn" size="small" @click="handleCopy(formatResult(tool.result))">
-                  <template #icon>
-                    <m-svg :name="copySuccess ? 'succ' : 'copy'"/>
-                  </template>
-                  复制
-                </n-button>
-                <pre class="result-content"><code>{{ formatResult(tool.result) }}</code></pre>
-              </div>
-            </div>
-          </div>
-        </div>
+    
+    <div v-show="expanded" class="toolcalls-list">
+      <div 
+        v-for="callId in callIds" 
+        :key="callId"
+        class="toolcall-item"
+        @click.stop="openDetail(callId)"
+      >
+        <span class="item-status" :class="getStatusClass(callId)">
+          <m-svg :name="getStatusIcon(callId)" />
+        </span>
+        <span class="item-name">{{ getToolName(callId) }}</span>
+        <span class="item-arrow">
+          <m-svg name="chevron-right" />
+        </span>
       </div>
     </div>
   </div>
+
+  <ToolCallDetail
+    v-model:visible="detailVisible"
+    :call-id="selectedCallId"
+  />
 </template>
 
 <script setup lang="ts">
 import { ref, computed } from 'vue'
-import { NButton } from 'naive-ui'
 import MSvg from '@/components/MSvg.vue'
-import { copyToClipboard } from '@/utils/common'
+import ToolCallDetail from './ToolCallDetail.vue'
 
 const props = defineProps<{
   node: {
     type: 'toolcalls'
     content?: string
     loading?: boolean
-    autoClosed?: boolean
     attrs?: Record<string, any>
   }
   customId?: string
   isDark?: boolean
 }>()
 
-interface ToolCall {
-  name: string
-  arguments: string | object
-  result?: any
-  status: 'calling' | 'done' | 'error'
-}
+const expanded = ref(false)
+const detailVisible = ref(false)
+const selectedCallId = ref('')
 
-const copySuccess = ref(false)
-
-const tools = computed<ToolCall[]>(() => {
+const callIds = computed<string[]>(() => {
   try {
-    const content = props.node.content || '[]'    
+    const content = props.node.content || '{}'
     const parsed = JSON.parse(content)
-    if (Array.isArray(parsed)) {
-      return parsed.map(t => ({
-        name: t.name || '未知工具',
-        arguments: t.arguments || t.args || '{}',
-        result: t.result,
-        status: t.result ? 'done' : (props.node.loading ? 'calling' : 'done')
-      }))
-    }
-    return []
-  } catch(e) {
-    console.error('Failed to parse tool calls:', e)
+    return parsed.call_ids || []
+  } catch {
     return []
   }
 })
 
-function formatArgs(args: string | object): string {
-  if (typeof args === 'string') {
-    try {
-      const parsed = JSON.parse(args)
-      return JSON.stringify(parsed, null, 2)
-    } catch {
-      return args
-    }
-  }
-  return JSON.stringify(args, null, 2)
-}
-
-function formatResult(result: any): string {
-  if (typeof result === 'string') {
-    try {
-      const parsed = JSON.parse(result)
-      return JSON.stringify(parsed, null, 2)
-    } catch {
-      return result
-    }
-  }
-  return JSON.stringify(result, null, 2)
-}
-
-function handleCopy(content: string) {
-  copyToClipboard(content)
-  copySuccess.value = true
-  setTimeout(() => {
-    copySuccess.value = false
-  }, 800)
-}
-
-function toggle(e: MouseEvent) {
-  const target = e.target as HTMLElement
-  const block = target.closest('.toolcalls-block') as HTMLElement | null
-  if (!block) return
-
-  const isCurrentlyOpen = block.dataset.tool === 'open'
-  if (isCurrentlyOpen) {
-    block.removeAttribute('data-tool')
-  } else {
-    block.setAttribute('data-tool', 'open')
-  }
-}
+const isLoading = computed(() => props.node.loading || false)
 
 const title = computed(() => {
-  const count = tools.value.length
-  if (props.node.loading) {
-    return count > 0 ? `工具调用中… (${count}个)` : '工具调用中…'
+  if (isLoading.value) {
+    return callIds.value.length > 0 ? '工具调用中…' : '工具调用中…'
   }
-  return count > 0 ? `工具调用 (${count}个)` : '工具调用'
+  return '工具调用'
 })
+
+function toggleExpand() {
+  expanded.value = !expanded.value
+}
+
+function openDetail(callId: string) {
+  selectedCallId.value = callId
+  detailVisible.value = true
+}
+
+// 状态可以从全局 store 获取，这里简化处理
+function getStatusClass(callId: string): string {
+  return 'status-success'
+}
+
+function getStatusIcon(callId: string): string {
+  return 'check'
+}
+
+function getToolName(callId: string): string {
+  return `工具 #${callId.slice(-6)}`
+}
 </script>
 
 <style scoped>
@@ -148,82 +105,10 @@ const title = computed(() => {
   border-radius: 8px;
   background: var(--bg-secondary);
   overflow: hidden;
-  margin:2px 0;
-}
-.toolcalls-block .toolcalls-summary {
-  font-weight: 600;
-  padding: 10px;
-  font-size: 16px!important;
-  cursor: pointer;
-  color: var(--thinking-text);
-  user-select: none;
-  position: relative;
-  padding-left: 60px;
-}
-.toolcalls-summary::before {
-  content: '';
-  display: inline-block;
-  width: 0;
-  height: 0;
-  /* 三角形大小 */
-  border-top: 0.6em solid transparent;
-  border-bottom: 0.6em solid transparent;
-  border-left: 0.9em solid currentColor;   /* 使用当前文字颜色 */
-  margin-right: 0.4em;
-  transition: transform 0.3s ease;
-  vertical-align: middle;
-  position: absolute;
-  left: 12px;
-  top: calc(50% - 0.6em)
-}
-.toolcalls-summary::after {
-  content: '';
-  position: absolute;
-  left: 34px;
-  top: calc(50% - 0.6em);
-  width: 1.2em;
-  height: 1.2em;
-  background-color: #fff;
-  mask-image: url('/svg/tools.svg');
-  mask-size: contain;
-  mask-repeat: no-repeat;
-  mask-position: center;
-  -webkit-mask-image: url('/svg/tools.svg');
-  -webkit-mask-size: contain;
-}
-.toolcalls-block .toolcalls-summary:hover {
-  background: rgba(99, 102, 241, 0.05);
-}
-.toolcalls-block .toolcalls-container {
-  display: grid;
-  grid-template-rows: 0fr;
-  transition: grid-template-rows 0.3s ease;
-  overflow: hidden;
-}
-.toolcalls-content {
-  padding: 12px;
-}
-.toolcalls-container > .toolcalls-inner {
-  min-height: 0;
-}
-.toolcalls-block[data-tool="open"] .toolcalls-summary::before {
-  transform: rotate(90deg);
-}
-.toolcalls-block[data-tool="open"] .toolcalls-container {
-  grid-template-rows: 1fr;
+  margin: 8px 0;
 }
 
-.toolcalls-block[data-tool="open"] .toolcalls-summary::before {
-  transform: rotate(90deg);
-}
-
-
-.toolcall-card {
-  border-radius: 6px;
-  padding: 10px;
-}
-
-.toolcall-card.streaming {
+.toolcalls-block.streaming {
   border-left: 3px solid var(--primary-color, #1890ff);
   animation: pulse 2s infinite;
 }
@@ -233,122 +118,100 @@ const title = computed(() => {
   50% { opacity: 0.7; }
 }
 
-.code-block-wrapper {
-  position: relative;
-  margin: 6px 0;
-}
-
-.tool-args, .result-content {
-  background: var(--bg-secondary);
-  padding: 8px;
-  min-height: 30px;
-  max-height: 320px;
-  border-radius: 4px;
-  font-size: 0.85rem;
-  white-space: pre-wrap;
-  word-break: break-all;
-  font-family: Consolas, '微软雅黑', monospace;
-  margin: 6px 0 0;
-  overflow: auto;
-}
-
-.tool-args code {
-  font-family: 'Courier New', '微软雅黑', monospace;
-  font-size: 12px;
-  color: var(--text-code, #999);
-}
-
-.result-content code {
-  font-family: 'Courier New', '微软雅黑', monospace;
-  font-size: 12px;
-  color: var(--text-info, #26cf6d);
-}
-.code-block-wrapper .copy-code-btn {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  background: rgba(255, 255, 255, 0.1);
-  color: var(--text-secondary);
-  border-radius: 6px;
-  padding: 4px 6px;
-  cursor: pointer;
-  transition: all 0.2s;
-  backdrop-filter: blur(4px);
+.toolcalls-summary {
   display: flex;
   align-items: center;
-  gap: 4px;
-  opacity: 0;
-}
-.code-block-wrapper .copy-code-btn:hover {
-  background: rgba(99, 102, 241, 0.3);
-  color: #fff;
-}
-.code-block-wrapper:hover .copy-code-btn {
-  opacity: 1;
-}
-
-/* 工具调用卡片 */
-.toolcalls-container {
-  display: flex;
-  flex-direction: column;
+  padding: 12px 16px;
+  cursor: pointer;
+  user-select: none;
   gap: 10px;
 }
-.toolcall-card {
-  background: rgba(59, 130, 246, 0.08);
-  border: 1px solid rgba(59, 130, 246, 0.3);
-  border-radius: 8px;
-  padding: 12px;
+
+.toolcalls-summary:hover {
+  background: rgba(99, 102, 241, 0.05);
 }
-.tool-name {
+
+.summary-icon {
+  width: 20px;
+  height: 20px;
+  color: var(--primary-color, #3b82f6);
+  flex-shrink: 0;
+}
+
+.summary-text {
   font-weight: 600;
-  font-size:14px;
-  color: #3b82f6;
+  font-size: 15px;
+  color: var(--text-primary);
+  flex: 1;
 }
-.tool-name::before {
-  content: '';
-  display: inline-block;
-  width: 1.2em;
-  height: 1.2em;
-  margin-right: 0.4em;
-  vertical-align: text-bottom;
-  background-color: currentColor;
-  mask-image: url('/svg/tool.svg');
-  mask-size: contain;
-  mask-repeat: no-repeat;
-  mask-position: center;
-  -webkit-mask-image: url('/svg/tool.svg');
-  -webkit-mask-size: contain;
-  -webkit-mask-repeat: no-repeat;
-  -webkit-mask-position: center;
+
+.summary-count {
+  font-size: 13px;
+  color: var(--text-secondary);
+  background: var(--bg-tertiary);
+  padding: 2px 8px;
+  border-radius: 12px;
 }
-.streaming .tool-args, .streaming .result-content {
-  max-height: none;
+
+.expand-icon {
+  width: 16px;
+  height: 16px;
+  color: var(--text-secondary);
+  transition: transform 0.3s ease;
+  flex-shrink: 0;
 }
-.tool-result {
-  margin-top: 8px;
+
+.expand-icon.expanded {
+  transform: rotate(180deg);
 }
-.result-label, .tool-label {
-  font-weight: 500;
+
+.toolcalls-list {
+  border-top: 1px solid var(--border-color);
+  padding: 8px;
+}
+
+.toolcall-item {
+  display: flex;
+  align-items: center;
+  padding: 10px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  gap: 10px;
+  transition: background 0.2s;
+}
+
+.toolcall-item:hover {
+  background: rgba(99, 102, 241, 0.08);
+}
+
+.item-status {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+}
+
+.item-status.status-success { color: #52c41a; }
+.item-status.status-error { color: #ff4d4f; }
+.item-status.status-calling { 
+  color: var(--primary-color, #1890ff);
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.item-name {
+  flex: 1;
   font-size: 14px;
   color: var(--text-primary);
 }
-.result-label:before {
-  content: '';
-  display: inline-block;
-  width: 1.2em;
-  height: 1.2em;
-  margin-right: 0.4em;
-  vertical-align: text-bottom;
-  background-color: currentColor; /* 颜色跟随文字 */
-  mask-image: url('/svg/result.svg');
-  mask-size: contain;
-  mask-repeat: no-repeat;
-  mask-position: center;
-  -webkit-mask-image: url('/svg/result.svg');
-  -webkit-mask-size: contain;
-}
 
-[theme-mode="light"] .toolcalls-summary::after {
-  background-color: #666;
+.item-arrow {
+  width: 16px;
+  height: 16px;
+  color: var(--text-secondary);
+  flex-shrink: 0;
 }
 </style>

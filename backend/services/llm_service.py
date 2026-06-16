@@ -7,6 +7,7 @@ from fastapi import Request
 from openai import AsyncOpenAI, APIError
 from typing import List, Dict, AsyncGenerator, Optional
 from backend.services.tools import get_all_tools, execute_tool
+from backend.db.tool_calls import create_tool_call, update_tool_call, update_tool_call_arguments
 
 
 class LLMService:
@@ -31,6 +32,7 @@ class LLMService:
         request: Optional[Request] = None,
         mcp_manager=None,
         params: Dict = None,
+        message_id: Optional[int] = None,
     ) -> AsyncGenerator[str, None]:
         params = params or {}
 
@@ -236,10 +238,26 @@ class LLMService:
                         if idx is None:
                             idx = tc_delta.id if tc_delta.id else str(uuid.uuid4())
 
-                        if idx not in tool_preview_active and tc_delta.function:
-                            func_name = tc_delta.function.name or ""
-                            tool_preview_active[idx] = func_name
+                        if idx not in tool_preview_active and tc_delta.function and tc_delta.function.name:
+                            func_name = tc_delta.function.name
+                            tool_preview_active[idx] = {
+                                'name': func_name,
+                                'db_created': False
+                            }
+                            # 发送轻量标记：只包含 call_id 和 name
                             yield f"<!--tool_preview:start:{idx}:{func_name}-->"
+                            
+                            # 创建数据库记录
+                            if message_id:
+                                try:
+                                    await create_tool_call(
+                                        message_id=message_id,
+                                        call_id=str(idx),
+                                        tool_name=func_name
+                                    )
+                                    tool_preview_active[idx]['db_created'] = True
+                                except Exception as e:
+                                    print(f"[DB] Failed to create tool call record: {e}")
 
                         if idx not in tool_calls_by_index:
                             tool_calls_by_index[idx] = {
@@ -256,30 +274,18 @@ class LLMService:
                                 target["function"]["name"] = tc_delta.function.name
                             arg_delta = tc_delta.function.arguments or ""
                             target["function"]["arguments"] += arg_delta
-                            if arg_delta:
-                                yield arg_delta
 
                 elif delta_content:
                     # 关闭所有活跃的 tool_preview
                     for idx in list(tool_preview_active.keys()):
-                        tc = tool_calls_by_index.get(idx)
-                        if tc:
-                            snapshot = {tc["id"]: {"name": tc["function"]["name"], "arguments": tc["function"]["arguments"]}}
-                            yield f"<!--tool_preview:end:{idx}:{json.dumps(snapshot)}-->"
-                        else:
-                            yield f"<!--tool_preview:end:{idx}:{{}}-->"
+                        yield f"<!--tool_preview:end:{idx}-->"
                         del tool_preview_active[idx]
                     yield delta_content
 
             # 循环结束后处理可能残留的 tool_preview
             if tool_preview_active:
                 for idx in list(tool_preview_active.keys()):
-                    tc = tool_calls_by_index.get(idx)
-                    if tc:
-                        snapshot = {tc["id"]: {"name": tc["function"]["name"], "arguments": tc["function"]["arguments"]}}
-                        yield f"<!--tool_preview:end:{idx}:{json.dumps(snapshot)}-->"
-                    else:
-                        yield f"<!--tool_preview:end:{idx}:{{}}-->"
+                    yield f"<!--tool_preview:end:{idx}-->"
                     del tool_preview_active[idx]
 
             # 记录本步骤生成时间
@@ -335,13 +341,24 @@ class LLMService:
             for tc in valid_calls.values():
                 func_name = tc["function"]["name"]
                 raw_args = tc["function"]["arguments"]
+                call_id = tc["id"]
+                
                 try:
-                    args = json.loads(raw_args)
+                    args = json.loads(raw_args) if raw_args else {}
                 except json.JSONDecodeError as e:
                     error_detail = f"JSON 解析失败: {e}\n原始参数: {raw_args[:200]}"
                     yield f"\n❌ 工具 `{func_name}` 参数错误：{error_detail}\n"
-                    args = {}
+                    args = {"raw": raw_args, "parse_error": str(e)}
 
+                # 更新数据库中的参数
+                if message_id:
+                    try:
+                        await update_tool_call_arguments(call_id, args)
+                    except Exception as e:
+                        print(f"[DB] Failed to update arguments: {e}")
+
+                # 执行工具
+                start_time = time.time()
                 failed = False
                 try:
                     result = await execute_tool(func_name, args, mcp_manager)
@@ -355,22 +372,34 @@ class LLMService:
                     result = f"工具执行出错: {error_msg}"
                     failed = True
 
+                exec_time_ms = int((time.time() - start_time) * 1000)
+
+                if message_id:
+                    try:
+                        result_str = str(result)[:20000]  # 限制长度
+                        await update_tool_call(
+                            call_id=call_id,
+                            result=result_str,
+                            status="error" if failed else "success",
+                            execution_time=exec_time_ms,
+                            error_message=result if failed else None
+                        )
+                    except Exception as e:
+                        print(f"[DB] Failed to update result: {e}")
+
                 # 更新连续失败计数
                 if failed:
                     consecutive_failures += 1
                 else:
                     consecutive_failures = 0
 
-                result_str = str(result)
-                json_str = json.dumps({'name': func_name, 'arguments': args})
-                b64_str = base64.b64encode(json_str.encode('utf-8')).decode('utf-8')
-                yield f"<!--tool_call:{b64_str}-->"
-                yield f"<!--tool_result:{json.dumps({'name': func_name, 'result': result_str})}-->"
+                yield f"<!--tool_call:{call_id}-->"
+                yield f"<!--tool_result:{call_id}-->"
 
                 current_messages.append({
                     "role": "tool",
-                    "tool_call_id": tc["id"],
-                    "content": result_str
+                    "tool_call_id": call_id,
+                    "content": str(result)
                 })
             yield "<!--tool_calls:end-->"
 

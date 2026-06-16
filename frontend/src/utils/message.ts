@@ -65,19 +65,17 @@ export function processMessageContent(text: string, isStreaming = false): string
   // 3. 处理工具预览 → 转换为 <toolpreview> 自定义标签（注意：标签名不能包含下划线）
   if (!processedText.includes('<!--tool_calls:start-->')) {
     const startRegex = /<!--tool_preview:start:(\S+?):(.*?)-->/g
-    const endRegex = /<!--tool_preview:end:(\S+?):.*?-->/g
+    const endRegex = /<!--tool_preview:end:(\S+?)-->/g
 
     let firstStart = -1
     let lastEnd = -1
     let startMatch
 
-    // 找到第一个 start
     startRegex.lastIndex = 0
     if ((startMatch = startRegex.exec(processedText)) !== null) {
       firstStart = startMatch.index
     }
 
-    // 找到最后一个 end
     let endMatch
     endRegex.lastIndex = 0
     while ((endMatch = endRegex.exec(processedText)) !== null) {
@@ -88,63 +86,35 @@ export function processMessageContent(text: string, isStreaming = false): string
       const previewRegionEnd = lastEnd !== -1 ? lastEnd : processedText.length
       const previewRegion = processedText.substring(firstStart, previewRegionEnd)
 
-      // 重新扫描区域内所有 start / end，按 idx 分组
       const idxSet = new Set<string>()
-      const startPositions: Array<{ idx: string; name: string; pos: number }> = []
-      const endPositions: Array<{ idx: string; pos: number }> = []
-
+      const toolNames: Record<string, string> = {}
+      
       startRegex.lastIndex = 0
       let sMatch
       while ((sMatch = startRegex.exec(previewRegion)) !== null) {
-        startPositions.push({
-          idx: sMatch[1],
-          name: sMatch[2],
-          pos: sMatch.index + sMatch[0].length
-        })
         idxSet.add(sMatch[1])
+        toolNames[sMatch[1]] = sMatch[2]
       }
+
+      const endedIds = new Set<string>()
       endRegex.lastIndex = 0
       let eMatch
       while ((eMatch = endRegex.exec(previewRegion)) !== null) {
-        endPositions.push({ idx: eMatch[1], pos: eMatch.index })
+        endedIds.add(eMatch[1])
       }
 
-      // 提取每个工具的参数文本
-      const tools: Array<{ name: string; args: string; streaming: boolean }> = []
-      for (const idx of idxSet) {
-        const sItem = startPositions.find(s => s.idx === idx)
-        const eItem = endPositions.find(e => e.idx === idx)
-        const name = sItem?.name || ''
-        const startIdx = sItem?.pos ?? 0
-        const endIdx = eItem?.pos ?? previewRegion.length
-        const argsRaw = previewRegion.substring(startIdx, endIdx).trim()
-        tools.push({ name, args: argsRaw, streaming: !eItem })
-      }
-
-      // 生成工具预览数据
-      const previewData = tools.map(t => {
-        let formattedArgs = t.args
-        try {
-          const parsed = JSON.parse(formattedArgs)
-          formattedArgs = JSON.stringify(parsed, null, 2)
-        } catch {}
-        return {
-          name: t.name,
-          arguments: formattedArgs,
-          streaming: t.streaming
-        }
-      })
-
-      const toolCount = tools.length
-      const isLoading = tools.some(t => t.streaming)
+      const tools = Array.from(idxSet).map(idx => ({
+        call_id: idx,
+        name: toolNames[idx] || '未知工具',
+        streaming: !endedIds.has(idx)
+      }))
 
       const tagContent = JSON.stringify({
-        tools: previewData,
-        count: toolCount,
-        loading: isLoading
+        tools,
+        count: tools.length,
+        loading: tools.some(t => t.streaming)
       })
 
-      // 注意：标签名使用 toolpreview（不带下划线）
       const key = `\n\n<toolpreview>${tagContent}</toolpreview>\n\n`
       processedText = processedText.substring(0, firstStart) + key + processedText.substring(previewRegionEnd)
     }
@@ -154,52 +124,15 @@ export function processMessageContent(text: string, isStreaming = false): string
   processedText = processedText.replace(
     /<!--tool_calls:start-->([\s\S]*?)<!--tool_calls:end-->/g,
     (_, inner) => {
-      const tools: Array<{ name: string; arguments: any; result?: any }> = []
-
-      // 用一个正则同时匹配 tool_call 和 tool_result，按出现顺序处理
-      const tokenRegex = /<!--tool_call:([\s\S]*?)-->|<!--tool_result:(.*?)-->/g
+      const callIds: string[] = []
+      
+      const callRegex = /<!--tool_call:(.*?)-->/g
       let match
-      let currentTool: any = null
-
-      while ((match = tokenRegex.exec(inner)) !== null) {
-        if (match[1] !== undefined) {
-          // 匹配到 tool_call
-          const b64Str = match[1].trim()
-          try {
-            const decodedJson = decodeURIComponent(escape(window.atob(b64Str)))
-            const tool = JSON.parse(decodedJson)
-            currentTool = {
-              name: tool.name || '未知工具',
-              arguments: typeof tool.arguments === 'string' ? escapeMarkdownSensitive(tool.arguments) : tool.arguments,
-              result: undefined
-            }
-            tools.push(currentTool)
-          } catch {
-            currentTool = {
-              name: '工具参数解析失败',
-              arguments: b64Str,
-              result: undefined
-            }
-            tools.push(currentTool)
-          }
-        } else if (match[2] !== undefined) {
-          // 匹配到 tool_result
-          const jsonStr = match[2].trim()
-          try {
-            const res = JSON.parse(jsonStr)
-            if (currentTool) {
-              currentTool.result = res.result
-            }
-          } catch {
-            if (currentTool) {
-              currentTool.result = jsonStr
-            }
-          }
-        }
+      while ((match = callRegex.exec(inner)) !== null) {
+        callIds.push(match[1].trim())
       }
 
-      // 注意：标签名使用 toolcalls（不带下划线）
-      const tagContent = JSON.stringify(tools)
+      const tagContent = JSON.stringify({ call_ids: callIds })
       return `\n\n<toolcalls>${tagContent}</toolcalls>\n\n`
     }
   )

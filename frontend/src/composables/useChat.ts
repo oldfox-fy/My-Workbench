@@ -86,7 +86,7 @@ export function useChat() {
 
     // 2. 加入本地 store
     chatStore.addMessageToLocal(userMsg)
-    chatStore.saveMessageToBackend(userMsg).catch((e) => console.warn('保存用户消息失败', e))
+    await chatStore.saveMessageToBackend(userMsg).catch((e) => console.warn('保存用户消息失败', e))
 
     // 3. 准备 API 调用
     isLoading.value = true
