@@ -3,6 +3,7 @@
   --bg-primary: #0b0e14;
   --bg-secondary: #131720;
   --bg-panel: rgba(19, 23, 32, 0.85);
+  --bg-tool: #272b35;
   --border-color: #333946;
   --border-color-hover: #5f6779;
   --border-glow: #895bf7;
@@ -19,7 +20,8 @@
 [theme-mode="light"] {
   --bg-primary: #f8f7fc;
   --bg-secondary: #fcfcfc;
-  --bg-panel: rgba(255, 255, 255, 0.85);
+  --bg-panel: rgba(223, 223, 223, 0.85);
+  --bg-tool: #e9ebf0be;
   --border-color: #e2e5e9;
   --border-color-hover: #d1d5db;
   --border-glow: #895bf7;

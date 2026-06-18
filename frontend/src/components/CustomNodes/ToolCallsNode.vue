@@ -1,8 +1,11 @@
 <template>
   <div class="toolcalls-block" :class="{ 'streaming': isLoading, 'expanded': expanded }">
     <div class="toolcalls-summary no-select" @click="toggleExpand">
-      <span class="summary-icon">
+      <span v-if="!isLoading" class="summary-icon">
         <m-svg name="tools" :size="20"/>
+      </span>
+      <span v-else class="item-status status-calling">
+        <m-svg name="spinner"/>
       </span>
       <span class="summary-text">{{ title }}</span>
       <span class="summary-count" v-if="toolsList.length > 0">
@@ -14,7 +17,7 @@
       <div class="toolcalls-inner">
         <div class="toolcalls-list">
           <div 
-            v-for="tool in toolsList" 
+            v-for="(tool, index) in toolsList" 
             :key="tool.call_id"
             class="toolcall-item"
             @click.stop="openDetail(tool.call_id)"
@@ -22,7 +25,7 @@
             <span class="item-status" :class="getStatusClass(tool)">
               <m-svg :name="getStatusIcon(tool)" />
             </span>
-            <span class="item-name">{{ tool.name }}</span>
+            <span class="item-name">{{ tool.name }} #{{ (index as number)+1 }}</span>
             <span class="item-arrow">
               <m-svg name="chevron-right" />
             </span>
@@ -74,14 +77,33 @@ const parsedData = computed(() => {
 // 解析出的工具列表数据
 const toolsList = computed(() => parsedData.value.tools || [])
 
+const activeTools = computed(() => toolsList.value.filter((t: any) => t.streaming))
+
 // 是否处于加载状态
-const isLoading = computed(() => props.node.loading || parsedData.value.loading || false)
+const isLoading = computed(() => {
+  // 只要列表中有工具状态为 streaming，就视为正在加载
+  if (activeTools.value.length > 0) {
+    return true
+  }
+  // 否则回退到外部传入或者解析出的 loading 状态
+  return props.node.loading || parsedData.value.loading || false
+})
 
 // 标题动态显示
 const title = computed(() => {
   if (isLoading.value) {
-    return toolsList.value.length > 0 ? `正在调用工具...` : '正在准备调用工具...'
+    // 1. 如果正在准备（还没有获取到工具名称）
+    if (activeTools.value.length === 0) {
+      return '正在准备调用工具...'
+    }
+    // 2. 如果只有一个工具正在调用，显示【工具名称】
+    if (activeTools.value.length === 1) {
+      return `正在调用【${activeTools.value[0].name}】...`
+    }
+    // 3. 如果有多个同时调用（极少见），显示调用数量
+    return `正在调用 ${activeTools.value.length} 个工具...`
   }
+  // 4. 工具全部执行完毕后的状态
   return `已调用工具`
 })
 
@@ -95,8 +117,9 @@ function openDetail(callId: string) {
 }
 
 // 根据工具状态渲染类名
-function getStatusClass(tool: { call_id: string; name: string; streaming: boolean }) {
+function getStatusClass(tool: { call_id: string; name: string; streaming: boolean; status?: string }) {
   if (tool.streaming) return 'status-calling'
+  if (tool.status === 'error') return 'status-error'
   return 'status-success'
 }
 
@@ -203,17 +226,22 @@ function getStatusIcon(tool: { call_id: string; name: string; streaming: boolean
 .toolcalls-list {
   border-top: 1px solid var(--border-color);
   padding: 8px;
+  display: flex;
+  flex-wrap: wrap;      /* 换行 */
+  gap: 8px;            /* 项间距 */
+  align-items: center; /* 垂直居中 */
 }
 
 .toolcall-item {
-  width:200px;
-  display: flex;
+  display: inline-flex;  /* 水平排列且宽度收缩 */
   align-items: center;
-  padding: 10px 12px;
+  padding: 8px 12px;     /* 适当内边距 */
   border-radius: 6px;
   cursor: pointer;
-  gap: 10px;
+  gap: 8px;
+  background: var(--bg-tool);
   transition: background 0.2s;
+  white-space: nowrap; 
 }
 
 .toolcall-item:hover {
@@ -253,5 +281,14 @@ function getStatusIcon(tool: { call_id: string; name: string; streaming: boolean
   height: 16px;
   color: var(--text-secondary);
   flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  transition: transform 0.25s ease;
+}
+
+.toolcall-item:hover .item-arrow {
+transform: translateX(4px);
 }
 </style>

@@ -20,7 +20,7 @@
             <template v-if="!msg.__streaming">
               <div v-if="msg === regeneratingMsg" style="height: 1px; overflow: hidden"></div>
               <div v-else :class="['message-row', msg.role]">
-                <div class="bubble" :class="{ 'has-file': normalizeFileRef(msg.file_ref).length }">
+                <div v-if="msg.file_ref" :class="{ 'has-file': normalizeFileRef(msg.file_ref).length }">
                   <!-- 文件附件 -->
                   <div v-if="normalizeFileRef(msg.file_ref).length" class="message-files">
                     <div
@@ -35,7 +35,8 @@
                       </div>
                     </div>
                   </div>
-
+                </div>
+                <div class="bubble">
                   <!-- 用户消息纯文本 -->
                   <template v-if="msg.role === 'user'">
                     <div class="message-content user-content" v-text="msg.content.trim()"></div>
@@ -381,7 +382,9 @@ onUnmounted(() => {
   display: flex;
 }
 .message-row.user {
-  justify-content: flex-end;
+  flex-direction: column;
+  align-items: flex-end;
+  margin-top: 30px;
 }
 .message-row.assistant {
   justify-content: flex-start;
@@ -405,7 +408,7 @@ onUnmounted(() => {
   background: var(--accent-gradient);
   color: white;
   border: none;
-  margin-top: 30px;
+  margin-top: 10px;
   margin-bottom: 40px;
 }
 .user-content {
@@ -460,16 +463,17 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 6px;
-  background: rgba(0,0,0,0.1);
+  padding: 8px 12px;
+  background: rgba(0, 0, 0, 0.2);
   color: white;
   border-radius: 6px;
   font-size: 0.9rem;
+  cursor: pointer;
 }
 .msg-file-other a {
   color: white;
 }
 .msg-file-other:hover {
-  background: rgba(0,0,0,0.2);
+  background: rgba(0,0,0,0.1);
 }
 </style>

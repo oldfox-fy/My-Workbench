@@ -45,52 +45,81 @@ export function processMessageContent(text: string, isStreaming = false): string
   }
 
   // 2. 处理工具调用容器
-  processedText = processedText.replace(
-    /<!--tool_calls:start-->([\s\S]*?)<!--tool_calls:end-->/g,
-    (_, innerContent) => {
-      // 在容器内部解析 start 和 end
-      const startRegex = /<!--tool_preview:start:([^:]+?):(.*?)-->/g
-      const endRegex = /<!--tool_preview:end:([^:]+?)-->/g
+  let match
+  let lastIndex = 0
+  let toolCallsResult = ''
+  // 核心正则：(捕获 start 到 end，或者 start 到文本末尾)
+  const toolCallsRegex = /<!--tool_calls:start-->([\s\S]*?)(?:<!--tool_calls:end-->|$)/g
 
-      // Map 用来去重和合并状态，key 为 call_id
-      const toolsMap = new Map<string, { call_id: string; name: string; streaming: boolean }>()
+  while ((match = toolCallsRegex.exec(processedText)) !== null) {
+    const fullMatch = match[0]
+    const innerContent = match[1]
+    
+    // 判断当前是否已经收到 end 标记
+    const hasEnd = fullMatch.includes('<!--tool_calls:end-->')
 
-      let match: RegExpExecArray | null
-      // 1. 找出所有 start，记录 call_id 和 name
-      while ((match = startRegex.exec(innerContent)) !== null) {
-        const call_id = match[1]
-        const name = match[2]
-        if (!toolsMap.has(call_id)) {
-          toolsMap.set(call_id, { call_id, name, streaming: true })
-        }
+    // 1. 解析内部的所有 start (获取 call_id 和 name)
+    const startRegex = /<!--tool_preview:start:([^:]+?)(?::(.*?))?-->/g
+    let sMatch
+    const toolsMap = new Map<string, { call_id: string; name: string; streaming: boolean; status: string }>()
+    while ((sMatch = startRegex.exec(innerContent)) !== null) {
+      const call_id = sMatch[1]
+      let name = sMatch[2]
+      if (!name) {
+        name = '工具'
+      } else if (name.startsWith('end:')) {
+        name = name.replace(/^end:/, '')
       }
+      if (!toolsMap.has(call_id)) {
+        // 默认都是 streaming: true
+        toolsMap.set(call_id, { call_id, name, streaming: true, status: 'calling' })
+      }
+    }
 
-      // 2. 找出所有 end，将对应的状态改为 false
-      while ((match = endRegex.exec(innerContent)) !== null) {
-        const call_id = match[1]
+    // 2. 如果已经收到 end，解析内部所有的 end 来更新状态 (将已结束的工具设为 streaming: false)
+    if (hasEnd) {
+      const endRegex = /<!--tool_preview:end:([^:]+?)-->/g
+      let eMatch
+      while ((eMatch = endRegex.exec(innerContent)) !== null) {
+        const call_id = eMatch[1]
         if (toolsMap.has(call_id)) {
           toolsMap.get(call_id)!.streaming = false
         }
       }
-
-      // 如果没有解析出任何工具，直接移除占位符
-      if (toolsMap.size === 0) {
-        return ''
-      }
-
-      // 3. 构建前端需要的预览数据结构
-      const toolsData = Array.from(toolsMap.values())
-      const tagContent = JSON.stringify({
-        tools: toolsData,
-        count: toolsData.length,
-        loading: toolsData.some(t => t.streaming)
-      })
-
-      // 返回自定义组件标签
-      return `\n\n<toolcalls>${tagContent}</toolcalls>\n\n`
     }
-  )
 
+    const statusRegex = /<!--tool_status:([^:]+?):([^:]+?)-->/g
+    let statusMatch
+    while ((statusMatch = statusRegex.exec(innerContent)) !== null) {
+      const call_id = statusMatch[1]
+      const status = statusMatch[2] // 'success' 或 'error'
+      if (toolsMap.has(call_id)) {
+        toolsMap.get(call_id)!.status = status
+      }
+    }
+
+    const toolsData = Array.from(toolsMap.values())
+    // 判断是否有工具还在 streaming 状态
+    const loading = toolsData.some(t => t.streaming)
+
+    const tagContent = JSON.stringify({
+      tools: toolsData,
+      count: toolsData.length,
+      loading: loading
+    })
+
+    const replacement = `\n\n<toolcalls>${tagContent}</toolcalls>\n\n`
+    toolCallsResult += processedText.substring(lastIndex, match.index) + replacement
+    lastIndex = match.index + fullMatch.length
+  }
+
+  // 拼接剩余未匹配的文本
+  if (lastIndex < processedText.length) {
+    toolCallsResult += processedText.substring(lastIndex)
+  }
+  processedText = toolCallsResult
+
+  // 保底清理：清理可能残留在外面的 tool_preview 和 tool_call 标记
   processedText = processedText.replace(/<!--tool_preview:(start|end):[^>]+-->/g, '')
   processedText = processedText.replace(/<!--tool_call:[^>]+-->/g, '')
 

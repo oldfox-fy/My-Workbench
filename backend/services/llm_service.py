@@ -347,7 +347,7 @@ class LLMService:
                     print(f"[WARN] 跳过工具 {tc['function']['name']}，因为未找到 call_id")
                     continue
 
-                func_name = tc["function"]["name"]
+                func_name = tc["function"]["name"]  or "未知工具"
                 raw_args = tc["function"]["arguments"]
                 
                 # ✅ 通过整数 idx 获取之前生成的 UUID call_id
@@ -403,8 +403,10 @@ class LLMService:
                 # 更新连续失败计数
                 if failed:
                     consecutive_failures += 1
+                    yield f"<!--tool_status:{call_id}:error-->"
                 else:
                     consecutive_failures = 0
+                    yield f"<!--tool_status:{call_id}:success-->"
 
                 if idx in tool_preview_active:
                     call_id = tool_preview_active[idx]['call_id']
