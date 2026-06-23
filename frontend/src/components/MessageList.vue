@@ -10,6 +10,14 @@
     </div>
 
     <div v-else class="message-main">
+      <!-- 使用抽离出来的目录组件 -->
+      <MessageToc
+        :messages="messages"
+        :is-mobile="isMobile"
+        :is-dark="isDark"
+        @scroll-to="scrollToMessage"
+      />
+
       <div ref="scrollContainerRef" class="message-scroller" @scroll="onScroll">
         <div class="message-list" :style="{ width: isMobile ? '90%' : '80%', maxWidth: '1000px', margin: '0 auto' }">
           <div
@@ -19,7 +27,8 @@
             <!-- 正常消息 -->
             <template v-if="!msg.__streaming">
               <div v-if="msg === regeneratingMsg" style="height: 1px; overflow: hidden"></div>
-              <div v-else :class="['message-row', msg.role]">
+              <!-- 给 user 消息加上 id 锚点 -->
+              <div v-else :id="msg.role === 'user' ? 'msg-anchor-' + msg.id : undefined" :class="['message-row', msg.role]">
                 <div v-if="msg.file_ref" :class="{ 'has-file': normalizeFileRef(msg.file_ref).length }">
                   <!-- 文件附件 -->
                   <div v-if="normalizeFileRef(msg.file_ref).length" class="message-files">
@@ -147,6 +156,8 @@ import ToolCallsNode from '@/components/CustomNodes/ToolCallsNode.vue'
 import TokenUsageNode from '@/components/CustomNodes/TokenUsageNode.vue'
 import ImageNode from '@/components/CustomNodes/ImageNode.vue'
 import LinkNode from '@/components/CustomNodes/LinkNode.vue'
+// 引入目录组件 (请根据实际路径调整)
+import MessageToc from '@/components/MessageToc.vue'
 
 const customHtmlTags = ['reasoning', 'toolcalls', 'tokenusage']
 
@@ -257,6 +268,50 @@ function scrollToLatestSmooth(duration: number = 400) {
     } else {
       scrollAnimationId = null
       userHasScrolledUp.value = false
+    }
+  }
+  scrollAnimationId = requestAnimationFrame(animate)
+}
+
+// 接收子组件触发的滚动事件，平滑滚动到指定消息
+function scrollToMessage(msgId: number | string) {
+  const el = document.getElementById(`msg-anchor-${msgId}`)
+  const container: any = scrollContainerRef.value
+  if (!el || !container) return
+
+  // 取消正在进行的滚动动画
+  if (scrollAnimationId !== null) {
+    cancelAnimationFrame(scrollAnimationId)
+    scrollAnimationId = null
+  }
+
+  // 计算相对于滚动容器的偏移量
+  const containerRect = container.getBoundingClientRect()
+  const elRect = el.getBoundingClientRect()
+  const offsetTop = elRect.top - containerRect.top + container.scrollTop - 20 // 减去 20px 留点顶部边距
+
+  const start = container.scrollTop
+  const distance = offsetTop - start
+
+  if (Math.abs(distance) < 5) {
+    container.scrollTop = offsetTop
+    return
+  }
+
+  const dynamicDuration = Math.min(800, Math.max(300, Math.abs(distance) * 0.5))
+  const startTime = performance.now()
+
+  function animate(currentTime: number) {
+    const elapsed = currentTime - startTime
+    const progress = Math.min(elapsed / dynamicDuration, 1)
+    const eased = easeOutCubic(progress)
+
+    container.scrollTop = start + distance * eased
+
+    if (progress < 1) {
+      scrollAnimationId = requestAnimationFrame(animate)
+    } else {
+      scrollAnimationId = null
     }
   }
   scrollAnimationId = requestAnimationFrame(animate)
@@ -376,7 +431,7 @@ onUnmounted(() => {
 .message-row.user {
   flex-direction: column;
   align-items: flex-end;
-  margin-top: 30px;
+  margin-top: 10px;
 }
 .message-row.assistant {
   justify-content: flex-start;

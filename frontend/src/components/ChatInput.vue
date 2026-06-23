@@ -221,6 +221,10 @@ function triggerJelly() {
   z-index: 1;
 }
 
+.scroll-to-bottom-btn:hover {
+  background-color: var(--glass-bg-hover); 
+}
+
 .compose-thinking {
   position:absolute;
   top:-50px;

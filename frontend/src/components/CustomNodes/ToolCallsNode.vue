@@ -1,44 +1,46 @@
 <template>
-  <div class="toolcalls-block" :class="{ 'streaming': isLoading, 'expanded': expanded }">
-    <div class="toolcalls-summary no-select" @click="toggleExpand">
-      <span v-if="!isLoading" class="summary-icon">
-        <m-svg name="tools" :size="20"/>
-      </span>
-      <span v-else class="item-status status-calling">
-        <m-svg name="spinner"/>
-      </span>
-      <span class="summary-text">{{ title }}</span>
-      <span class="summary-count" v-if="toolsList.length > 0">
-        {{ toolsList.length }}个
-      </span>
-    </div>
-    
-    <div class="toolcalls-container">
-      <div class="toolcalls-inner">
-        <div class="toolcalls-list">
-          <div 
-            v-for="(tool, index) in toolsList" 
-            :key="tool.call_id"
-            class="toolcall-item"
-            @click.stop="openDetail(tool.call_id)"
-          >
-            <span class="item-status" :class="getStatusClass(tool)">
-              <m-svg :name="getStatusIcon(tool)" :size="tool.status === 'error' ? 20 : 16"/>
-            </span>
-            <span class="item-name">{{ tool.name }} #{{ (index as number)+1 }}</span>
-            <span class="item-arrow">
-              <m-svg name="chevron-right" />
-            </span>
+  <div>
+    <div class="toolcalls-block" :class="{ 'streaming': isLoading, 'expanded': expanded }">
+      <div class="toolcalls-summary no-select" @click="toggleExpand">
+        <span v-if="!isLoading" class="summary-icon">
+          <m-svg name="tools" :size="20"/>
+        </span>
+        <span v-else class="item-status status-calling">
+          <m-svg name="spinner"/>
+        </span>
+        <span class="summary-text">{{ title }}</span>
+        <span class="summary-count" v-if="toolsList.length > 0">
+          {{ toolsList.length }}个
+        </span>
+      </div>
+      
+      <div class="toolcalls-container">
+        <div class="toolcalls-inner">
+          <div class="toolcalls-list">
+            <div 
+              v-for="(tool, index) in toolsList" 
+              :key="tool.call_id"
+              class="toolcall-item"
+              @click.stop="openDetail(tool.call_id)"
+            >
+              <span class="item-status" :class="getStatusClass(tool)">
+                <m-svg :name="getStatusIcon(tool)" :size="tool.status === 'error' ? 20 : 16"/>
+              </span>
+              <span class="item-name">{{ tool.name }} #{{ (index as number)+1 }}</span>
+              <span class="item-arrow">
+                <m-svg name="chevron-right" />
+              </span>
+            </div>
           </div>
         </div>
       </div>
     </div>
-  </div>
 
-  <ToolCallDetail
-    v-model:visible="detailVisible"
-    :call-id="selectedCallId"
-  />
+    <ToolCallDetail
+      v-model:visible="detailVisible"
+      :call-id="selectedCallId"
+    />
+  </div>
 </template>
 
 <script setup lang="ts">

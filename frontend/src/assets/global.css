@@ -13,6 +13,7 @@
   --accent: #b672f5;
   --accent-gradient: linear-gradient(120deg, #5f8ff5, #8f5fff);
   --glass-bg: rgba(19, 23, 32, 0.6);
+  --glass-bg-hover: rgba(19, 23, 32, 0.9);
   --glass-border: 1px solid rgba(99, 102, 241, 0.18);
   --shadow-glow: 0 0 12px rgba(99, 102, 241, 0.12);
 }
@@ -29,6 +30,7 @@
   --text-primary: #1a1f36;
   --text-secondary: #5b6170;
   --glass-bg: rgba(255, 255, 255, 0.7);
+  --glass-bg-hover: rgba(255, 255, 255, 0.9);
   --glass-border: 1px solid rgba(99, 102, 241, 0.2);
   --shadow-glow: 0 0 10px rgba(99, 102, 241, 0.08);
 }
@@ -358,6 +360,7 @@ tr:last-child td:last-child {
   }
 
   .message-list {
+    margin-top: 40px!important;
     padding-bottom: 160px!important;
   }
 

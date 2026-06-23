@@ -18,7 +18,10 @@ export function processMessageContent(text: string, isStreaming = false): string
     /<!--reasoning:start-->([\s\S]*?)<!--reasoning:end:(.*?)-->/g,
     (_, content, time) => {
       content = content.replace(/```mermaid(\s|$)/g, '```text$1')
-      const safeContent = content.replace(/<\/reasoning>/g, '\u003c/reasoning>')
+      let safeContent = content.replace(/<\/reasoning>/g, '\u003c/reasoning>')
+       if (safeContent.trimEnd().endsWith('```')) {
+        safeContent = safeContent.trimEnd() + '\n'
+      }
       return `\n\n<reasoning time="${time}">${safeContent}</reasoning>\n\n`
     }
   )

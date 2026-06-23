@@ -17,7 +17,7 @@
         <!-- 状态 -->
         <div class="detail-section">
           <div class="section-label">执行状态</div>
-          <n-tag :type="statusType">
+          <n-tag :type="statusType" :bordered="false">
             {{ statusText }}
           </n-tag>
           <span v-if="data.execution_time" class="exec-time">
@@ -209,7 +209,7 @@ function handleCopy(content: string) {
   border: 1px solid var(--border-color);
   border-radius: 6px;
   padding: 12px;
-  max-height: 400px;
+  max-height: 280px;
   overflow: auto;
   font-family: 'Courier New', monospace;
   font-size: 13px;
