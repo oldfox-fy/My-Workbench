@@ -7,204 +7,120 @@ import type { UploadedFile } from '@/composables/useFileUpload'
 export const localIP = ref('')
 export const uploadDir = ref('')
 
-function escapeMarkdownSensitive(str: string): string {
-  // 对 *、_、`、~ 等可能导致解析器回溯的符号进行转义
-  return str
-    .replace(/\*/g, '\\*')
-    .replace(/_/g, '\\_')
-    .replace(/`/g, '\\`')
-    .replace(/~/g, '\\~')
-}
-
 
 /** 解析思考块和工具调用，输出 markstream-vue 自定义标签格式 */
+/** 解析工具预览标记，输出 <toolpreview> 自定义标签 */
 export function processMessageContent(text: string, isStreaming = false): string {
   if (!text) return ''
-
   let processedText = text
-
-  // 1. 处理完整的思考块 → 转换为 <reasoning> 自定义标签
+  // 1. 处理思考块
   processedText = processedText.replace(
     /<!--reasoning:start-->([\s\S]*?)<!--reasoning:end:(.*?)-->/g,
     (_, content, time) => {
-      // 将 mermaid 代码块转为 text 避免内部渲染问题
       content = content.replace(/```mermaid(\s|$)/g, '```text$1')
-      // 转义内容中的 </reasoning> 避免提前闭合
-      const safeContent = content.replace(/<\/reasoning>/g, '\u003c/reasoning>')
+      let safeContent = content.replace(/<\/reasoning>/g, '\u003c/reasoning>')
+       if (safeContent.trimEnd().endsWith('```')) {
+        safeContent = safeContent.trimEnd() + '\n'
+      }
       return `\n\n<reasoning time="${time}">${safeContent}</reasoning>\n\n`
     }
   )
-
-  // 2. 处理流式未闭合的思考块
   if (isStreaming) {
     const startIdx = processedText.indexOf('<!--reasoning:start-->')
-    if (startIdx !== -1 && !processedText.includes('<!--reasoning:end:-->')) {
+    if (startIdx !== -1 && !processedText.includes('<!--reasoning:end:')) {
       let afterStart = processedText.substring(startIdx + '<!--reasoning:start-->'.length)
       afterStart = afterStart.replace(/```mermaid(\s|$)/g, '```text$1')
-      // 转义闭合标签
       const safeContent = afterStart.replace(/<\/reasoning>/g, '\u003c/reasoning>')
-      // 移除原始标记，替换为未闭合的自定义标签（markstream-vue 会自动处理 loading 状态）
       processedText = processedText.substring(0, startIdx) + `\n\n<reasoning loading="true">${safeContent}`
     }
   }
-
-  // 如果已经出现最终的工具调用块，则清除所有工具预览标记
-  const hasToolCallsStart = processedText.includes('<!--tool_calls:start-->')
-  const hasToolCallsEnd   = processedText.includes('<!--tool_calls:end-->')
-  const shouldClearPreview = hasToolCallsStart && (!isStreaming || hasToolCallsEnd)
-
-  if (shouldClearPreview) {
-      // 删除闭合的预览段
-      processedText = processedText.replace(/<!--tool_preview:start:\S+?:.*?-->[\s\S]*?<!--tool_preview:end:\S+?:.*?-->/g, '')
-      // 删除未闭合的预览段
-      processedText = processedText.replace(/<!--tool_preview:start:\S+?:.*?-->[\s\S]*$/g, '')
-      // 清理残留 end
-      processedText = processedText.replace(/<!--tool_preview:end:\S+?:.*?-->/g, '')
-  }
-
-  // 3. 处理工具预览 → 转换为 <toolpreview> 自定义标签（注意：标签名不能包含下划线）
-  if (!processedText.includes('<!--tool_calls:start-->')) {
-    const startRegex = /<!--tool_preview:start:(\S+?):(.*?)-->/g
-    const endRegex = /<!--tool_preview:end:(\S+?):.*?-->/g
-
-    let firstStart = -1
-    let lastEnd = -1
-    let startMatch
-
-    // 找到第一个 start
-    startRegex.lastIndex = 0
-    if ((startMatch = startRegex.exec(processedText)) !== null) {
-      firstStart = startMatch.index
-    }
-
-    // 找到最后一个 end
-    let endMatch
-    endRegex.lastIndex = 0
-    while ((endMatch = endRegex.exec(processedText)) !== null) {
-      lastEnd = endMatch.index + endMatch[0].length
-    }
-
-    if (firstStart !== -1) {
-      const previewRegionEnd = lastEnd !== -1 ? lastEnd : processedText.length
-      const previewRegion = processedText.substring(firstStart, previewRegionEnd)
-
-      // 重新扫描区域内所有 start / end，按 idx 分组
-      const idxSet = new Set<string>()
-      const startPositions: Array<{ idx: string; name: string; pos: number }> = []
-      const endPositions: Array<{ idx: string; pos: number }> = []
-
-      startRegex.lastIndex = 0
-      let sMatch
-      while ((sMatch = startRegex.exec(previewRegion)) !== null) {
-        startPositions.push({
-          idx: sMatch[1],
-          name: sMatch[2],
-          pos: sMatch.index + sMatch[0].length
-        })
-        idxSet.add(sMatch[1])
+  // 2. 处理工具调用容器
+  let match
+  let lastIndex = 0
+  let toolCallsResult = ''
+  const toolCallsRegex = /<!--tool_calls:start-->([\s\S]*?)(?:<!--tool_calls:end-->|$)/g
+  while ((match = toolCallsRegex.exec(processedText)) !== null) {
+    const fullMatch = match[0]
+    const innerContent = match[1]
+    // 判断当前是否已经收到 tool_calls:end 标记
+    const hasEnd = fullMatch.includes('<!--tool_calls:end-->')
+    // 1. 解析内部的所有 tool_preview:start (获取 call_id 和 name)
+    const startRegex = /<!--tool_preview:start:([^:]+):([\s\S]*?)-->/g
+    let sMatch
+    const toolsMap = new Map<string, { call_id: string; name: string; streaming: boolean; status: string }>()
+    while ((sMatch = startRegex.exec(innerContent)) !== null) {
+      const call_id = sMatch[1]
+      let name = sMatch[2]
+      if (!name) {
+        name = '工具'
+      } else if (name.startsWith('end:')) {
+        name = name.replace(/^end:/, '')
       }
-      endRegex.lastIndex = 0
-      let eMatch
-      while ((eMatch = endRegex.exec(previewRegion)) !== null) {
-        endPositions.push({ idx: eMatch[1], pos: eMatch.index })
+      if (!toolsMap.has(call_id)) {
+        toolsMap.set(call_id, { call_id, name, streaming: true, status: 'calling' })
       }
-
-      // 提取每个工具的参数文本
-      const tools: Array<{ name: string; args: string; streaming: boolean }> = []
-      for (const idx of idxSet) {
-        const sItem = startPositions.find(s => s.idx === idx)
-        const eItem = endPositions.find(e => e.idx === idx)
-        const name = sItem?.name || ''
-        const startIdx = sItem?.pos ?? 0
-        const endIdx = eItem?.pos ?? previewRegion.length
-        const argsRaw = previewRegion.substring(startIdx, endIdx).trim()
-        tools.push({ name, args: argsRaw, streaming: !eItem })
-      }
-
-      // 生成工具预览数据
-      const previewData = tools.map(t => {
-        let formattedArgs = t.args
-        try {
-          const parsed = JSON.parse(formattedArgs)
-          formattedArgs = JSON.stringify(parsed, null, 2)
-        } catch {}
-        return {
-          name: t.name,
-          arguments: formattedArgs,
-          streaming: t.streaming
-        }
-      })
-
-      const toolCount = tools.length
-      const isLoading = tools.some(t => t.streaming)
-
-      const tagContent = JSON.stringify({
-        tools: previewData,
-        count: toolCount,
-        loading: isLoading
-      })
-
-      // 注意：标签名使用 toolpreview（不带下划线）
-      const key = `\n\n<toolpreview>${tagContent}</toolpreview>\n\n`
-      processedText = processedText.substring(0, firstStart) + key + processedText.substring(previewRegionEnd)
     }
-  }
-
-  // 4. 处理工具调用块 → 转换为 <toolcalls> 自定义标签（注意：标签名不能包含下划线）
-  processedText = processedText.replace(
-    /<!--tool_calls:start-->([\s\S]*?)<!--tool_calls:end-->/g,
-    (_, inner) => {
-      const tools: Array<{ name: string; arguments: any; result?: any }> = []
-
-      // 用一个正则同时匹配 tool_call 和 tool_result，按出现顺序处理
-      const tokenRegex = /<!--tool_call:([\s\S]*?)-->|<!--tool_result:(.*?)-->/g
-      let match
-      let currentTool: any = null
-
-      while ((match = tokenRegex.exec(inner)) !== null) {
-        if (match[1] !== undefined) {
-          // 匹配到 tool_call
-          const b64Str = match[1].trim()
-          try {
-            const decodedJson = decodeURIComponent(escape(window.atob(b64Str)))
-            const tool = JSON.parse(decodedJson)
-            currentTool = {
-              name: tool.name || '未知工具',
-              arguments: typeof tool.arguments === 'string' ? escapeMarkdownSensitive(tool.arguments) : tool.arguments,
-              result: undefined
-            }
-            tools.push(currentTool)
-          } catch {
-            currentTool = {
-              name: '工具参数解析失败',
-              arguments: b64Str,
-              result: undefined
-            }
-            tools.push(currentTool)
-          }
-        } else if (match[2] !== undefined) {
-          // 匹配到 tool_result
-          const jsonStr = match[2].trim()
-          try {
-            const res = JSON.parse(jsonStr)
-            if (currentTool) {
-              currentTool.result = res.result
-            }
-          } catch {
-            if (currentTool) {
-              currentTool.result = jsonStr
-            }
-          }
+    // 无论是否收到 tool_calls:end，都解析 tool_preview:end
+    // 因为在流式传输中，单个工具可能已经执行完毕（已收到 tool_preview:end），
+    // 但整个 tool_calls 块的 end 标记可能还没到
+    const endRegex = /<!--tool_preview:end:([^:]+?)-->/g
+    let eMatch
+    while ((eMatch = endRegex.exec(innerContent)) !== null) {
+      const call_id = eMatch[1]
+      if (toolsMap.has(call_id)) {
+        const tool = toolsMap.get(call_id)!
+        tool.streaming = false
+        // 如果 status 仍为 'calling'，说明后端没发 error，默认标记为 success
+        if (tool.status === 'calling') {
+          tool.status = 'success'
         }
       }
-
-      // 注意：标签名使用 toolcalls（不带下划线）
-      const tagContent = JSON.stringify(tools)
-      return `\n\n<toolcalls>${tagContent}</toolcalls>\n\n`
     }
-  )
-
-  // 5. 处理 Token 用量 → 转换为 <tokenusage> 自定义标签（注意：标签名不能包含下划线）
+    // 解析 tool_status 标记（更新工具状态）
+    const statusRegex = /<!--tool_status:([^:]+?):([^:]+?)-->/g
+    let statusMatch
+    while ((statusMatch = statusRegex.exec(innerContent)) !== null) {
+      const call_id = statusMatch[1]
+      const status = statusMatch[2] // 'success' 或 'error'
+      if (toolsMap.has(call_id)) {
+        toolsMap.get(call_id)!.status = status
+        // 收到 status 标记说明工具已执行完毕，同步更新 streaming
+        if (status === 'success' || status === 'error') {
+          toolsMap.get(call_id)!.streaming = false
+        }
+      }
+    }
+    // 如果 hasEnd 为 true，将所有仍处于 streaming 状态的工具强制设为已完成
+    if (hasEnd) {
+      toolsMap.forEach((tool) => {
+        if (tool.streaming) {
+          tool.streaming = false
+          if (tool.status === 'calling') {
+            tool.status = 'success'
+          }
+        }
+      })
+    }
+    const toolsData = Array.from(toolsMap.values())
+    const loading = toolsData.some(t => t.streaming)
+    const tagContent = JSON.stringify({
+      tools: toolsData,
+      count: toolsData.length,
+      loading: loading
+    })
+    const replacement = `\n\n<toolcalls>${tagContent}</toolcalls>\n\n`
+    toolCallsResult += processedText.substring(lastIndex, match.index) + replacement
+    lastIndex = match.index + fullMatch.length
+  }
+  // 拼接剩余未匹配的文本
+  if (lastIndex < processedText.length) {
+    toolCallsResult += processedText.substring(lastIndex)
+  }
+  processedText = toolCallsResult
+  // 保底清理：清理可能残留在外面的 tool_preview 和 tool_call 标记
+  processedText = processedText.replace(/<!--tool_preview:(start|end):[^>]+-->/g, '')
+  processedText = processedText.replace(/<!--tool_call:[^>]+-->/g, '')
+  // 3. 处理 Token 用量
   processedText = processedText.replace(
     /<!--token_usage:(.*?)-->/g,
     (_, jsonStr) => {

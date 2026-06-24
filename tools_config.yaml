@@ -1,110 +1,151 @@
 tools:
   - name: system_get_weather
-    description: 获取指定城市的当前天气
+    description: 获取指定城市的当前或未来天气信息。
     parameters:
       type: object
       properties:
         location:
           type: string
-          description: 城市名称，例如：北京
+          description: 城市名称，例如：北京、上海
         days:
           type: integer
-          description: 查询天数，0：当前时刻的天气，1：今天一整天的天气，2：两天的天气
+          description: 查询天数范围。0表示当前时刻天气，1表示今日全天天气，2表示包含今日的两天天气。
       required: ["location", "days"]
     module: backend.system_tools.weather
     function_name: get_weather
 
   - name: system_read_file
-    description: 读取指定文件内容
+    description: >
+      读取指定路径的文件内容。自动根据文件扩展名选择最佳解析策略，并返回包含内容、格式和元数据的字典。
+      支持的文件类型：
+      1. 纯文本/代码：.txt, .py, .js, .json, .yaml, .md 等（自动探测编码，如 UTF-8/GBK）。
+      2. 表格数据：.csv, .tsv, .xlsx, .xls（转换为 Markdown 表格，Excel 支持多 Sheet 读取）。
+      3. 文档文件：.pdf, .docx, .pptx, .doc, .ppt（提取文本并转换为 Markdown，对大文件有截断保护）。
+      4. 图片文件：.png, .jpg, .jpeg 等（默认返回图片路径描述，可配置返回 base64 数据）。
+      5. 其他：作为二进制文件返回基础元信息。
     parameters:
       type: object
       properties:
         path:
           type: string
-          description: 文件路径
+          description: 目标文件路径（支持相对路径或绝对路径）。
         sheet_name:
+          description: 仅对 Excel 文件有效，指定要读取的 sheet 名称或索引（从 0 开始）。非 Excel 文件请勿提供此参数。
+          oneOf:
+            - type: string
+            - type: integer
+        encoding:
           type: string
-          description: Excel 文件指定 sheet 名或索引(仅对 Excel 有效), 如果不是Excel文件就不用传 sheet_name
+          description: 手动指定文件编码（如 'gbk', 'utf-8'）。如果不指定，系统将自动探测编码。
+        return_image_base64:
+          type: boolean
+          description: 仅对图片有效。若为 true，返回图片的 base64 编码数据；若为 false（默认），返回图片的绝对路径信息。
       required: ["path"]
     module: backend.system_tools.reader
     function_name: file_read
 
   - name: system_write_file
-    description: 将文本内容写入指定路径的文件（全量覆盖或追加）
+    description: 将文本内容写入指定路径的文件。支持全量覆盖或追加模式。若文件所在目录不存在会自动递归创建。
     parameters:
       type: object
       properties:
         path:
           type: string
-          description: 文件路径
+          description: 目标文件路径（支持相对路径或绝对路径）。
         content:
           type: string
-          description: 文件内容
+          description: 要写入文件的完整文本内容。
         overwrite:
           type: boolean
-          description: 是否覆盖原文件内容，默认为 true（追加）
+          description: 写入模式。true表示全量覆盖原文件（默认），false表示在原文件末尾追加内容。
+        encoding:
+          type: string
+          description: 文件编码格式，默认为 "UTF-8"。
       required: ["path", "content"]
     module: backend.system_tools.writer
     function_name: file_write
 
   - name: system_patch_file
-    description: 基于 Search-and-Replace 块对指定文件进行局部精准修改（补丁模式）
+    description: >
+      基于 Search-and-Replace（查找与替换）逻辑，对指定文件进行局部的精准修改、插入或删除。
+      专为 AI 编程场景设计，通过严格的唯一性校验防止代码被错误覆盖。
+      
+      操作指南：
+      1. 修改代码：在 search 填入旧代码，replace 填入新代码。
+      2. 插入代码：将 search 作为“锚点”上下文，在 replace 中填入“原代码 + 新代码”（追加）或“新代码 + 原代码”（前置）。
+      3. 删除代码：在 search 填入要删除的代码，replace 填入空字符串。
     parameters:
       type: object
       properties:
         path:
           type: string
-          description: 目标文件路径（相对或绝对路径）
+          description: 目标文件路径（相对或绝对路径）。
         search:
           type: string
-          description: 需要被替换的旧代码块（必须在文件中唯一存在）
+          description: 作为定位锚点的原有代码块。必须在文件中严格匹配且唯一存在，注意空格、缩进和换行符需与原文件完全一致。
         replace:
           type: string
-          description: 准备替换进去的新代码块
+          description: 准备替换进去的新代码块。若为删除操作，请填入空字符串。
         replace_all:
           type: boolean
-          description: 是否允许批量替换多处匹配项。默认为 False。
+          description: 是否允许批量替换多处匹配项。默认为 false（仅允许唯一匹配）。
+        dry_run:
+          type: boolean
+          description: 试探模式。若为 true，仅校验 search 是否能唯一匹配，不实际修改文件。适用于不确定匹配是否准确时的前置检查。默认为 false。
         encoding:
           type: string
-          description: 文件编码，默认为 UTF-8
-      required: ["path", "search", "replace", "replace_all"]
+          description: 文件编码，默认为 UTF-8。
+      required: ["path", "search", "replace"]
     module: backend.system_tools.writer
     function_name: file_patch
 
   - name: system_create_project_tree
-    description: 根据目录树文本创建项目目录和文件，支持 tree 命令输出、Markdown 代码块中的树形结构以及简单缩进格式
+    description: 根据目录树文本批量创建项目目录和文件。支持 tree 命令输出格式（├── └── │）、Markdown 代码块树形结构以及简单缩进格式。常用于项目初始化。
     parameters:
       type: object
       properties:
         tree:
           type: string
-          description: 目录结构文本，可包含 tree 符号（├── └── │）或简单缩进
+          description: 目录结构的纯文本表示，可包含 tree 符号或使用空格缩进。
         path:
           type: string
-          description: 项目创建的根路径（相对或绝对路径）
+          description: 项目创建的根路径（相对或绝对路径）。
       required: ["tree", "path"]
     module: backend.system_tools.project_creator
     function_name: create_project_tree
 
   - name: system_read_file_list
-    description: 递归列出目录下的所有文件，自动应用 .gitignore 规则，支持隐藏文件显示和自定义排除模式
+    description: >
+      递归列出指定目录下的所有文件，自动应用 .gitignore 忽略规则。
+      专为 AI 调用优化：默认仅返回紧凑的相对路径以极致节省 Token，并对返回总数进行安全截断。
+      适用于了解项目结构或查找特定文件。
+      注意：如果提示结果被截断（达到数量上限），请通过提供更具体的 path 或使用 exclude_patterns 排除无关目录（如 node_modules、dist 等）来缩小范围。
     parameters:
       type: object
       properties:
         path:
           type: string
-          description: 要列出的目录路径
+          description: 要列出的目录路径（支持相对或绝对路径）。
         show_hidden:
           type: boolean
-          description: 是否显示以点开头的隐藏文件，默认 false
+          description: 是否显示以点（.）开头的隐藏文件。默认为 false。
         exclude_patterns:
           type: array
           items:
             type: string
-          description: 额外的排除模式列表（通配符），例如 ["*.log", "temp/"]，可选
+          description: 额外的排除模式列表（支持通配符），例如 ["*.log", "temp/", ".env"]。当目录庞大导致结果被截断时，强烈建议使用此参数排除无关目录。
         follow_symlinks:
           type: boolean
-          description: 是否跟随目录类型的符号链接，默认 false
+          description: 是否跟随目录类型的符号链接进行递归遍历。默认为 false。
+        max_files:
+          type: integer
+          description: 返回的最大文件数量，防止上下文溢出。默认为 500，超出将被截断并提示。如需更多结果请缩小搜索路径。
+        max_depth:
+          type: integer
+          description: 递归的最大深度，防止无限循环。默认为 10。
+        detailed:
+          type: boolean
+          description: 是否返回文件大小和修改时间。默认为 false（仅返回相对路径以节省 Token）；若为 true，返回格式为 "相对路径 | 大小 | 修改时间"。
       required: ["path"]
     module: backend.system_tools.file_lister
     function_name: read_file_list

@@ -25,7 +25,7 @@
     </div>
 
     <!-- 重新生成提示 -->
-    <div v-if="showRegenerateHint" class="compose-input-container">
+    <div v-if="showRegenerateHint && !isSendMsg" class="compose-input-container">
       <div style="width:100%;text-align:center;position:absolute;top:-30px;">
         <n-button text @click="$emit('regenerateCurrent')">
           <template #icon><n-icon size="22"><m-svg name="wave" /></n-icon></template>
@@ -141,9 +141,14 @@ function handleUploadChange(options: { file: UploadFileInfo; fileList: UploadFil
   emit('uploadChange', options)
 }
 
+const isSendMsg = ref(false)
 function handleSend() {
   if (props.disabled) return
+  isSendMsg.value = true
   emit('send')
+  setTimeout(() => {
+    isSendMsg.value = false
+  }, 1000)
 }
 
 // 粘贴处理
@@ -214,6 +219,10 @@ function triggerJelly() {
   /* 根据你的主题调整背景色 */
   background-color: var(--glass-bg); 
   z-index: 1;
+}
+
+.scroll-to-bottom-btn:hover {
+  background-color: var(--glass-bg-hover); 
 }
 
 .compose-thinking {

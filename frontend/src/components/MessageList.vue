@@ -10,6 +10,14 @@
     </div>
 
     <div v-else class="message-main">
+      <!-- 使用抽离出来的目录组件 -->
+      <MessageToc
+        :messages="messages"
+        :is-mobile="isMobile"
+        :is-dark="isDark"
+        @scroll-to="scrollToMessage"
+      />
+
       <div ref="scrollContainerRef" class="message-scroller" @scroll="onScroll">
         <div class="message-list" :style="{ width: isMobile ? '90%' : '80%', maxWidth: '1000px', margin: '0 auto' }">
           <div
@@ -19,8 +27,9 @@
             <!-- 正常消息 -->
             <template v-if="!msg.__streaming">
               <div v-if="msg === regeneratingMsg" style="height: 1px; overflow: hidden"></div>
-              <div v-else :class="['message-row', msg.role]">
-                <div class="bubble" :class="{ 'has-file': normalizeFileRef(msg.file_ref).length }">
+              <!-- 给 user 消息加上 id 锚点 -->
+              <div v-else :id="msg.role === 'user' ? 'msg-anchor-' + msg.id : undefined" :class="['message-row', msg.role]">
+                <div v-if="msg.file_ref" :class="{ 'has-file': normalizeFileRef(msg.file_ref).length }">
                   <!-- 文件附件 -->
                   <div v-if="normalizeFileRef(msg.file_ref).length" class="message-files">
                     <div
@@ -35,7 +44,8 @@
                       </div>
                     </div>
                   </div>
-
+                </div>
+                <div class="bubble">
                   <!-- 用户消息纯文本 -->
                   <template v-if="msg.role === 'user'">
                     <div class="message-content user-content" v-text="msg.content.trim()"></div>
@@ -143,12 +153,13 @@ import svgLoading from '@/components-svg/svgLoading.vue'
 import mSvg from '@/components/MSvg.vue'
 import ReasoningNode from '@/components/CustomNodes/ReasoningNode.vue'
 import ToolCallsNode from '@/components/CustomNodes/ToolCallsNode.vue'
-import ToolPreviewNode from '@/components/CustomNodes/ToolPreviewNode.vue'
 import TokenUsageNode from '@/components/CustomNodes/TokenUsageNode.vue'
 import ImageNode from '@/components/CustomNodes/ImageNode.vue'
 import LinkNode from '@/components/CustomNodes/LinkNode.vue'
+// 引入目录组件 (请根据实际路径调整)
+import MessageToc from '@/components/MessageToc.vue'
 
-const customHtmlTags = ['reasoning', 'toolcalls', 'toolpreview', 'tokenusage']
+const customHtmlTags = ['reasoning', 'toolcalls', 'tokenusage']
 
 const props = defineProps({
   chatId: { type: String, default: 'nochat' },
@@ -262,11 +273,49 @@ function scrollToLatestSmooth(duration: number = 400) {
   scrollAnimationId = requestAnimationFrame(animate)
 }
 
-// function safeProcessContent(raw: string, isStreaming: boolean): string {
-//   // 移除非法的连续强调符号（超过 10 个连续的 * 或 _）
-//   const sanitized = raw.replace(/([*_]){10,}/g, (match, char) => char.repeat(3))
-//   return processMessageContent(sanitized, isStreaming)
-// }
+// 接收子组件触发的滚动事件，平滑滚动到指定消息
+function scrollToMessage(msgId: number | string) {
+  const el = document.getElementById(`msg-anchor-${msgId}`)
+  const container: any = scrollContainerRef.value
+  if (!el || !container) return
+
+  // 取消正在进行的滚动动画
+  if (scrollAnimationId !== null) {
+    cancelAnimationFrame(scrollAnimationId)
+    scrollAnimationId = null
+  }
+
+  // 计算相对于滚动容器的偏移量
+  const containerRect = container.getBoundingClientRect()
+  const elRect = el.getBoundingClientRect()
+  const offsetTop = elRect.top - containerRect.top + container.scrollTop - 20 // 减去 20px 留点顶部边距
+
+  const start = container.scrollTop
+  const distance = offsetTop - start
+
+  if (Math.abs(distance) < 5) {
+    container.scrollTop = offsetTop
+    return
+  }
+
+  const dynamicDuration = Math.min(800, Math.max(300, Math.abs(distance) * 0.5))
+  const startTime = performance.now()
+
+  function animate(currentTime: number) {
+    const elapsed = currentTime - startTime
+    const progress = Math.min(elapsed / dynamicDuration, 1)
+    const eased = easeOutCubic(progress)
+
+    container.scrollTop = start + distance * eased
+
+    if (progress < 1) {
+      scrollAnimationId = requestAnimationFrame(animate)
+    } else {
+      scrollAnimationId = null
+    }
+  }
+  scrollAnimationId = requestAnimationFrame(animate)
+}
 
 // 生成 item key
 function getItemKey(msg: any, index: number|string): string {
@@ -300,22 +349,32 @@ watch(() => props.streamingContent, async () => {
   }
 })
 
+let resizeObserver: ResizeObserver | null = null
+
 onMounted(() => {
   setInfographicLoader(() => import('@antv/infographic'))
   setCustomComponents('chat', {
     reasoning: ReasoningNode,
     toolcalls: ToolCallsNode,
-    toolpreview: ToolPreviewNode,
     tokenusage: TokenUsageNode,
     image: ImageNode,
     link: LinkNode
   })
   // 初始化时滚动到底部
   nextTick(() => scrollToLatest())
+
+  if (scrollContainerRef.value) {
+    resizeObserver = new ResizeObserver(() => {
+      // 尺寸变化时，重新计算是否在底部
+      showScrollBtn.value = !isAtEnd()
+    })
+    resizeObserver.observe(scrollContainerRef.value)
+  }
 })
 
 onUnmounted(() => {
   removeCustomComponents('chat')
+  resizeObserver?.disconnect()
 })
 </script>
 
@@ -370,7 +429,9 @@ onUnmounted(() => {
   display: flex;
 }
 .message-row.user {
-  justify-content: flex-end;
+  flex-direction: column;
+  align-items: flex-end;
+  margin-top: 10px;
 }
 .message-row.assistant {
   justify-content: flex-start;
@@ -378,8 +439,7 @@ onUnmounted(() => {
 }
 
 .bubble {
-  padding: 6px;
-  border-radius: 12px;
+  border-radius: 8px;
   backdrop-filter: blur(6px);
   word-break: break-word;
   position: relative;
@@ -394,12 +454,12 @@ onUnmounted(() => {
   background: var(--accent-gradient);
   color: white;
   border: none;
-  margin-top: 30px;
+  margin-top: 10px;
   margin-bottom: 40px;
 }
 .user-content {
   max-height: 200px;
-  padding: 6px;
+  padding: 12px;
   overflow-y: auto;
   white-space: pre-wrap;
 }
@@ -408,6 +468,7 @@ onUnmounted(() => {
 
 .streaming {
   border: 1px solid var(--accent);
+  padding: 12px;
   animation: breathe .8s ease-in-out infinite;
 }
 
@@ -449,16 +510,17 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 6px;
-  background: rgba(0,0,0,0.1);
+  padding: 8px 12px;
+  background: rgba(0, 0, 0, 0.2);
   color: white;
   border-radius: 6px;
   font-size: 0.9rem;
+  cursor: pointer;
 }
 .msg-file-other a {
   color: white;
 }
 .msg-file-other:hover {
-  background: rgba(0,0,0,0.2);
+  background: rgba(0,0,0,0.1);
 }
 </style>

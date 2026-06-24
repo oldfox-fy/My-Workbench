@@ -41,6 +41,7 @@ class ChatRequest(BaseModel):
     enable_tools: bool = False
     llm_config: Optional[ModelConfig] = None
     profile_id: Optional[int] = None
+    message_id: Optional[int] = None
 
 
 async def get_mcp_manager(request: Request):
@@ -155,7 +156,8 @@ async def chat(
                 tools=tools,
                 request=fastapi_request,
                 mcp_manager=mcp_manager,
-                params=params
+                params=params,
+                message_id=request.message_id
             ),
             media_type="text/event-stream"
         )

@@ -12,11 +12,11 @@
     "@tanstack/vue-virtual": "^3.13.28",
     "@vicons/ionicons5": "^0.13.0",
     "katex": "^0.17.0",
-    "markstream-vue": "^1.0.3-beta.0",
+    "markstream-vue": "^1.0.4-beta.0",
     "mermaid": "^11.14.0",
     "naive-ui": "^2.44.1",
     "pinia": "^3.0.4",
-    "stream-monaco": "^0.0.42",
+    "stream-monaco": "^0.0.45",
     "vue": "^3.5.35",
     "vue-router": "^5.1.0"
   },

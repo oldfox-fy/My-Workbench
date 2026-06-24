@@ -197,9 +197,47 @@
     <SettingsDrawer v-model:show="showSettings" />
 
     <!-- 编辑消息模态框 -->
-    <n-modal v-model:show="showEditModal" preset="dialog" draggable :mask-closable="false" title="编辑消息" positive-text="保存" negative-text="取消"
-      @positive-click="onSaveEdit">
-      <n-input v-model:value="editContent" type="textarea" :autosize="{ minRows: 2, maxRows: 10 }" placeholder="请输入内容"/>
+    <n-modal
+      v-model:show="showEditModal"
+      preset="dialog"
+      :draggable="!isFullscreen"
+      :mask-closable="false"
+      :close-on-esc="false"
+      title="编辑消息"
+      positive-text="保存"
+      negative-text="取消"
+      :class="{ 'edit-modal-fullscreen': isFullscreen }"
+      :style="isFullscreen
+        ? { width: '100vw', maxWidth: '100vw', height: '100vh', maxHeight: '100vh', margin: 0, borderRadius: 0 }
+        : { width: '600px' }"
+      @positive-click="onSaveEdit"
+      @after-leave="onEditModalClose"
+    >
+      <template #header>
+        <div class="edit-modal-title">
+          <span>编辑消息</span>
+          <n-popover trigger="hover" placement="bottom">
+            <template #trigger>
+              <n-button quaternary size="tiny" @click="toggleFullscreen" class="fullscreen-btn">
+                <template #icon>
+                  <n-icon :size="20">
+                    <m-svg :name="isFullscreen ? 'fullscreen-exit' : 'fullscreen'" />
+                  </n-icon>
+                </template>
+              </n-button>
+            </template>
+            {{ isFullscreen ? '退出全屏 (Esc)' : '全屏编辑' }}
+          </n-popover>
+        </div>
+      </template>
+
+      <n-input
+        v-model:value="editContent"
+        type="textarea"
+        :autosize="isFullscreen ? false : { minRows: 12, maxRows: 12 }"
+        :style="isFullscreen ? 'height: calc(100vh - 180px);' : ''"
+        placeholder="请输入内容"
+      />
     </n-modal>
   </div>
 </template>
@@ -216,7 +254,7 @@ import { useProfileStore } from '@/stores/profiles'
 import SettingsDrawer from '@/components/SettingsDrawer.vue'
 import Introduction from '@/components/Introduction.vue'
 import mSvg from '@/components/MSvg.vue'
-// import VirtualMessageList from '@/components/VirtualMessageList.vue'
+// import MessageList from '@/components/VirtualMessageList.vue'
 import MessageList from '@/components/MessageList.vue'
 import ChatInput from '@/components/ChatInput.vue'
 
@@ -261,6 +299,30 @@ const { showEditModal, editContent, copySvgName, copyContent,
 const messageListRef = ref<InstanceType<typeof MessageList> | null>(null)
 
 const currentMessages = computed(() => chatStore.currentChatMessages)
+
+const isFullscreen = ref(false)
+
+const toggleFullscreen = () => {
+  isFullscreen.value = !isFullscreen.value
+}
+
+// 关闭弹窗时重置全屏状态
+const onEditModalClose = () => {
+  isFullscreen.value = false
+}
+
+// ESC 退出全屏（不关闭弹窗）
+const onKeydown = (e: KeyboardEvent) => {
+  if (e.key === 'Escape' && isFullscreen.value && showEditModal.value) {
+    // 输入框聚焦时不触发，避免和取消操作冲突
+    const active = document.activeElement
+    if (active && active.tagName === 'TEXTAREA') {
+      (active as HTMLTextAreaElement).blur()
+      return
+    }
+    isFullscreen.value = false
+  }
+}
 
 // 粘贴文件处理：由 ChatInput 发出 paste 事件，此处处理
 function handlePasteFiles(files: File[]) {
@@ -333,6 +395,7 @@ onMounted(async () => {
       checkMobile()
     }, 150)
   })
+  window.addEventListener('keydown', onKeydown)
   await profileStore.loadProfiles()
   fetch('/api/system-info').then(async (res) => {
     const data = await res.json()
@@ -347,6 +410,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   window.removeEventListener('resize', checkMobile)
+  window.removeEventListener('keydown', onKeydown)
 })
 
 const showWelcome = ref(false)
@@ -628,5 +692,51 @@ watch(() => selected.value, (newVal) => {
 /* 列表激活样式 */
 .n-list-item.active {
   background: rgba(74, 124, 247, 0.1) !important;
+}
+
+.edit-modal-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding-right: 8px;
+}
+.edit-modal-title .fullscreen-btn {
+  margin-left: 12px;
+  color: var(--text-secondary);
+  transition: color 0.2s, background 0.2s;
+}
+.edit-modal-title .fullscreen-btn:hover {
+  color: var(--accent);
+  background: rgba(74, 124, 247, 0.12);
+}
+
+/* 全屏状态下，针对 naive-ui 内部结构强制覆盖 */
+:deep(.edit-modal-fullscreen) {
+  width: 100vw !important;
+  max-width: 100vw !important;
+  height: 100vh !important;
+  max-height: 100vh !important;
+  margin: 0 !important;
+  top: 0 !important;
+  border-radius: 0 !important;
+}
+:deep(.edit-modal-fullscreen .n-modal-dialog) {
+  width: 100vw !important;
+  max-width: 100vw !important;
+  height: 100vh !important;
+  max-height: 100vh !important;
+  margin: 0 !important;
+  border-radius: 0 !important;
+}
+:deep(.edit-modal-fullscreen .n-modal__content) {
+  height: calc(100vh - 130px);
+}
+:deep(.edit-modal-fullscreen .n-input) {
+  height: 100%;
+}
+:deep(.edit-modal-fullscreen .n-input .n-input__textarea-el) {
+  min-height: 100% !important;
+  height: 100% !important;
 }
 </style>
