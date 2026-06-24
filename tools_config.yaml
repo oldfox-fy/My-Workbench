@@ -66,14 +66,7 @@ tools:
     function_name: file_write
 
   - name: system_patch_file
-    description: >
-      基于 Search-and-Replace（查找与替换）逻辑，对指定文件进行局部的精准修改、插入或删除。
-      专为 AI 编程场景设计，通过严格的唯一性校验防止代码被错误覆盖。
-      
-      操作指南：
-      1. 修改代码：在 search 填入旧代码，replace 填入新代码。
-      2. 插入代码：将 search 作为“锚点”上下文，在 replace 中填入“原代码 + 新代码”（追加）或“新代码 + 原代码”（前置）。
-      3. 删除代码：在 search 填入要删除的代码，replace 填入空字符串。
+    description: 对指定文件进行局部的精准修改、插入或删除。
     parameters:
       type: object
       properties:
@@ -82,10 +75,10 @@ tools:
           description: 目标文件路径（相对或绝对路径）。
         search:
           type: string
-          description: 作为定位锚点的原有代码块。必须在文件中严格匹配且唯一存在，注意空格、缩进和换行符需与原文件完全一致。
+          description: 作为定位锚点的原有文本块。必须在文件中严格匹配且唯一存在，注意空格、缩进和换行符需与原文件完全一致。
         replace:
           type: string
-          description: 准备替换进去的新代码块。若为删除操作，请填入空字符串。
+          description: 准备替换进去的新文本块。若为删除操作，请填入空字符串。
         replace_all:
           type: boolean
           description: 是否允许批量替换多处匹配项。默认为 false（仅允许唯一匹配）。
@@ -115,11 +108,7 @@ tools:
     function_name: create_project_tree
 
   - name: system_read_file_list
-    description: >
-      递归列出指定目录下的所有文件，自动应用 .gitignore 忽略规则。
-      专为 AI 调用优化：默认仅返回紧凑的相对路径以极致节省 Token，并对返回总数进行安全截断。
-      适用于了解项目结构或查找特定文件。
-      注意：如果提示结果被截断（达到数量上限），请通过提供更具体的 path 或使用 exclude_patterns 排除无关目录（如 node_modules、dist 等）来缩小范围。
+    description: 递归列出指定目录下的所有文件，自动应用 .gitignore 忽略规则。
     parameters:
       type: object
       properties:
