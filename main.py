@@ -2,6 +2,8 @@
 from backend.bootstrap import logger
 import os
 import sys
+import socket
+import time
 import argparse
 import mimetypes
 import asyncio
@@ -161,10 +163,29 @@ else:
     FRONTEND_URL = "http://localhost:5173"
     DEBUG_MODE = True
 
+def is_port_open(host: str, port: int, timeout: float = 0.5) -> bool:
+    """检测指定端口是否已经被监听"""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(timeout)
+        return s.connect_ex((host, port)) == 0
+
+def wait_for_server_ready(host: str, port: int, timeout: int = 15) -> bool:
+    """轮询等待服务启动"""
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        if is_port_open(host, port):
+            return True
+        time.sleep(0.1) # 每 100ms 检测一次
+    return False
+
 
 def start_fastapi():
-    logger.info(f"🌐 FastAPI 启动于 0.0.0.0:{SERVER_PORT}")
-    uvicorn.run(app, host="0.0.0.0", port=SERVER_PORT, log_level="info")
+    try:
+        logger.info(f"🌐 FastAPI 启动于 0.0.0.0:{SERVER_PORT}")
+        uvicorn.run(app, host="0.0.0.0", port=SERVER_PORT, log_level="info")
+    except Exception as e:
+        # 捕获端口占用等异常，防止线程静默死亡
+        logger.error(f"❌ FastAPI 启动失败: {e}")
 
 
 def start_gui():
@@ -176,7 +197,6 @@ def start_gui():
     class Api:
         """暴露给前端的Python API"""
         def select_folder(self):
-            # ⚠️ tkinter 必须在主线程运行，这里改用 webview 原生对话框
             result = webview.windows[0].create_file_dialog(
                 dialog_type=webview.FOLDER_DIALOG,
                 allow_multiple=False
@@ -212,8 +232,6 @@ def start_gui():
                     filename = "downloaded_file"
                 print(f"准备下载: {filename}")
 
-                # 1. 修复：使用 webview.windows[0].create_file_dialog 和 webview.SAVE_DIALOG
-                # 2. 修复：pywebview 的 file_types 需要是字符串元组或列表，例如 ('所有文件 (*.*)',)
                 result = webview.windows[0].create_file_dialog(
                     dialog_type=webview.SAVE_DIALOG,
                     save_filename=filename,
@@ -243,6 +261,21 @@ def start_gui():
     # FastAPI 放在守护线程
     server_thread = threading.Thread(target=start_fastapi, daemon=True)
     server_thread.start()
+
+    logger.info(f"⏳ 等待 FastAPI 服务就绪...")
+    if not wait_for_server_ready("127.0.0.1", SERVER_PORT, timeout=15):
+        # 如果 15 秒后还没启动，说明内部报错了（大概率是端口被占用）
+        import tkinter as tk
+        from tkinter import messagebox
+        root = tk.Tk()
+        root.withdraw()
+        messagebox.showerror(
+            "启动失败", 
+            f"后端服务无法启动 (端口 {SERVER_PORT} 可能被占用)。\n请检查是否有同名进程残留，然后重试。"
+        )
+        sys.exit(1) # 强制退出
+        
+    logger.info("✅ FastAPI 服务已就绪，准备打开界面...")
 
     # 允许在 WebView 中进行文件下载
     webview.settings['ALLOW_DOWNLOADS'] = True
