@@ -19,7 +19,7 @@
       />
 
       <div ref="scrollContainerRef" class="message-scroller" @scroll="onScroll">
-        <div class="message-list" :style="{ width: isMobile ? '90%' : '80%', maxWidth: '1000px', margin: '0 auto' }">
+        <div ref="messageListRef" class="message-list" :style="{ width: isMobile ? '90%' : '80%', maxWidth: '1000px', margin: '0 auto' }">
           <div
             v-for="(msg, index) in listItems"
             :key="getItemKey(msg, index)"
@@ -181,6 +181,7 @@ const emit = defineEmits<{
 }>()
 
 const scrollContainerRef = ref<HTMLElement | null>(null)
+const messageListRef = ref<HTMLElement | null>(null)
 
 const currentMessages = computed(() => props.messages)
 
@@ -366,9 +367,16 @@ onMounted(() => {
   if (scrollContainerRef.value) {
     resizeObserver = new ResizeObserver(() => {
       // 尺寸变化时，重新计算是否在底部
-      showScrollBtn.value = !isAtEnd()
+      if (!userHasScrolledUp.value) {
+        scrollToLatest()
+      } else {
+        showScrollBtn.value = !isAtEnd()
+      }
     })
     resizeObserver.observe(scrollContainerRef.value)
+    if (messageListRef.value) {
+      resizeObserver.observe(messageListRef.value)
+    }
   }
 })
 
