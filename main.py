@@ -295,13 +295,20 @@ def start_gui():
 # ============ 入口 ============
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="启动 LumNeo")
+
+    parser.add_argument("--debug", action="store_true", help="启用 DEBUG 模式")
+
     if DEBUG_MODE:
         parser.add_argument("--gui", action="store_true", help="启动 GUI 界面")
     else:
         parser.add_argument("--no-gui", action="store_true", help="仅启动后端服务，不启动GUI")
     args = parser.parse_args()
 
-    use_gui = args.gui if DEBUG_MODE else not args.no_gui
+    if args.debug:
+        DEBUG_MODE = True
+        use_gui = True
+    else:
+        use_gui = args.gui if DEBUG_MODE else not args.no_gui
 
     if use_gui:
         start_gui()
