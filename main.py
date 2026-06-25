@@ -25,6 +25,12 @@ from config_loader import config
 
 class PrecompressedStaticFiles(StaticFiles):
     async def get_response(self, path: str, scope) -> Response:
+        is_html = path.endswith(".html") or path == "" or path == "/"
+        no_cache_headers = {
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0"
+        }
         # 检查 .br 文件
         br_path = path + ".br"
         full_br = os.path.join(self.directory, br_path) if self.directory else br_path
@@ -46,6 +52,10 @@ class PrecompressedStaticFiles(StaticFiles):
                 "Content-Type": content_type or "application/octet-stream",
                 "Vary": "Accept-Encoding",
             }
+
+            if is_html:
+                headers.update(no_cache_headers)
+
             # 注意：不设置 Content-Length，因为 StreamingResponse 会自动分块传输
             return StreamingResponse(
                 file_iterator(),
@@ -54,7 +64,11 @@ class PrecompressedStaticFiles(StaticFiles):
             )
         
         # 无 .gz 文件时回退
-        return await super().get_response(path, scope)
+        response = await super().get_response(path, scope)
+
+        if is_html:
+            response.headers.update(no_cache_headers)
+        return response
 
 # ============ Lifespan 管理 ============
 @asynccontextmanager
