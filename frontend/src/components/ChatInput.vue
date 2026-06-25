@@ -42,7 +42,7 @@
         type="textarea"
         name="talk"
         placeholder="今天要做点什么呢？"
-        :autosize="{ minRows: 4, maxRows: 6 }"
+        :autosize="{ minRows: 4, maxRows: 4 }"
         @keydown.enter.exact.prevent="handleSend"
         :disabled="disabled"
         class="compose-input"
@@ -211,8 +211,8 @@ function triggerJelly() {
 @keyframes rotate-animate{0%{transform:rotate(0)}to{transform:rotate(360deg)}}
 .scroll-to-bottom-btn {
   position: absolute;
-  top: -60px;
-  left: 50%;
+  top: -50px;
+  right: -16px;
   transform: translateX(-50%);
   z-index: 10;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
@@ -297,7 +297,7 @@ function triggerJelly() {
 
 .compose-input {
   border-radius: 20px;
-  padding: 8px 120px 8px 8px;
+  padding: 8px 100px 8px 8px;
 }
 
 .compose-tools-tar {

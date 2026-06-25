@@ -65,7 +65,9 @@ function renderToolbar({ nodes }: ImageRenderToolbarProps) {
 
 <style scoped>
 .image-node {
-  max-width: 512px;
+  display: flex;
+  margin: 0 auto;
+  max-width: 620px;
   border-radius: 8px;
   cursor: pointer;
 }

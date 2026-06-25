@@ -519,16 +519,16 @@ onUnmounted(() => {
   align-items: center;
   gap: 6px;
   padding: 8px 12px;
-  background: rgba(0, 0, 0, 0.2);
-  color: white;
+  background: var(--border-color);
+  color: var(--text-primary);
   border-radius: 6px;
   font-size: 0.9rem;
   cursor: pointer;
 }
 .msg-file-other a {
-  color: white;
+  color: var(--text-primary);
 }
 .msg-file-other:hover {
-  background: rgba(0,0,0,0.1);
+  background: var(--border-color-hover);
 }
 </style>
