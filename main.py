@@ -77,6 +77,8 @@ async def lifespan(app: FastAPI):
     ready_event = asyncio.Event()
     app.state.ready_event = ready_event
     app.state.mcp_manager = None
+    app.state.init_success = False
+    app.state.init_error = None
 
     async def bg_init_services():
         logger.info("🚀 后台开始异步初始化基础设施 (DB, MCP)...")
@@ -85,10 +87,12 @@ async def lifespan(app: FastAPI):
             mcp_manager = MCPClientManager()
             await mcp_manager.connect_from_config(config.mcp_config_path)
             app.state.mcp_manager = mcp_manager
+            app.state.init_success = True
             ready_event.set()
             logger.info("✅ 后台基础设施全部初始化完毕！")
         except Exception as e:
             logger.error(f"❌ 后台初始化失败: {e}", exc_info=True)
+            app.state.init_error = str(e)
             ready_event.set()
 
     init_task = asyncio.create_task(bg_init_services())
@@ -121,6 +125,19 @@ app = FastAPI(lifespan=lifespan)
 
 # 注册API路由（必须在mount静态文件之前）
 register_all_routers(app)
+
+@app.get("/api/wait-ready")
+async def wait_ready(request: Request):
+    """检测后台基础设施初始化是否完毕（或失败）"""
+    await request.app.state.ready_event.wait()
+    if request.app.state.init_success:
+        return {"ready": True, "status": "ok"}
+    else:
+        return {
+            "ready": False,
+            "status": "error",
+            "error": getattr(request.app.state, 'init_error', '初始化失败'),
+        }
 
 @app.api_route("/files/generate/{file_path:path}", methods=["GET", "POST", "PUT", "DELETE"])
 async def proxy_generate(request: Request, file_path: str):
