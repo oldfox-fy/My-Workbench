@@ -74,6 +74,7 @@ pyinstaller --onedir ^
     --noconsole ^
     --copy-metadata fastmcp ^
     --hidden-import backend.system_tools ^
+    --collect-all sqlite_vec ^
     --icon="frontend/public/favicon.ico" ^
     --add-data="frontend/dist;html" ^
     --add-data="tools_config.yaml;." ^

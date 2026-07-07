@@ -75,5 +75,42 @@ async def init_db():
         )
     """)
 
+    # 通用键值配置表（当前用于存储知识库 embedding 配置等应用级设置）
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS app_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL DEFAULT '',
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    # 知识库 RAG：分片元数据（内容 + 来源文件 + 标题路径 + 文件指纹）
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS kb_chunks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            file_path TEXT NOT NULL,
+            chunk_index INTEGER NOT NULL,
+            heading_path TEXT DEFAULT '',
+            content TEXT NOT NULL,
+            file_hash TEXT NOT NULL,
+            model_name TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_kb_chunks_file ON kb_chunks(file_path)"
+    )
+
+    # 知识库 RAG：索引状态（增量索引依据 file_hash / mtime）
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS kb_index_meta (
+            file_path TEXT PRIMARY KEY,
+            file_hash TEXT NOT NULL,
+            mtime REAL NOT NULL,
+            chunk_count INTEGER NOT NULL DEFAULT 0,
+            indexed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
     await db.commit()
     await db.close()

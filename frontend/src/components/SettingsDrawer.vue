@@ -47,6 +47,62 @@
 
         </n-tab-pane>
 
+        <!-- MCP 接入 -->
+        <n-tab-pane name="mcp" tab="MCP接入">
+          <n-space vertical>
+            <n-text depth="3" style="font-size: 0.8rem">
+              配置 MCP 服务后，其提供的工具会自动加入系统工具列表，可在角色管理的「赋予能力」中勾选。
+            </n-text>
+
+            <n-divider />
+
+            <n-list hoverable clickable>
+              <n-list-item v-for="server in mcpStore.servers" :key="server.name">
+                <template #suffix>
+                  <n-space>
+                    <n-button text size="small" @click="editMcpServer(server)">编辑</n-button>
+                    <n-popconfirm
+                      @positive-click="() => deleteMcpServer(server.name)"
+                      negative-text="取消"
+                      positive-text="好的"
+                      :negative-button-props="{size: 'tiny'}"
+                      :positive-button-props="{size: 'tiny'}"
+                    >
+                      <template #trigger>
+                        <n-button text size="small" type="error">删除</n-button>
+                      </template>
+                      确定删除 MCP 服务「{{ server.name }}」吗？
+                    </n-popconfirm>
+                  </n-space>
+                </template>
+                <div>
+                  <n-space align="center" :size="6">
+                    <n-text strong>{{ server.name }}</n-text>
+                    <n-tag :type="server.connected ? 'success' : 'error'" size="tiny" round>
+                      {{ server.connected ? '已连接' : '未连接' }}
+                    </n-tag>
+                    <n-text depth="3" style="font-size: 0.75rem">
+                      {{ server.transport === 'stdio' ? '本地' : '远程' }} · {{ server.tools.length }} 个工具
+                    </n-text>
+                  </n-space>
+                  <br />
+                  <n-text depth="3" style="font-size: 0.75rem; word-break: break-all">
+                    {{ server.transport === 'stdio' ? (server.command + ' ' + (server.args || []).join(' ')) : server.url }}
+                  </n-text>
+                </div>
+              </n-list-item>
+            </n-list>
+            <p v-if="mcpStore.servers.length === 0" style="color: gray; font-size: 0.85rem;">暂无 MCP 服务，点击下方按钮添加。</p>
+
+            <n-button type="primary" block @click="openAddMcpDialog">添加 MCP 服务</n-button>
+          </n-space>
+        </n-tab-pane>
+
+        <!-- 知识库设置 -->
+        <n-tab-pane name="knowledge" tab="知识库">
+          <KbSettingsPanel />
+        </n-tab-pane>
+
         <!-- 其他设置 -->
         <n-tab-pane name="function" tab="功能设置">
           <n-form label-placement="left" label-width="80">
@@ -133,6 +189,36 @@
       <n-form-item label="API Key">
         <n-input v-model:value="modelForm.apiKey" type="password" placeholder="sk-..." />
       </n-form-item>
+    </n-form>
+  </n-modal>
+
+  <!-- 新增/编辑 MCP 服务对话框 -->
+  <n-modal v-model:show="showMcpDialog" :auto-focus="false" preset="dialog" draggable :mask-closable="false"
+    :loading="mcpSaving" :title="editingMcpName ? '编辑 MCP 服务' : '添加 MCP 服务'"
+    positive-text="保存" negative-text="取消" @positive-click="saveMcpServer">
+    <n-form :model="mcpForm" label-placement="left" label-width="80">
+      <n-form-item label="服务名称" required>
+        <n-input v-model:value="mcpForm.name" placeholder="例如：filesystem（唯一标识）" :disabled="!!editingMcpName" />
+      </n-form-item>
+      <n-form-item label="接入方式">
+        <n-radio-group v-model:value="mcpForm.transport">
+          <n-radio value="http">远程服务 (URL)</n-radio>
+          <n-radio value="stdio">本地命令 (stdio)</n-radio>
+        </n-radio-group>
+      </n-form-item>
+      <n-form-item v-if="mcpForm.transport === 'http'" label="URL" required>
+        <n-input v-model:value="mcpForm.url" placeholder="https://example.com/mcp 或 /sse" />
+      </n-form-item>
+      <template v-else>
+        <n-form-item label="命令" required>
+          <n-input v-model:value="mcpForm.command" placeholder="例如：npx、python、uvx" />
+        </n-form-item>
+        <n-form-item label="参数">
+          <n-input v-model:value="mcpArgsText" type="textarea"
+            placeholder="每行一个参数，例如：&#10;-y&#10;@modelcontextprotocol/server-filesystem&#10;/path/to/dir"
+            :autosize="{ minRows: 2, maxRows: 6 }" />
+        </n-form-item>
+      </template>
     </n-form>
   </n-modal>
 
@@ -306,7 +392,9 @@ import {
 import { useChatStore } from '@/stores/chat'
 import { useConfigStore, type ModelConfig } from '@/stores/config'
 import { useProfileStore, type Profile } from '@/stores/profiles'
+import { useMcpStore, type MCPServer } from '@/stores/mcp'
 import mSvg from '@/components/MSvg.vue'
+import KbSettingsPanel from '@/components/kb/KbSettingsPanel.vue'
 
 
 const props = defineProps<{ show: boolean }>()
@@ -316,6 +404,7 @@ const message = useMessage()
 const chatStore = useChatStore()
 const configStore = useConfigStore()
 const profileStore = useProfileStore()
+const mcpStore = useMcpStore()
 const version = ref(import.meta.env.VITE_APP_VERSION)
 const profileId = ref()
 
@@ -326,6 +415,7 @@ const editingModelId = ref<string | null>(null)
 watch(() => props.show, (val) => {
   if (val) {
     profileId.value = profileStore.activeProfileId
+    mcpStore.loadServers()
   }
 })
 
@@ -478,12 +568,103 @@ async function saveWorkspace(path: string, isMsg: boolean = true) {
     if (res.ok) {
       if (isMsg)
         message.success('工作目录设置成功')
-        localStorage.setItem('workspacePath', path)
+      localStorage.setItem('workspacePath', path)
     } else {
       const errorData = await res.json()
-      message.error(errorData.detail || '工作目录设置失败')
+      if (isMsg)
+        message.error(errorData.detail || '工作目录设置失败')
     }
   })
+}
+
+// ---------- MCP 接入 ----------
+const showMcpDialog = ref(false)
+const mcpSaving = ref(false)
+const editingMcpName = ref<string | null>(null)
+const mcpForm = reactive<{
+  name: string
+  transport: 'http' | 'stdio'
+  url: string
+  command: string
+}>({
+  name: '',
+  transport: 'http',
+  url: '',
+  command: ''
+})
+// 参数用多行文本编辑，保存时按行拆分
+const mcpArgsText = ref('')
+
+function openAddMcpDialog() {
+  editingMcpName.value = null
+  mcpForm.name = ''
+  mcpForm.transport = 'http'
+  mcpForm.url = ''
+  mcpForm.command = ''
+  mcpArgsText.value = ''
+  showMcpDialog.value = true
+}
+
+function editMcpServer(server: MCPServer) {
+  editingMcpName.value = server.name
+  mcpForm.name = server.name
+  mcpForm.transport = server.transport
+  mcpForm.url = server.url || ''
+  mcpForm.command = server.command || ''
+  mcpArgsText.value = (server.args || []).join('\n')
+  showMcpDialog.value = true
+}
+
+async function saveMcpServer() {
+  if (!mcpForm.name.trim()) {
+    message.warning('服务名称不能为空')
+    return false
+  }
+  if (mcpForm.transport === 'http' && !mcpForm.url.trim()) {
+    message.warning('请填写远程服务 URL')
+    return false
+  }
+  if (mcpForm.transport === 'stdio' && !mcpForm.command.trim()) {
+    message.warning('请填写本地命令')
+    return false
+  }
+
+  const payload = {
+    name: mcpForm.name.trim(),
+    transport: mcpForm.transport,
+    url: mcpForm.transport === 'http' ? mcpForm.url.trim() : undefined,
+    command: mcpForm.transport === 'stdio' ? mcpForm.command.trim() : undefined,
+    args: mcpForm.transport === 'stdio'
+      ? mcpArgsText.value.split('\n').map(s => s.trim()).filter(Boolean)
+      : undefined
+  }
+
+  mcpSaving.value = true
+  try {
+    const result = await mcpStore.saveServer(payload)
+    if (result.connected) {
+      message.success(`连接成功，发现 ${result.tools.length} 个工具`)
+      showMcpDialog.value = false
+      // 刷新工具列表，使新工具可在角色「赋予能力」中勾选
+      loadTools()
+    } else {
+      message.error(`已保存，但连接失败：${result.error || '未知错误'}`)
+      // 连接失败仍关闭弹窗，配置已保存，可稍后编辑重试
+      showMcpDialog.value = false
+      loadTools()
+    }
+  } catch (e: any) {
+    message.error(e.message || '保存失败')
+    return false
+  } finally {
+    mcpSaving.value = false
+  }
+}
+
+async function deleteMcpServer(name: string) {
+  await mcpStore.deleteServer(name)
+  message.success('已删除')
+  loadTools()
 }
 
 // ---------- 角色管理 ----------

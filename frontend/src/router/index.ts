@@ -15,6 +15,16 @@ const routes: RouteRecordRaw[] = [
     name: 'chat',
     component: () => import('@/views/ChatWindow.vue')
   },
+  {
+    path: '/knowledge',
+    name: 'knowledge',
+    component: () => import('@/views/KnowledgeView.vue')
+  },
+  {
+    path: '/knowledge/graph',
+    name: 'knowledge-graph',
+    component: () => import('@/views/KbGraphView.vue')
+  },
 ]
 
 const router = createRouter({

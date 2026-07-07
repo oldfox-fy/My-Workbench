@@ -26,7 +26,7 @@ BASE_SYSTEM_PROMPT = BASE_SYSTEM_PROMPT.replace("{{uploads_dir}}", str(config.up
 
 
 disabled_tools = ['system_write_file', 'system_patch_file', 'system_create_project_tree', 'system_read_file_list']
-default_tools = ['system_get_weather', 'system_read_file']
+default_tools = ['system_get_weather', 'system_read_file', 'system_kb_list', 'system_kb_read', 'system_kb_search']
 
 class ModelConfig(BaseModel):
     type: str

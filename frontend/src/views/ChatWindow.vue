@@ -21,6 +21,10 @@
             <template #icon><m-svg name="add"/></template>
             创建新对话
           </n-button>
+          <n-button block strong secondary size="large" class="new-chat-btn kb-btn" @click="openKnowledge">
+            <template #icon><n-icon><LibraryOutline /></n-icon></template>
+            我的知识库
+          </n-button>
         </div>
         <n-scrollbar content-style="padding:0 16px" style="max-height: calc(100vh - 200px);">
           <n-list hoverable clickable :show-divider="false">
@@ -63,6 +67,12 @@
           </n-list>
         </n-scrollbar>
         <div class="sidebar-footer">
+          <n-button text @click="showTools = true">
+            <template #icon>
+              <n-icon><ConstructOutline /></n-icon>
+            </template>
+            工具列表
+          </n-button>
           <n-button text @click="showSettings = true">
             <template #icon>
               <n-icon><SettingsOutline /></n-icon>
@@ -73,17 +83,27 @@
       </aside>
     </Transition>
 
-    <!-- ========== 主区域 ========== -->
-    <main
-      class="main-stage"
+    <!-- ========== 工作区（知识库面板 + 主区域） ========== -->
+    <div
+      class="workspace"
       :style="{
         paddingLeft: (!isMobile && !sidebarCollapsed) ? '260px' : '0'
       }"
-      @dragenter="onDragEnter($event, isLoading)"
-      @dragover="onDragOver"
-      @dragleave="onDragLeave"
-      @drop="onDrop($event, chatStore.activeChatId, isLoading)"
     >
+      <!-- 知识库目录侧栏 -->
+      <KbTreePanel v-if="kbOpen" show-close @close="closeKnowledge" />
+
+      <!-- 知识库内容窗口（打开文件后才展开） -->
+      <KbContentPanel v-if="kbOpen && kbStore.currentPath" @close="kbStore.resetSelection()" />
+
+      <!-- 主区域 -->
+      <main
+        class="main-stage"
+        @dragenter="onDragEnter($event, isLoading)"
+        @dragover="onDragOver"
+        @dragleave="onDragLeave"
+        @drop="onDrop($event, chatStore.activeChatId, isLoading)"
+      >
       <div v-if="isDragging && chatStore.activeChatId" class="drag-overlay">
         <div class="drag-hint"><n-icon><DocumentOutline /></n-icon> 释放文件以上传</div>
       </div>
@@ -164,11 +184,6 @@
         @delete="chatStore.deleteMessage"
       />
 
-      <!-- 无对话时的引导页 -->
-      <div v-else class="introduction">
-        <Introduction v-if="isRender" @click="sidebarOpen=true;sidebarCollapsed=false" />
-      </div>
-
       <!-- 聊天输入框组件 -->
       <ChatInput
         v-if="chatStore.activeChatId"
@@ -193,9 +208,13 @@
         @upload-change="handleFileUpload"
       />
     </main>
+    </div>
 
     <!-- 设置抽屉 -->
     <SettingsDrawer v-model:show="showSettings" />
+
+    <!-- 工具列表抽屉 -->
+    <ToolsDrawer v-model:show="showTools" />
 
     <!-- 编辑消息模态框 -->
     <n-modal
@@ -248,13 +267,16 @@ import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { NButton, NInput, NList, NListItem, NIcon, NScrollbar, NFlex, NSelect, NModal, NPopconfirm, NPopover, NQrCode } from 'naive-ui'
 import type { UploadFileInfo } from 'naive-ui'
-import { SettingsOutline, DocumentOutline, MenuOutline, QrCodeOutline } from '@vicons/ionicons5'
+import { SettingsOutline, DocumentOutline, MenuOutline, QrCodeOutline, ConstructOutline, LibraryOutline } from '@vicons/ionicons5'
 import { useChatStore, type Message } from '@/stores/chat'
 import { useConfigStore, fileConfig } from '@/stores/config'
 import { useProfileStore } from '@/stores/profiles'
 import { useToolStore } from '@/stores/tools'
+import { useKnowledgeStore } from '@/stores/knowledge'
 import SettingsDrawer from '@/components/SettingsDrawer.vue'
-import Introduction from '@/components/Introduction.vue'
+import ToolsDrawer from '@/components/ToolsDrawer.vue'
+import KbTreePanel from '@/components/kb/KbTreePanel.vue'
+import KbContentPanel from '@/components/kb/KbContentPanel.vue'
 import mSvg from '@/components/MSvg.vue'
 // import MessageList from '@/components/VirtualMessageList.vue'
 import MessageList from '@/components/MessageList.vue'
@@ -272,11 +294,15 @@ const chatStore = useChatStore()
 const configStore = useConfigStore()
 const profileStore = useProfileStore()
 const toolStore = useToolStore()
+const kbStore = useKnowledgeStore()
 
 const isMobile = ref(false)
 const sidebarOpen = ref(false)
 const qrCodeUrl = ref('')
 const showQRCode = ref(true)
+
+// 知识库面板（桌面端在对话页内嵌打开）
+const kbOpen = ref(false)
 
 const isDark = computed(() => configStore.themeMode === 'dark')
 
@@ -387,8 +413,6 @@ const onSaveEdit = async () => {
 }
 
 // ========== 动效与初始化 ==========
-const isRender = ref(false)
-
 const showWelcome = ref(false)
 
 watch(() => route.params.id, (newId) => {
@@ -407,12 +431,20 @@ watch(() => chatStore.activeChatId, async (newId) => {
       messageListRef.value?.scrollToLatest()
     }
   } else {
-    chatStore.loadChats()
+    // 没有激活对话时，自动进入对话页：优先打开最近一个，否则新建
+    await chatStore.loadChats()
+    if (chatStore.chats.length > 0) {
+      openChat(chatStore.chats[0].id)
+    } else {
+      const newChatId = await chatStore.addChat()
+      openChat(newChatId)
+    }
   }
 }, { immediate: true })
 
 const sidebarCollapsed = ref(true)
 const showSettings = ref(false)
+const showTools = ref(false)
 
 const profileOptions = computed(() =>
   profileStore.profiles.map((p) => ({ label: p.name, value: p.id }))
@@ -429,6 +461,31 @@ function setQRCodeUrl() {
 const createChat = async () => {
   const newChatId = await chatStore.addChat()
   openChat(newChatId)
+}
+
+const openKnowledge = async () => {
+  // 窄屏/移动端：跳转独立整页；桌面端：在当前页内嵌切换
+  if (isMobile.value) {
+    router.push('/knowledge')
+    return
+  }
+  kbOpen.value = !kbOpen.value
+  if (kbOpen.value) {
+    // 首次打开时加载知识库根目录与目录树
+    if (!kbStore.root) {
+      await kbStore.loadRoot()
+      if (!kbStore.root) {
+        const saved = localStorage.getItem('kbPath')
+        if (saved) await kbStore.setRoot(saved).catch(() => {})
+      }
+    }
+    if (kbStore.root && !kbStore.tree.length) await kbStore.loadTree()
+  }
+}
+
+const closeKnowledge = () => {
+  kbOpen.value = false
+  kbStore.resetSelection()
 }
 
 const openChat = (chatId: string) => {
@@ -477,9 +534,6 @@ onMounted(async () => {
     setQRCodeUrl()
   })
   waitForBackend()
-  setTimeout(() => {
-    isRender.value = true
-  }, 150)
 })
 
 onUnmounted(() => {
@@ -588,21 +642,36 @@ onUnmounted(() => {
 .new-chat-btn:active {
   transform: scale(1.02);
 }
+.kb-btn {
+  margin-top: 10px;
+}
 .sidebar-footer {
   position: fixed;
   bottom:40px; left:20px; right:0;
   z-index:100;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+/* ========== 工作区 ========== */
+.workspace {
+  flex: 1;
+  display: flex;
+  min-width: 0;
+  overflow: hidden;
+  transition: padding-left 0.3s ease;
 }
 
 /* ========== 主区域 ========== */
 .main-stage {
   flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   background: var(--bg-secondary);
-  width: 100%;
   box-sizing: border-box;
-  transition: padding-left 0.3s ease;
 }
 
 .drag-overlay {
@@ -652,15 +721,6 @@ onUnmounted(() => {
 }
 .theme-toggle-btn:hover {
   color: var(--accent);
-}
-
-.introduction {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
-  gap: 16px;
 }
 
 .chat-item-row {

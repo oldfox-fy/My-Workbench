@@ -11,3 +11,5 @@ chardet>=7.4.3
 markitdown[all]>=0.0.1a1
 requests>=2.34.1
 pyinstaller>=6.20.0
+sqlite-vec>=0.1.6
+numpy>=1.26.0

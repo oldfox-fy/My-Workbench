@@ -65,6 +65,58 @@ class MCPClientManager:
     def _tool_names(self, name: str) -> List[str]:
         return [t["name"] for t in self.tools_cache.get(name, [])]
 
+    async def add_server(self, name: str, server_config: dict) -> dict:
+        """动态连接单个 MCP 服务器（用于运行时新增/更新）。
+
+        server_config 形如 {"url": ...} 或 {"command": ..., "args": [...]}。
+        返回连接结果 {success, tools, error}。
+        """
+        # 若已存在同名连接，先断开，保证配置更新后能重连
+        if name in self.clients:
+            await self.remove_server(name)
+
+        if "url" in server_config:
+            config_dict = {"mcpServers": {name: {"url": server_config["url"]}}}
+        elif "command" in server_config or "commad" in server_config:
+            command = server_config.get("command") or server_config.get("commad")
+            args = server_config.get("args", [])
+            config_dict = {"mcpServers": {name: {"command": command, "args": args}}}
+        else:
+            return {"success": False, "tools": [], "error": "缺少有效的连接配置（url 或 command）"}
+
+        try:
+            client = Client(config_dict)
+            await client.__aenter__()
+            self.clients[name] = client
+            await self._fetch_tools(name, client)
+            tool_names = self._tool_names(name)
+            logger.info(f"MCP 服务器 '{name}' 已连接，工具: {tool_names}")
+            return {"success": True, "tools": tool_names, "error": None}
+        except Exception as e:
+            logger.error(f"服务器 '{name}' 连接失败: {e}")
+            # 清理可能的半连接状态
+            self.clients.pop(name, None)
+            self.tools_cache.pop(name, None)
+            return {"success": False, "tools": [], "error": str(e)}
+
+    async def remove_server(self, name: str):
+        """断开并移除指定 MCP 服务器"""
+        client = self.clients.pop(name, None)
+        self.tools_cache.pop(name, None)
+        if client:
+            try:
+                await client.__aexit__(None, None, None)
+            except Exception as e:
+                logger.warning(f"断开 MCP 服务器 '{name}' 出错: {e}")
+
+    def get_server_status(self, name: str) -> dict:
+        """返回单个服务器的连接状态与工具信息"""
+        connected = name in self.clients
+        return {
+            "connected": connected,
+            "tools": self._tool_names(name) if connected else [],
+        }
+
     async def connect_from_config(self, config_path: str = "mcp_config.json"):
         """从 JSON 配置文件加载并连接所有 MCP 服务器"""
         try:
