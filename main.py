@@ -210,10 +210,16 @@ def wait_for_server_ready(host: str, port: int, timeout: int = 15) -> bool:
     return False
 
 
-def start_fastapi():
+def start_fastapi(reload: bool = False):
     try:
-        logger.info(f"🌐 FastAPI 启动于 0.0.0.0:{SERVER_PORT}")
-        uvicorn.run(app, host="0.0.0.0", port=SERVER_PORT, log_level="info")
+        logger.info(f"🌐 FastAPI 启动于 0.0.0.0:{SERVER_PORT}"
+                    + ("（自动重载模式）" if reload else ""))
+        if reload:
+            # reload 模式要求传入导入字符串，且需在主线程运行
+            uvicorn.run("main:app", host="0.0.0.0", port=SERVER_PORT,
+                        log_level="info", reload=True)
+        else:
+            uvicorn.run(app, host="0.0.0.0", port=SERVER_PORT, log_level="info")
     except Exception as e:
         # 捕获端口占用等异常，防止线程静默死亡
         logger.error(f"❌ FastAPI 启动失败: {e}")
@@ -312,7 +318,7 @@ def start_gui():
     webview.settings['ALLOW_DOWNLOADS'] = True
 
     webview.create_window(
-        title="LumNeo",
+        title="My Workbench",
         url=FRONTEND_URL,
         width=1200, height=860,
         min_size=(800, 768),
@@ -325,7 +331,7 @@ def start_gui():
 
 # ============ 入口 ============
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="启动 LumNeo")
+    parser = argparse.ArgumentParser(description="启动 My Workbench")
 
     parser.add_argument("--debug", action="store_true", help="启用 DEBUG 模式")
 
@@ -344,4 +350,5 @@ if __name__ == "__main__":
     if use_gui:
         start_gui()
     else:
-        start_fastapi()
+        # 纯后端模式启用自动重载，便于开发调试
+        start_fastapi(reload=True)

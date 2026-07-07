@@ -77,7 +77,7 @@ class AppConfig:
                 d.mkdir(parents=True, exist_ok=True)
             except PermissionError:
                 # 如果 ProgramData 无权限，尝试 fallback 到用户目录
-                fallback_base = Path(os.environ.get('APPDATA', Path.home() / 'AppData/Roaming')) / '.LumNeo'
+                fallback_base = Path(os.environ.get('APPDATA', Path.home() / 'AppData/Roaming')) / '.MyWorkbench'
                 # 重新设定所有路径
                 self.data_dir = fallback_base
                 self.uploads_dir = fallback_base / "uploads"

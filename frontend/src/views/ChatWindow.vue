@@ -7,7 +7,7 @@
      <Transition name="sidebar">
       <aside v-if="!sidebarCollapsed" class="sidebar-panel border-marquee-right" :class="{ collapsed: sidebarCollapsed, 'sidebar-open': sidebarOpen }">
         <div class="sidebar-header">
-          <span class="logo-text"><m-svg name="star" style="position: absolute;left:120px;top:18px;"/>✨ LumNeo</span>
+          <span class="logo-text"><m-svg name="star" style="position: absolute;left:120px;top:18px;"/>✨ My Workbench</span>
           <n-button v-if="!isMobile" text class="icon-btn" @click="sidebarCollapsed = true" title="收起侧栏">
             <template #icon>
               <n-icon :size="22">

@@ -2,7 +2,7 @@
   <div class="intro-card" :class="{ animate: isAnimate }">
     <div class="typewriter-container">
       <div class="typewriter-line">
-        <span class="gradient-text">✨ LumNeo</span>
+        <span class="gradient-text">✨ My Workbench</span>
       </div>
       <div class="typewriter-line">
         <MarkdownRender
@@ -43,7 +43,7 @@ const fullText = `
 🔧 为每个角色绑定独立工具集（含 MCP 服务）
 ⚡ 随时无缝切换，让专业的人做专业的事
 
-**LumNeo —— 你的全能本地灵感引擎**
+**My Workbench —— 你的全能本地灵感引擎**
 ✨ 点击这里，开始你的专属对话`
 
 const final = ref(false)

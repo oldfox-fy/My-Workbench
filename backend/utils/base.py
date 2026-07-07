@@ -50,7 +50,7 @@ def get_current_time(timezone: str = "local") -> str:
         weekdays = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
         weekday_cn = weekdays[now.weekday()]
         
-        return f"{now.strftime("%Y-%m-%d %H:%M:%S")} {weekday_cn} "
+        return f"{now.strftime('%Y-%m-%d %H:%M:%S')} {weekday_cn} "
     except Exception as e:
         return f"获取时间失败：{str(e)}"
 

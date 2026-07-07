@@ -22,7 +22,7 @@ def _ensure_stdio():
 
 def setup_logging() -> logging.Logger:
     """配置全局日志，返回根 Logger 实例"""
-    logger = logging.getLogger("LumNeo")
+    logger = logging.getLogger("My Workbench")
     logger.setLevel(logging.INFO)
 
     logger.propagate = False    # 防止重复输出日志

@@ -2,9 +2,9 @@
 # 应用配置
 
 # 数据存储根目录（可写，支持绝对路径或相对路径）
-# 绝对路径示例：C:\ProgramData\.LumNeo
+# 绝对路径示例：C:\ProgramData\.MyWorkbench
 # 相对路径示例：./data（相对于可执行文件所在目录）
-data_dir: "C:\\ProgramData\\.LumNeo"
+data_dir: "C:\\ProgramData\\.MyWorkbench"
 
 # 子目录（相对于 data_dir）
 uploads_dir: "data/uploads"

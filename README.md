@@ -1,4 +1,4 @@
-#  LumNeo — 点亮灵感的 AI 桌面伙伴
+#  My Workbench — 点亮灵感的 AI 桌面伙伴
 
 ![Vue 3](https://img.shields.io/badge/vue%203-%2335495e.svg?style=flat&logo=vuedotjs&logoColor=%234FC08D)
 ![Vite](https://img.shields.io/badge/vite-%23646CFF.svg?style=flat&logo=vite&logoColor=white)
@@ -12,7 +12,7 @@
 
 > 不是冰冷的工具，是悄悄懂你的那束光 (◕ᴗ◕✿)
 
-LumNeo 是一款跨平台 AI 桌面应用，将**本地隐私**与**云端算力**融为一体。它不只是对话框，更是可自由塑造的**智能体工作台**——支持多角色切换、文件读写解析、MCP 工具扩展，让每个想法都有专属的执行者。界面现代优雅，桌面与移动端均完美适配，让 AI 协作如呼吸般自然。
+My Workbench 是一款跨平台 AI 桌面应用，将**本地隐私**与**云端算力**融为一体。它不只是对话框，更是可自由塑造的**智能体工作台**——支持多角色切换、文件读写解析、MCP 工具扩展，让每个想法都有专属的执行者。界面现代优雅，桌面与移动端均完美适配，让 AI 协作如呼吸般自然。
 
 <p align="center">
   <img src="screenshots/dark.png"  width="45%" alt="深色模式">
@@ -24,7 +24,7 @@ LumNeo 是一款跨平台 AI 桌面应用，将**本地隐私**与**云端算力
 
 ---
 
-##  为什么选择 LumNeo？
+##  为什么选择 My Workbench？
 
 ###  万千角色，一键切换
 - **自由创建专属角色**：定义独特人格、Prompt 与能力边界
@@ -54,7 +54,7 @@ LumNeo 是一款跨平台 AI 桌面应用，将**本地隐私**与**云端算力
 
 ##  项目愿景与路线图
 
-LumNeo 不仅仅是一个生产力工具，还准备打造一个不断进化的**数字生命体**。
+My Workbench 不仅仅是一个生产力工具，还准备打造一个不断进化的**数字生命体**。
 
 | 阶段 | 版本 | 核心目标 | 状态 |
 | :--- | :--- | :--- | :--- |
@@ -81,7 +81,7 @@ LumNeo 不仅仅是一个生产力工具，还准备打造一个不断进化的*
 ##  项目主要结构
 
 ```text
-LumNeo/
+MyWorkbench/
 ├── app_config.yaml         # 应用配置文件
 ├── build.bat               # Windows 构建脚本
 ├── main.py                 # 应用入口（启动 FastAPI + PyWebView）
@@ -179,11 +179,11 @@ build.bat
 > 💡 **开发与打包环境的区别**：
 > *   **开发模式下**：直接修改项目根目录的 `mcp_config.json` 即可生效。
 > *   **打包运行 (.exe) 时**：为了符合系统规范，配置文件会自动生成并存储在系统的程序数据目录下。如果你使用的是打包后的版本，请前往以下路径修改配置：
->     *   Windows: `C:\ProgramData\.LumNeo\mcp_config.json`
+>     *   Windows: `C:\ProgramData\.MyWorkbench\mcp_config.json`
 
 
 
->  **提示**：LumNeo 支持 `stdio`、`sse`、`streamable-http` 三种传输方式。你可以在角色设置中为不同角色绑定不同的 MCP 服务组合，打造专属工作流。
+>  **提示**：My Workbench 支持 `stdio`、`sse`、`streamable-http` 三种传输方式。你可以在角色设置中为不同角色绑定不同的 MCP 服务组合，打造专属工作流。
 
 ---
 
@@ -200,7 +200,7 @@ build.bat
 ##  参与贡献
 
 欢迎提 Issue、Pull Request，或分享你的角色配置与 MCP 工具。  
-LumNeo 因你而更温暖，每一行代码都是点亮灵感的光 
+My Workbench 因你而更温暖，每一行代码都是点亮灵感的光 
 
 ---
 
@@ -212,6 +212,6 @@ Copyright © 2026 [柯一_-](https://github.com/lumneo)
 
 ---
 
-*LumNeo — 点亮每个想要被看见的瞬间。*  
+*My Workbench — 点亮每个想要被看见的瞬间。*  
 *让我，做你桌面上那盏不灭的灵感之灯。*
 

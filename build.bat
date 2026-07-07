@@ -34,7 +34,7 @@ cd ..
 
 echo 正在清理旧的打包输出目录...
 
-taskkill /f /im LumNeo.exe >nul 2>&1
+taskkill /f /im MyWorkbench.exe >nul 2>&1
 
 if exist "dist" (
     :: 【优化2】引入重试循环，应对编辑器或系统资源管理器的短暂锁定
@@ -56,7 +56,7 @@ if exist "dist" (
             echo 请检查：
             echo 1. 是否在资源管理器中打开了 dist 文件夹或里面的文件？
             echo 2. VS Code / PyCharm 等编辑器是否正在建立索引？
-            echo 3. 请手动打开任务管理器，关闭所有名为 LumNeo.exe 的进程。
+            echo 3. 请手动打开任务管理器，关闭所有名为 MyWorkbench.exe 的进程。
             echo ====================================================
             pause
             exit /b 1
@@ -79,7 +79,7 @@ pyinstaller --onedir ^
     --add-data="tools_config.yaml;." ^
     --add-data="system_prompt.md;." ^
     --add-data="app_config.yaml;." ^
-    --name="LumNeo" ^
+    --name="MyWorkbench" ^
     main.py
 
 if errorlevel 1 (
@@ -88,7 +88,7 @@ if errorlevel 1 (
     exit /b %errorlevel%
 )
 
-echo 打包完成，输出目录：dist\LumNeo\
+echo 打包完成，输出目录：dist\MyWorkbench\
 
 :: 步骤4：生成 ZIP 压缩包
 
@@ -110,8 +110,8 @@ if "!VERSION!"=="" (
 
 echo 版本:!VERSION!
 
-set ZIP_NAME=LumNeo-!VERSION!.zip
-set SOURCE_DIR=dist\LumNeo
+set ZIP_NAME=MyWorkbench-!VERSION!.zip
+set SOURCE_DIR=dist\MyWorkbench
 set DEST_ZIP=dist\!ZIP_NAME!
 
 echo 原文件:!SOURCE_DIR!

@@ -148,7 +148,7 @@
             <!-- 文字渐入动画 -->
             <text x="480" y="260" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" 
                     font-size="28" font-weight="600" fill="#1e1b4b" letter-spacing="0.5" opacity="0">
-                你好，我是 LumNeo
+                你好，我是 My Workbench
                 <animate attributeName="opacity" values="0;1" dur="0.8s" begin="0.3s" fill="freeze"/>
                 <animate attributeName="y" values="270;260" dur="0.8s" begin="0.3s" fill="freeze"/>
             </text>
