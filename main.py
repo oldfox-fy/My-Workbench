@@ -145,39 +145,44 @@ async def wait_ready(request: Request):
             "error": getattr(request.app.state, 'init_error', '初始化失败'),
         }
 
-@app.api_route("/files/generate/{file_path:path}", methods=["GET", "POST", "PUT", "DELETE"])
-async def proxy_generate(request: Request, file_path: str):
-    """流式代理 /files/generate，复用连接池，支持大文件"""
-    if not request.app.state.ready_event.is_set():
-        return Response(content="Service initializing...", status_code=503)
+@app.get("/files/generate/{file_path:path}")
+async def serve_generated_file(request: Request, file_path: str):
+    """
+    以下载方式提供工作区内生成的文件。
 
-    target_url = f"/files/generate/{file_path}"
-    headers = dict(request.headers)
-    headers["host"] = "localhost"
+    智能体生成产物（如 node compile.js 产出的 .pptx）后，会在正文中给出
+    /files/generate/<相对工作区的路径> 链接；前端桌面端点击后弹出保存对话框下载。
+    路径被限制在工作区 / 生成目录 / 上传目录内，防止任意文件读取。
+    """
+    from urllib.parse import unquote
+    from pathlib import Path as _Path
+    from fastapi.responses import FileResponse
+    import backend as _backend
+    from backend.utils.validators import validate_path
 
-    client: httpx.AsyncClient = request.app.state.http_client
-    req = client.build_request(
-        method=request.method,
-        url=target_url,
-        headers=headers,
-        content=await request.body(),
-        params=request.query_params,
-    )
-    resp = await client.send(req, stream=True)
+    rel = unquote(file_path)
+    allowed = [
+        _Path(_backend.workspace_path).resolve() if _backend.workspace_path else None,
+        _Path(config.generate_dir).resolve(),
+        _Path(config.uploads_dir).resolve(),
+    ]
+    allowed = [d for d in allowed if d]
 
-    # 过滤掉 hop-by-hop 头，避免代理异常
-    excluded_headers = {"content-encoding", "transfer-encoding", "connection", "content-length"}
-    response_headers = {
-        k: v for k, v in resp.headers.items()
-        if k.lower() not in excluded_headers
-    }
+    # 依次尝试把相对路径拼到各允许根目录下，命中存在的文件即返回
+    for root in allowed:
+        candidate = (root / rel)
+        try:
+            safe = validate_path(str(candidate), allowed)
+        except (ValueError, RuntimeError):
+            continue
+        if safe.is_file():
+            return FileResponse(
+                path=str(safe),
+                filename=safe.name,
+                media_type="application/octet-stream",  # 强制以附件形式下载
+            )
 
-    return StreamingResponse(
-        resp.aiter_bytes(),
-        status_code=resp.status_code,
-        headers=response_headers,
-        background=resp.aclose,  # 确保流关闭
-    )
+    return Response(content=f"文件不存在: {rel}", status_code=404)
 
 
 # ============ 静态文件挂载 ============

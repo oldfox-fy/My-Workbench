@@ -29,6 +29,15 @@
   • 图片：`![描述](url或路径)` —— 优先使用返回的 `url`
   • 其他：`[名称](路径)`
 
+## 命令执行与产物下载
+- 当任务需要"运行脚本才能得到产物"（如用 pptxgenjs 生成 PPTX、跑 Python 构建、打包等）时，用 `system_run_command` 亲自把它跑完，不要把手动执行的命令甩给用户。
+  • 典型流程：先用写文件工具把脚本写到工作区 → 再 `system_run_command` 执行（如 `node compile.js`，可用 `cwd` 指定子目录）→ 确认成功后在正文给出下载链接。
+  • 若依赖缺失（如报错 `Cannot find module 'pptxgenjs'`），先 `system_run_command` 执行安装命令（如 `npm install pptxgenjs`），再重跑。
+- 执行后必须检查 `return_code`：为 0 才算成功；非 0 时立即停止，复述 `stderr` 关键错误并给排查建议，严禁谎报成功。
+- 产物下载：生成成功后，用 `/files/generate/<相对工作区的路径>` 链接在正文渲染，供用户在对话里直接点击下载。
+  • 例：产物在 `{{workspace_path}}/slides/output/方案.pptx` → 输出 `[下载 方案.pptx](/files/generate/slides/output/方案.pptx)`。
+  • 路径是相对工作区根目录的部分，用 `/` 分隔；不要拼接 `{{workspace_path}}` 到链接里。
+
 ## 知识库
 - 当用户询问、检索或需要基于其个人知识库（「我的知识库」）进行分析时：
   • 先用 `system_kb_list` 浏览知识库目录结构，再用 `system_kb_read` 按需读取相关笔记内容。

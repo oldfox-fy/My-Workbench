@@ -212,3 +212,30 @@ tools:
       required: ["query"]
     module: backend.system_tools.kb_search
     function_name: kb_search
+
+  - name: system_run_command
+    title: 执行命令
+    description: >
+      在工作区目录内执行一条 shell 命令，并返回执行结果（return_code、stdout、stderr）。
+      典型用途：把已写入磁盘的脚本真正跑起来生成产物，例如用 pptxgenjs 生成 PPTX 时执行
+      "node compile.js"，或运行 Python 构建脚本、npm 命令等。
+      注意事项：
+      1. 工作目录（cwd）必须位于工作区内，默认为工作区根目录；需要在子目录执行时用 cwd 指定相对路径。
+      2. 命令有超时保护（默认 120 秒，最大 600 秒），超时会被强制终止。
+      3. 执行后应检查 return_code 是否为 0；非 0 表示失败，须复述 stderr 给用户，不要谎报成功。
+      4. 生成产物后，请用绝对路径或 /files/generate/ 链接在正文中渲染，供用户点击打开或下载。
+    parameters:
+      type: object
+      properties:
+        command:
+          type: string
+          description: 要执行的完整命令行字符串，例如 "node compile.js"。
+        cwd:
+          type: string
+          description: 命令的工作目录（相对工作区的路径或绝对路径），必须位于工作区内。省略时默认为工作区根目录。
+        timeout:
+          type: integer
+          description: 超时时间（秒），默认 120，最大 600。
+      required: ["command"]
+    module: backend.system_tools.runner
+    function_name: run_command
