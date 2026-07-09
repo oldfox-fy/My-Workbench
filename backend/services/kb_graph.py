@@ -27,10 +27,22 @@ from backend.bootstrap import logger
 _IGNORE = {".git", "node_modules", "__pycache__", ".DS_Store", ".obsidian"}
 _MD_EXTS = {".md", ".markdown"}
 
+# 可作为图谱节点的“附件”类文件（pdf / Office / 图片等）。
+# 这些文件本身不含双链，但可通过相邻的附注（sidecar，<文件>.md）承载 [[]]，
+# 也可被其它笔记用 [[讲义.pdf]] / [[讲义]] 直接链接到。
+_ATTACHMENT_EXTS = {
+    ".pdf", ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx", ".xlsm",
+    ".csv", ".tsv",
+    ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".svg", ".ico", ".tiff",
+}
+
+# 链接可解析到的全部扩展名（md + 附件），用于标准 md 链接 [text](path.ext)
+_LINK_EXT_GROUP = "md|markdown|pdf|docx?|pptx?|xlsx?|xlsm|csv|tsv|png|jpe?g|gif|bmp|webp|svg|ico|tiff"
+
 # [[wikilink]] / [[wikilink|alias]] / [[wikilink#heading]]
 _WIKILINK_RE = re.compile(r"\[\[([^\[\]|#]+)(?:#[^\[\]|]+)?(?:\|([^\[\]]+))?\]\]")
-# [text](path.md) —— 仅捕获指向 .md 的相对链接（排除 http/绝对）
-_MDLINK_RE = re.compile(r"\[[^\]]*\]\(([^)]+\.md)\)")
+# [text](path.ext) —— 捕获指向 md 或附件的相对链接（排除 http/绝对）
+_MDLINK_RE = re.compile(r"\[[^\]]*\]\(([^)]+\.(?:" + _LINK_EXT_GROUP + r"))\)", re.IGNORECASE)
 # #tag （行内标签，避免匹配标题 # ，要求前面非行首或有非#字符）
 _TAG_RE = re.compile(r"(?:^|\s)#([\w一-龥/-]+)")
 # 代码块 / 行内代码，解析前剔除，避免误伤
@@ -64,6 +76,29 @@ def _scan_md(root: Path) -> List[Path]:
     return files
 
 
+def _scan_attachments(root: Path) -> List[Path]:
+    """扫描附件类文件（pdf/Office/图片等），供图谱作为节点。"""
+    files: List[Path] = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in _IGNORE and not d.startswith(".")]
+        for name in filenames:
+            if name.startswith("."):
+                continue
+            if Path(name).suffix.lower() in _ATTACHMENT_EXTS:
+                files.append(Path(dirpath) / name)
+    return files
+
+
+def _is_sidecar_of(md_rel: str, attach_rels: set) -> Optional[str]:
+    """若某 md 是某附件的附注（<附件>.md），返回该附件的相对路径，否则 None。"""
+    # 附注命名规则：<附件相对路径>.md，去掉结尾 .md 后应命中某附件
+    if md_rel.lower().endswith(".md"):
+        base = md_rel[:-3]
+        if base in attach_rels:
+            return base
+    return None
+
+
 def _rel(path: Path, root: Path) -> str:
     return os.path.relpath(str(path), str(root)).replace(os.sep, "/")
 
@@ -89,40 +124,55 @@ def _read_text(path: Path) -> str:
 
 def _build_sync(root: Path, include_tags: bool) -> Dict[str, Any]:
     md_files = _scan_md(root)
+    attach_files = _scan_attachments(root)
 
-    # rel_path -> 文件信息
-    rel_paths = [_rel(p, root) for p in md_files]
-    rel_set = set(rel_paths)
+    md_rel_paths = [_rel(p, root) for p in md_files]
+    md_rel_set = set(md_rel_paths)
+    attach_rels = set(_rel(p, root) for p in attach_files)
+
+    # 识别附注（sidecar）：<附件>.md → 其承载的附件相对路径
+    # 附注不作为独立节点，其链接归并到所属附件节点上。
+    sidecar_of: Dict[str, str] = {}     # md_rel -> attachment_rel
+    for md_rel in md_rel_paths:
+        owner = _is_sidecar_of(md_rel, attach_rels)
+        if owner:
+            sidecar_of[md_rel] = owner
+
+    # 真正作为“笔记节点”的 md（排除附注）
+    note_rels = [r for r in md_rel_paths if r not in sidecar_of]
+    note_rel_set = set(note_rels)
 
     # 文件名（不含扩展名，小写）-> [rel_path]，用于 wikilink 解析
+    # 同时纳入笔记与附件，使 [[讲义]] 能命中 讲义.pdf
     stem_index: Dict[str, List[str]] = {}
-    for rel in rel_paths:
-        stem = Path(rel).stem.lower()
-        stem_index.setdefault(stem, []).append(rel)
+    for rel in note_rels:
+        stem_index.setdefault(Path(rel).stem.lower(), []).append(rel)
+    for rel in attach_rels:
+        stem_index.setdefault(Path(rel).stem.lower(), []).append(rel)
 
-    def resolve_wikilink(target: str, from_rel: str) -> Optional[str]:
-        """把 [[目标]] 解析为已存在笔记的 rel_path；解析不到返回 None。"""
+    # 可被链接解析命中的全部真实文件（笔记 + 附件）
+    resolvable_set = note_rel_set | attach_rels
+
+    def resolve_link(target: str, from_rel: str) -> Optional[str]:
+        """把 [[目标]] 解析为已存在的笔记或附件 rel_path；解析不到返回 None。"""
         target = target.strip()
         if not target:
             return None
-        # 允许带路径的 wikilink，如 [[folder/note]]
-        cand = target
-        if not cand.lower().endswith((".md", ".markdown")):
-            cand_md = cand + ".md"
-        else:
-            cand_md = cand
-        # 1) 直接按相对路径匹配
-        norm = cand_md.replace("\\", "/").lstrip("./")
-        if norm in rel_set:
+        norm = target.replace("\\", "/").lstrip("./")
+        # 1) 直接按相对路径匹配（带扩展名）
+        if norm in resolvable_set:
             return norm
-        # 2) 按文件名（stem）匹配
+        # 2) 不带扩展名时，补 .md 再匹配
+        if norm + ".md" in resolvable_set:
+            return norm + ".md"
+        # 3) 按文件名（stem）匹配笔记或附件
         stem = Path(target).stem.lower()
         matches = stem_index.get(stem, [])
         if not matches:
             return None
         if len(matches) == 1:
             return matches[0]
-        # 3) 重名：优先同目录
+        # 4) 重名：优先同目录
         from_dir = os.path.dirname(from_rel)
         same_dir = [m for m in matches if os.path.dirname(m) == from_dir]
         return same_dir[0] if same_dir else matches[0]
@@ -141,38 +191,38 @@ def _build_sync(root: Path, include_tags: bool) -> Dict[str, Any]:
 
     for path in md_files:
         rel = _rel(path, root)
+        # 附注的链接归并到其所属附件上（source 用附件路径）
+        source_rel = sidecar_of.get(rel, rel)
         text = _strip_code(_read_text(path))
 
         # wiki 双链
         for m in _WIKILINK_RE.finditer(text):
             target = m.group(1)
-            resolved = resolve_wikilink(target, rel)
+            resolved = resolve_link(target, rel)
             if resolved:
-                add_edge(rel, resolved, "wiki")
+                add_edge(source_rel, resolved, "wiki")
             else:
                 vid = "missing:" + target.strip().lower()
                 missing_targets[vid] = target.strip()
-                add_edge(rel, vid, "missing")
+                add_edge(source_rel, vid, "missing")
 
-        # 标准 md 链接
+        # 标准 md 链接（可指向笔记或附件）
         for m in _MDLINK_RE.finditer(text):
             raw = m.group(1).split("#")[0]
             if raw.startswith(("http://", "https://", "/")):
                 continue
-            # 相对 from 文件目录解析
             target_abs = (path.parent / raw).resolve()
             try:
                 target_rel = _rel(target_abs, root)
             except ValueError:
                 continue
-            if target_rel in rel_set:
-                add_edge(rel, target_rel, "md")
+            if target_rel in resolvable_set:
+                add_edge(source_rel, target_rel, "md")
 
-        # 标签
+        # 标签（附注的标签也归并到附件）
         if include_tags:
             for m in _TAG_RE.finditer(text):
-                tag = m.group(1)
-                tags_by_file.setdefault(rel, set()).add(tag)
+                tags_by_file.setdefault(source_rel, set()).add(m.group(1))
 
     # ---------- 组装节点 ----------
     degree: Dict[str, int] = {}
@@ -181,7 +231,8 @@ def _build_sync(root: Path, include_tags: bool) -> Dict[str, Any]:
         degree[e["target"]] = degree.get(e["target"], 0) + 1
 
     nodes: List[Dict[str, Any]] = []
-    for rel in rel_paths:
+    # 笔记节点
+    for rel in note_rels:
         nodes.append({
             "id": rel,
             "label": Path(rel).stem,
@@ -189,6 +240,19 @@ def _build_sync(root: Path, include_tags: bool) -> Dict[str, Any]:
             "degree": degree.get(rel, 0),
             "tags": sorted(tags_by_file.get(rel, [])),
         })
+    # 附件节点：仅纳入“已连接”（被引用/有附注链接）的附件，避免海量孤立附件刷屏
+    attach_with_sidecar = set(sidecar_of.values())
+    attachment_count = 0
+    for rel in attach_rels:
+        if degree.get(rel, 0) > 0 or rel in attach_with_sidecar:
+            nodes.append({
+                "id": rel,
+                "label": Path(rel).stem,
+                "type": "attachment",
+                "degree": degree.get(rel, 0),
+                "tags": sorted(tags_by_file.get(rel, [])),
+            })
+            attachment_count += 1
     # 虚节点（被引用但不存在的笔记）
     for vid, label in missing_targets.items():
         nodes.append({
@@ -210,7 +274,7 @@ def _build_sync(root: Path, include_tags: bool) -> Dict[str, Any]:
         for rel, tags in tags_by_file.items():
             for tag in tags:
                 add_edge(rel, "tag:" + tag, "tag")
-        # 重算标签节点度数
+        # 重算所有节点度数
         deg2: Dict[str, int] = {}
         for e in edges:
             deg2[e["source"]] = deg2.get(e["source"], 0) + 1
@@ -222,7 +286,8 @@ def _build_sync(root: Path, include_tags: bool) -> Dict[str, Any]:
         "nodes": nodes,
         "edges": edges,
         "stats": {
-            "note_count": len(rel_paths),
+            "note_count": len(note_rels),
+            "attachment_count": attachment_count,
             "edge_count": len(edges),
             "missing_count": len(missing_targets),
         },
@@ -230,11 +295,27 @@ def _build_sync(root: Path, include_tags: bool) -> Dict[str, Any]:
 
 
 def _backlinks_sync(root: Path, target_rel: str) -> List[Dict[str, str]]:
-    """找出所有引用了 target_rel 的笔记。"""
+    """找出所有引用了 target_rel 的笔记/附件。
+
+    target 既可以是笔记，也可以是附件；若传入的是附件的附注路径（<附件>.md），
+    自动折算到附件本身（因为附注的链接已归并到附件）。
+    """
     graph = _build_sync(root, include_tags=False)
+    # 若传入附注路径，折算到其附件
+    if target_rel.lower().endswith(".md"):
+        base = target_rel[:-3]
+        # base 是否是附件
+        if any(e["target"] == base or e["source"] == base for e in graph["edges"]):
+            # 优先用附件本身作为反链目标
+            attach_base = base
+        else:
+            attach_base = None
+    else:
+        attach_base = None
+    lookup = attach_base or target_rel
     result = []
     for e in graph["edges"]:
-        if e["target"] == target_rel and e["type"] in ("wiki", "md"):
+        if e["target"] == lookup and e["type"] in ("wiki", "md"):
             result.append({"file_path": e["source"], "type": e["type"]})
     return result
 
@@ -252,6 +333,22 @@ async def get_backlinks(target_rel: str) -> List[Dict[str, str]]:
 
 
 async def list_note_names() -> List[str]:
-    """返回所有笔记的相对路径（供编辑器 [[ 自动补全）。"""
+    """返回所有可被 [[ 链接的目标（笔记 + 附件）相对路径，供编辑器自动补全。
+
+    附件的附注（<附件>.md）本身不作为补全目标（避免与附件重复）。
+    """
     root = _kb_root()
-    return await asyncio.to_thread(lambda: [_rel(p, root) for p in _scan_md(root)])
+
+    def _collect():
+        attach_rels = set(_rel(p, root) for p in _scan_attachments(root))
+        names: List[str] = []
+        for p in _scan_md(root):
+            rel = _rel(p, root)
+            # 跳过附件的附注
+            if rel.lower().endswith(".md") and rel[:-3] in attach_rels:
+                continue
+            names.append(rel)
+        names.extend(sorted(attach_rels))
+        return names
+
+    return await asyncio.to_thread(_collect)

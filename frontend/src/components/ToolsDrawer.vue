@@ -26,6 +26,33 @@
             暂无可用工具，请检查 MCP 服务或工具配置。
           </p>
         </n-spin>
+
+        <!-- ========== 技能列表 ========== -->
+        <n-divider />
+        <n-text depth="3" style="font-size: 0.8rem">
+          已注册的技能（共 {{ skillStore.skills.length }} 个），可在「设置 → 技能管理」中维护。
+        </n-text>
+        <n-list hoverable>
+          <n-list-item v-for="skill in skillStore.skills" :key="skill.id">
+            <div>
+              <n-space align="center" :size="6">
+                <n-text strong>{{ skill.title }}</n-text>
+                <n-tag size="tiny" round :type="skill.skill_type === 'code' ? 'warning' : 'info'">
+                  {{ skill.skill_type === 'code' ? '代码' : '提示词' }}
+                </n-tag>
+                <n-tag size="tiny" round :type="skill.enabled ? 'success' : 'default'">
+                  {{ skill.enabled ? '已启用' : '已禁用' }}
+                </n-tag>
+              </n-space>
+              <n-text depth="3" tag="div" style="font-size: 0.78rem; margin-top: 4px; word-break: break-word; white-space: pre-wrap;">
+                {{ skill.name }}{{ skill.description ? ' · ' + skill.description : '' }}
+              </n-text>
+            </div>
+          </n-list-item>
+        </n-list>
+        <p v-if="skillStore.skills.length === 0" style="color: gray; font-size: 0.85rem;">
+          暂无已注册技能，可在「设置 → 技能管理」中注册。
+        </p>
       </n-space>
     </n-drawer-content>
   </n-drawer>
@@ -34,6 +61,7 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import { NDrawer, NDrawerContent, NSpace, NText, NDivider, NList, NListItem, NTag, NSpin } from 'naive-ui'
+import { useSkillStore } from '@/stores/skills'
 
 interface ToolItem {
   function: { name: string; title: string; description: string }
@@ -42,6 +70,7 @@ interface ToolItem {
 const props = defineProps<{ show: boolean }>()
 const emit = defineEmits<{ 'update:show': [value: boolean] }>()
 
+const skillStore = useSkillStore()
 const tools = ref<ToolItem[]>([])
 const loading = ref(false)
 
@@ -58,8 +87,11 @@ async function loadTools() {
   }
 }
 
-// 打开抽屉时刷新工具列表
+// 打开抽屉时刷新工具列表与技能列表
 watch(() => props.show, (val) => {
-  if (val) loadTools()
+  if (val) {
+    loadTools()
+    skillStore.loadSkills()
+  }
 })
 </script>

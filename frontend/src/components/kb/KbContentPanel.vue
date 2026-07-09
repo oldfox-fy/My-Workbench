@@ -1,5 +1,5 @@
 <template>
-  <div class="kb-content-panel">
+  <div class="kb-content-panel" :style="{ width: (props.width ?? 420) + 'px' }">
     <div class="kb-content-header">
       <span class="kb-file-name">{{ kbStore.currentPath }}</span>
       <n-space :size="8" align="center">
@@ -13,7 +13,20 @@
             <n-button size="small" @click="cancelEdit">取消</n-button>
           </template>
         </template>
-        <n-tag v-else size="small" type="warning">只读</n-tag>
+        <n-tag v-else-if="kbStore.isReadonly" size="small" type="warning">
+          <template #icon><n-icon><LockClosedOutline /></n-icon></template>
+          只读（公共基础）
+        </n-tag>
+        <n-tag v-else size="small" type="info">只读</n-tag>
+        <!-- 图片/PDF：用系统默认程序打开 -->
+        <n-button
+          v-if="isViewable"
+          text size="small"
+          @click="openWithDefaultApp"
+          title="用系统默认程序打开"
+        >
+          <template #icon><n-icon :size="18"><OpenOutline /></n-icon></template>
+        </n-button>
         <n-button text size="small" @click="emit('close')" title="关闭">
           <template #icon><n-icon :size="18"><CloseOutline /></n-icon></template>
         </n-button>
@@ -45,8 +58,21 @@
       </div>
       <!-- 预览模式 -->
       <div v-else class="kb-preview">
+        <!-- 图片内嵌查看（点击放大） -->
+        <div v-if="kbStore.fileFormat === 'image'" class="kb-image-view">
+          <img :src="kbStore.rawUrl" :alt="kbStore.currentPath" @click="zoomed = true" title="点击放大" />
+        </div>
+
+        <!-- PDF 内嵌查看（由内核原生渲染） -->
+        <iframe
+          v-else-if="kbStore.fileFormat === 'pdf'"
+          class="kb-pdf-view"
+          :src="kbStore.rawUrl"
+          :title="kbStore.currentPath"
+        ></iframe>
+
         <MarkdownRender
-          v-if="isMarkdown"
+          v-else-if="isMarkdown"
           :custom-id="`kb-${kbStore.currentPath}`"
           :content="renderedContent"
           :final="true"
@@ -63,20 +89,35 @@
             @click="openPath(bl.file_path)"
           >{{ bl.file_path }}</div>
         </div>
+
+        <!-- 附注笔记：为非 md 资源（pdf/图片/docx 等）提供双链附注 -->
+        <KbSidecarPanel v-if="showSidecar" :target="kbStore.currentPath" />
       </div>
     </div>
+
+    <!-- 图片放大灯箱 -->
+    <Teleport to="body">
+      <div v-if="zoomed" class="kb-lightbox" @click="zoomed = false">
+        <img :src="kbStore.rawUrl" :alt="kbStore.currentPath" @click.stop />
+        <n-button class="kb-lightbox-close" circle @click="zoomed = false">
+          <template #icon><n-icon :size="20"><CloseOutline /></n-icon></template>
+        </n-button>
+      </div>
+    </Teleport>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import { NButton, NIcon, NSpace, NTag, useMessage } from 'naive-ui'
-import { CloseOutline, CreateOutline } from '@vicons/ionicons5'
+import { CloseOutline, CreateOutline, LockClosedOutline, OpenOutline } from '@vicons/ionicons5'
 import { MarkdownRender } from 'markstream-vue'
 import 'markstream-vue/index.css'
 import { useKnowledgeStore } from '@/stores/knowledge'
 import { getBacklinks, getNoteNames, type Backlink } from '@/api/knowledge'
+import KbSidecarPanel from '@/components/kb/KbSidecarPanel.vue'
 
+const props = defineProps<{ width?: number }>()
 const emit = defineEmits<{ (e: 'close'): void }>()
 
 const message = useMessage()
@@ -88,6 +129,35 @@ const saving = ref(false)
 const editorRef = ref<HTMLTextAreaElement | null>(null)
 
 const isMarkdown = computed(() => /\.(md|markdown)$/i.test(kbStore.currentPath))
+
+// 图片/PDF 可用系统程序打开 + 灯箱放大
+const isViewable = computed(() => kbStore.fileFormat === 'image' || kbStore.fileFormat === 'pdf')
+const zoomed = ref(false)
+
+// 非 md 资源（pdf/图片/docx/二进制等）显示附注面板，供其接入双链图谱
+// md 笔记本身可直接写 [[]]，无需附注
+const showSidecar = computed(() =>
+  !!kbStore.currentPath && !isMarkdown.value
+)
+
+async function openWithDefaultApp() {
+  const path = kbStore.absPath
+  if (!path) return
+  try {
+    const api = (window as any).pywebview?.api
+    if (api?.open_with_default_app) {
+      const res = await api.open_with_default_app(path)
+      if (res && res.success === false) message.error(res.error || '打开失败')
+    } else {
+      message.warning('用系统程序打开仅支持桌面环境')
+    }
+  } catch (e: any) {
+    message.error(e?.message || '打开失败')
+  }
+}
+
+// 切换文件时关闭灯箱
+watch(() => kbStore.currentPath, () => { zoomed.value = false })
 
 // ---------- 双链：笔记名索引（用于补全与跳转解析） ----------
 const noteNames = ref<string[]>([])
@@ -263,7 +333,6 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .kb-content-panel {
-  width: 420px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
@@ -342,6 +411,55 @@ onBeforeUnmount(() => {
   font-size: 0.88rem;
   line-height: 1.6;
   color: var(--text-primary);
+}
+
+/* 图片内嵌查看 */
+.kb-image-view {
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+}
+.kb-image-view img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 8px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.2);
+  cursor: zoom-in;
+}
+
+/* 图片放大灯箱 */
+.kb-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 3000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.82);
+  cursor: zoom-out;
+}
+.kb-lightbox img {
+  max-width: 92vw;
+  max-height: 92vh;
+  object-fit: contain;
+  border-radius: 6px;
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.5);
+  cursor: default;
+}
+.kb-lightbox-close {
+  position: fixed;
+  top: 20px;
+  right: 24px;
+}
+
+/* PDF 内嵌查看：铺满预览区 */
+.kb-pdf-view {
+  width: 100%;
+  height: 100%;
+  min-height: 70vh;
+  border: none;
+  border-radius: 8px;
+  background: #fff;
 }
 
 /* 反向链接 */

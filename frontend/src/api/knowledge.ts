@@ -112,7 +112,7 @@ export async function kbSearch(query: string, topK = 8): Promise<SearchHit[]> {
 export interface GraphNode {
   id: string
   label: string
-  type: 'note' | 'missing' | 'tag'
+  type: 'note' | 'missing' | 'tag' | 'attachment'
   degree: number
   tags: string[]
 }
@@ -126,7 +126,7 @@ export interface GraphEdge {
 export interface GraphData {
   nodes: GraphNode[]
   edges: GraphEdge[]
-  stats: { note_count: number; edge_count: number; missing_count: number }
+  stats: { note_count: number; edge_count: number; missing_count: number; attachment_count?: number }
 }
 
 export interface Backlink {
@@ -155,4 +155,35 @@ export async function getNoteNames(): Promise<string[]> {
   if (!res.ok) return []
   const data = await res.json()
   return data.notes || []
+}
+
+// ---------- 附注 sidecar（为不可编辑资源提供双链附注） ----------
+
+export interface Sidecar {
+  path: string        // 附注笔记的相对路径（<原文件>.md）
+  content: string
+  exists: boolean
+  editable: boolean
+}
+
+export async function getSidecar(path: string): Promise<Sidecar> {
+  const res = await fetch(`/api/kb/sidecar?path=${encodeURIComponent(path)}`)
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.detail || '读取附注失败')
+  }
+  return res.json()
+}
+
+export async function saveSidecar(path: string, content: string): Promise<Sidecar> {
+  const res = await fetch('/api/kb/sidecar/save', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path, content }),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.detail || '保存附注失败')
+  }
+  return res.json()
 }

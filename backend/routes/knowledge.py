@@ -6,10 +6,13 @@
 import os
 import shutil
 import asyncio
+import mimetypes
 from pathlib import Path
 from typing import Optional
+from urllib.parse import quote as _quote
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 import backend
@@ -19,8 +22,48 @@ from backend.system_tools.writer import file_write
 
 router = APIRouter(prefix="/api/kb", tags=["knowledge"])
 
+# 可内嵌查看的图片扩展名（前端用 <img> 直接渲染）
+# 注：.svg 不列入，保持其作为文本可编辑（避免内嵌渲染任意 SVG 的风险）
+_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".ico"}
+# 可内嵌查看的 PDF（前端用 <iframe> 由浏览器/内核原生渲染）
+_PDF_EXTS = {".pdf"}
+
 # 目录树中忽略的名称
 _IGNORE = {".git", "node_modules", "__pycache__", ".DS_Store", ".obsidian"}
+
+# 只读目录名称：这些目录下的所有文件和子目录均为只读，不可编辑/新建/删除
+# 可通过 app_config.yaml 的 kb_readonly_dirs 字段扩展
+_READONLY_DIR_NAMES = {"公共基础"}
+
+
+def _init_readonly_dirs():
+    """从 app_config.yaml 加载额外的只读目录名称（与内置常量合并）。"""
+    try:
+        from config_loader import config
+        extra = config.raw_config.get("kb_readonly_dirs", [])
+        if isinstance(extra, list):
+            _READONLY_DIR_NAMES.update(str(d) for d in extra if d)
+    except Exception:
+        pass
+
+
+def _is_under_readonly_dir(path: Path, root: Path) -> bool:
+    """
+    检查 path 是否位于只读目录下（包括只读目录本身）。
+    匹配规则：路径中任意一级父目录（或路径自身）名称在 _READONLY_DIR_NAMES 中。
+    """
+    try:
+        rel = path.resolve().relative_to(root.resolve())
+    except ValueError:
+        return False  # 不在知识库根目录内，不判断
+    for part in rel.parts:
+        if part in _READONLY_DIR_NAMES:
+            return True
+    return False
+
+# 模块加载时从配置合并只读目录名称
+_init_readonly_dirs()
+
 # 富格式 / 二进制扩展名：使用专用只读渲染（reader），不可在界面内直接编辑。
 # 其余一律尝试按文本解码，能解码即可读可写。
 _RICH_EXTS = {
@@ -104,6 +147,10 @@ class CreateRequest(BaseModel):
 class DeleteRequest(BaseModel):
     path: str
 
+class SidecarSaveRequest(BaseModel):
+    path: str      # 目标资源（被附注的文件）相对根目录路径
+    content: str
+
 
 # ──────────────────────── 工具函数 ────────────────────────
 
@@ -144,20 +191,24 @@ def _build_tree(dir_path: Path, root: Path, depth: int = 0, max_depth: int = 12)
     for entry in entries:
         if entry.name in _IGNORE or entry.name.startswith("."):
             continue
+        entry_path = Path(entry.path)
         rel = os.path.relpath(entry.path, root).replace(os.sep, "/")
+        is_readonly = _is_under_readonly_dir(entry_path, root)
         if entry.is_dir(follow_symlinks=False):
             nodes.append({
                 "label": entry.name,
                 "key": rel,
                 "isDir": True,
-                "children": _build_tree(Path(entry.path), root, depth + 1, max_depth),
+                "readonly": is_readonly,
+                "children": _build_tree(entry_path, root, depth + 1, max_depth),
             })
         else:
             nodes.append({
                 "label": entry.name,
                 "key": rel,
                 "isDir": False,
-                "editable": _is_editable(entry.name),
+                "editable": not is_readonly and _is_editable(entry.name),
+                "readonly": is_readonly,
             })
     return nodes
 
@@ -194,8 +245,34 @@ async def get_file(path: str):
         raise HTTPException(400, "路径不是文件")
 
     rel = os.path.relpath(safe_path, root).replace(os.sep, "/")
+    is_readonly = _is_under_readonly_dir(safe_path, root)
+    ext = safe_path.suffix.lower()
 
-    # 富格式（图片/PDF/Office 等）走专用只读渲染
+    # 图片：交给前端 <img> 内嵌查看，走 /api/kb/raw 取原始字节
+    if ext in _IMAGE_EXTS:
+        return {
+            "path": rel,
+            "content": "",
+            "format": "image",
+            "raw_url": f"/api/kb/raw?path={_quote(rel)}",
+            "abs_path": str(safe_path),
+            "editable": False,
+            "readonly": is_readonly,
+        }
+
+    # PDF：交给前端 <iframe> 由内核原生渲染，走 /api/kb/raw 取原始字节
+    if ext in _PDF_EXTS:
+        return {
+            "path": rel,
+            "content": "",
+            "format": "pdf",
+            "raw_url": f"/api/kb/raw?path={_quote(rel)}",
+            "abs_path": str(safe_path),
+            "editable": False,
+            "readonly": is_readonly,
+        }
+
+    # 其余富格式（docx/xlsx/ppt 等）走专用只读渲染
     if not _is_editable(safe_path.name):
         try:
             result = await file_read(str(safe_path), allowed_dirs=[str(root)])
@@ -206,6 +283,7 @@ async def get_file(path: str):
             "content": result.get("content", ""),
             "format": result.get("format", "text"),
             "editable": False,
+            "readonly": is_readonly,
         }
 
     # 其余按文本读取；能解码即可编辑，否则明确告知是二进制
@@ -216,19 +294,38 @@ async def get_file(path: str):
             "content": "（该文件为二进制或非文本内容，无法在此查看或编辑）",
             "format": "binary",
             "editable": False,
+            "readonly": is_readonly,
         }
     return {
         "path": rel,
         "content": text,
         "format": "text",
-        "editable": True,
+        "editable": not is_readonly,
+        "readonly": is_readonly,
     }
+
+
+@router.get("/raw")
+async def get_raw_file(path: str):
+    """流式返回知识库内文件的原始字节（供图片 <img> / PDF <iframe> 内嵌查看）。"""
+    root = _get_root()
+    safe_path = _safe(path, root)
+    if not safe_path.exists() or not safe_path.is_file():
+        raise HTTPException(404, "文件不存在")
+    media_type, _ = mimetypes.guess_type(str(safe_path))
+    return FileResponse(
+        str(safe_path),
+        media_type=media_type or "application/octet-stream",
+        filename=safe_path.name,
+    )
 
 
 @router.post("/file/save")
 async def save_file(req: SaveRequest):
     root = _get_root()
     safe_path = _safe(req.path, root)
+    if _is_under_readonly_dir(safe_path, root):
+        raise HTTPException(403, "该文件位于只读目录（公共基础）下，不可编辑")
     if safe_path.exists() and safe_path.is_dir():
         raise HTTPException(400, "目标是目录，无法写入")
     # file_write 使用 backend.workspace_path 做校验，这里临时切换到知识库根目录
@@ -243,6 +340,57 @@ async def save_file(req: SaveRequest):
     return {"status": "ok", "bytes_written": result.get("bytes_written", 0)}
 
 
+# ──────────────────────── 附注（sidecar）────────────────────────
+# 为不可直接编辑的资源（pdf/docx/图片等）提供一篇相邻的 md 附注笔记，
+# 命名规则：<原文件名>.md（如 讲义.pdf → 讲义.pdf.md）。
+# 该附注本身是真实 md 文件，会自动进入双链图谱与反向链接，无需改图谱引擎。
+
+def _sidecar_rel(target_rel: str) -> str:
+    """由目标资源相对路径推导其 sidecar 附注的相对路径。"""
+    return target_rel + ".md"
+
+
+@router.get("/sidecar")
+async def get_sidecar(path: str):
+    """读取某资源的附注笔记内容（不存在则返回空，前端可直接新建）。"""
+    root = _get_root()
+    target = _safe(path, root)  # 校验目标资源合法且在库内
+    sidecar_rel = _sidecar_rel(os.path.relpath(target, root).replace(os.sep, "/"))
+    sidecar_path = _safe(sidecar_rel, root)
+    exists = sidecar_path.exists() and sidecar_path.is_file()
+    content = ""
+    if exists:
+        text = await asyncio.to_thread(_read_text_or_none, sidecar_path)
+        content = text if text is not None else ""
+    return {
+        "path": sidecar_rel,
+        "content": content,
+        "exists": exists,
+        # 只读目录（公共基础）下的资源，其附注也随之只读
+        "editable": not _is_under_readonly_dir(target, root),
+    }
+
+
+@router.post("/sidecar/save")
+async def save_sidecar(req: SidecarSaveRequest):
+    """写入某资源的附注笔记（<原文件名>.md）。"""
+    root = _get_root()
+    target = _safe(req.path, root)
+    if _is_under_readonly_dir(target, root):
+        raise HTTPException(403, "该资源位于只读目录（公共基础）下，不可添加附注")
+    sidecar_rel = _sidecar_rel(os.path.relpath(target, root).replace(os.sep, "/"))
+    sidecar_path = _safe(sidecar_rel, root)
+    prev = backend.workspace_path
+    backend.workspace_path = str(root)
+    try:
+        result = await file_write(str(sidecar_path), req.content)
+    finally:
+        backend.workspace_path = prev
+    if not result.get("success"):
+        raise HTTPException(400, result.get("error", "保存失败"))
+    return {"status": "ok", "path": sidecar_rel, "bytes_written": result.get("bytes_written", 0)}
+
+
 @router.post("/create")
 async def create_entry(req: CreateRequest):
     root = _get_root()
@@ -252,6 +400,8 @@ async def create_entry(req: CreateRequest):
     parent_rel = (req.parent or "").strip()
     target_rel = f"{parent_rel}/{name}" if parent_rel else name
     safe_path = _safe(target_rel, root)
+    if _is_under_readonly_dir(safe_path, root):
+        raise HTTPException(403, "该位置位于只读目录（公共基础）下，不可新建")
     if safe_path.exists():
         raise HTTPException(400, "同名文件或文件夹已存在")
 
@@ -275,6 +425,8 @@ async def delete_entry(req: DeleteRequest):
     safe_path = _safe(req.path, root)
     if safe_path.resolve() == root:
         raise HTTPException(400, "不能删除知识库根目录")
+    if _is_under_readonly_dir(safe_path, root):
+        raise HTTPException(403, "该文件/文件夹位于只读目录（公共基础）下，不可删除")
     if not safe_path.exists():
         raise HTTPException(404, "目标不存在")
 

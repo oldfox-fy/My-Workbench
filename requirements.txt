@@ -13,3 +13,5 @@ requests>=2.34.1
 pyinstaller>=6.20.0
 sqlite-vec>=0.1.6
 numpy>=1.26.0
+python-docx>=1.0.0
+PyPDF2>=3.0.0

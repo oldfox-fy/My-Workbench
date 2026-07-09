@@ -12,9 +12,12 @@
         </span>
       </div>
       <div class="kb-topbar-right">
+        <n-checkbox v-model:checked="showAttachments" @update:checked="applyFilter">显示附件</n-checkbox>
         <n-checkbox v-model:checked="includeTags" @update:checked="reload">显示标签</n-checkbox>
         <n-text depth="3" v-if="graph" class="kb-graph-stats">
-          {{ graph.stats.note_count }} 笔记 · {{ graph.stats.edge_count }} 链接
+          {{ graph.stats.note_count }} 笔记
+          <span v-if="graph.stats.attachment_count">· {{ graph.stats.attachment_count }} 附件</span>
+          · {{ graph.stats.edge_count }} 链接
           <span v-if="graph.stats.missing_count">· {{ graph.stats.missing_count }} 未创建</span>
         </n-text>
         <n-button size="small" text @click="reload" title="刷新">
@@ -69,6 +72,7 @@ const graph = ref<GraphData | null>(null)
 const loading = ref(false)
 const error = ref('')
 const includeTags = ref(false)
+const showAttachments = ref(true)
 
 // 物理节点
 interface PNode extends GraphNode { x: number; y: number; vx: number; vy: number }
@@ -98,6 +102,7 @@ function palette() {
   return {
     bg: dark ? '#16161a' : '#fafafa',
     note: '#4a7cf7',
+    attachment: '#2fb380',
     missing: dark ? '#666' : '#bbb',
     tag: '#e08a3c',
     edge: dark ? 'rgba(150,160,190,0.25)' : 'rgba(80,90,120,0.22)',
@@ -125,8 +130,12 @@ function initSimulation() {
   const h = wrapRef.value?.clientHeight || 600
   const cx = w / 2, cy = h / 2
   const idMap = new Map<string, PNode>()
-  nodes = graph.value.nodes.map((n, i) => {
-    const angle = (i / graph.value!.nodes.length) * Math.PI * 2
+  // 按开关过滤附件节点
+  const visibleNodes = graph.value.nodes.filter(
+    n => showAttachments.value || n.type !== 'attachment'
+  )
+  nodes = visibleNodes.map((n, i) => {
+    const angle = (i / visibleNodes.length) * Math.PI * 2
     const r = Math.min(w, h) * 0.3
     const p: PNode = {
       ...n,
@@ -143,6 +152,11 @@ function initSimulation() {
   scale = 1; offsetX = 0; offsetY = 0
   alpha = 1
   startLoop()
+}
+
+// 切换“显示附件”：无需重新请求后端，直接重建模拟
+function applyFilter() {
+  initSimulation()
 }
 
 // 力导向一步
@@ -222,7 +236,10 @@ function draw() {
     const r = nodeRadius(n)
     ctx.beginPath()
     ctx.arc(n.x, n.y, r, 0, Math.PI * 2)
-    ctx.fillStyle = n.type === 'missing' ? c.missing : n.type === 'tag' ? c.tag : c.note
+    ctx.fillStyle = n.type === 'missing' ? c.missing
+      : n.type === 'tag' ? c.tag
+      : n.type === 'attachment' ? c.attachment
+      : c.note
     ctx.globalAlpha = n.type === 'missing' ? 0.6 : 1
     ctx.fill()
     ctx.globalAlpha = 1
@@ -326,12 +343,12 @@ function onWheel(e: WheelEvent) {
 async function onDblClick(e: MouseEvent) {
   const n = pickNode(e.clientX, e.clientY)
   if (!n) return
-  if (n.type === 'note') {
+  if (n.type === 'note' || n.type === 'attachment') {
     try {
       await kbStore.openFile(n.id, true)
       router.push('/knowledge')
     } catch (err: any) {
-      message.error(err.message || '打开笔记失败')
+      message.error(err.message || '打开失败')
     }
   } else if (n.type === 'missing') {
     message.info(`「${n.label}」尚未创建`)

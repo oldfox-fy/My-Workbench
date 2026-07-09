@@ -6,6 +6,7 @@ export interface KbTreeNode {
   key: string
   isDir: boolean
   editable?: boolean
+  readonly?: boolean
   children?: KbTreeNode[]
 }
 
@@ -14,6 +15,9 @@ export interface KbFile {
   content: string
   format: string
   editable?: boolean
+  readonly?: boolean
+  raw_url?: string
+  abs_path?: string
 }
 
 export const useKnowledgeStore = defineStore('knowledge', () => {
@@ -25,7 +29,11 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
   const currentPath = ref('')      // 当前打开的文件路径（空表示未选中）
   const fileContent = ref('')      // 当前文件内容
   const isEditable = ref(false)    // 当前文件是否可编辑
+  const isReadonly = ref(false)    // 当前文件是否位于只读目录（如公共基础）
   const selectedKey = ref('')      // 目录树选中项（可能是文件或文件夹）
+  const fileFormat = ref('')       // 当前文件格式：text/markdown/image/pdf/binary 等
+  const rawUrl = ref('')           // image/pdf 的原始字节地址（内嵌查看用）
+  const absPath = ref('')          // 当前文件的绝对路径（供"用系统程序打开"）
 
   // 打开并读取一个文件，更新共享选中态
   // 以后端返回的 editable 为准（若后端未返回则回退到传入的 hint）
@@ -34,6 +42,10 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
     currentPath.value = data.path
     fileContent.value = data.content
     isEditable.value = data.editable ?? editable
+    isReadonly.value = data.readonly ?? false
+    fileFormat.value = data.format || ''
+    rawUrl.value = data.raw_url || ''
+    absPath.value = data.abs_path || ''
     selectedKey.value = data.path
   }
 
@@ -43,6 +55,10 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
     currentPath.value = ''
     fileContent.value = ''
     isEditable.value = false
+    isReadonly.value = false
+    fileFormat.value = ''
+    rawUrl.value = ''
+    absPath.value = ''
   }
 
   // 读取已保存的知识库根目录
@@ -151,7 +167,11 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
     currentPath,
     fileContent,
     isEditable,
+    isReadonly,
     selectedKey,
+    fileFormat,
+    rawUrl,
+    absPath,
     openFile,
     resetSelection,
     loadRoot,

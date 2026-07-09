@@ -11,6 +11,7 @@ export interface Profile {
   top_k: number
   frequency_penalty: number
   presence_penalty: number
+  skills: string[]
 }
 
 export const useProfileStore = defineStore('profile', () => {
@@ -28,6 +29,7 @@ export const useProfileStore = defineStore('profile', () => {
       top_k: p.top_k ?? 40,
       frequency_penalty: p.frequency_penalty ?? 0,
       presence_penalty: p.presence_penalty ?? 0,
+      skills: p.skills ?? [],
     }))
     profiles.value = data
     if (!activeProfileId.value || !profiles.value.find(p => p.id === activeProfileId.value)) {
@@ -46,12 +48,13 @@ export const useProfileStore = defineStore('profile', () => {
     top_p: number = 1,
     top_k: number = 40,
     frequency_penalty: number = 0,
-    presence_penalty: number = 0
+    presence_penalty: number = 0,
+    skills: string[] = []
   ) {
     const res = await fetch('/api/profiles/', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, tools, profile_prompt, temperature, top_p, top_k, frequency_penalty, presence_penalty })
+      body: JSON.stringify({ name, tools, profile_prompt, temperature, top_p, top_k, frequency_penalty, presence_penalty, skills })
     })
     const newProfile = await res.json()
     // 补全默认值（以防后端未完整返回）
@@ -62,6 +65,7 @@ export const useProfileStore = defineStore('profile', () => {
       top_k: newProfile.top_k ?? 40,
       frequency_penalty: newProfile.frequency_penalty ?? 0,
       presence_penalty: newProfile.presence_penalty ?? 0,
+      skills: newProfile.skills ?? [],
     }
     profiles.value.push(completeProfile)
     activeProfileId.value = completeProfile.id
@@ -77,12 +81,13 @@ export const useProfileStore = defineStore('profile', () => {
     top_p?: number,
     top_k?: number,
     frequency_penalty?: number,
-    presence_penalty?: number
+    presence_penalty?: number,
+    skills?: string[]
   ) {
     await fetch(`/api/profiles/${id}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, tools, profile_prompt, temperature, top_p, top_k, frequency_penalty, presence_penalty })
+      body: JSON.stringify({ name, tools, profile_prompt, temperature, top_p, top_k, frequency_penalty, presence_penalty, skills: skills ?? [] })
     })
     const profile = profiles.value.find(p => p.id === id)
     if (profile) {
@@ -94,6 +99,7 @@ export const useProfileStore = defineStore('profile', () => {
       if (top_k !== undefined) profile.top_k = top_k
       if (frequency_penalty !== undefined) profile.frequency_penalty = frequency_penalty
       if (presence_penalty !== undefined) profile.presence_penalty = presence_penalty
+      if (skills !== undefined) profile.skills = skills
     }
   }
 

@@ -5,7 +5,7 @@
 
     <!-- ========== 侧边栏（折叠式） ========== -->
      <Transition name="sidebar">
-      <aside v-if="!sidebarCollapsed" class="sidebar-panel border-marquee-right" :class="{ collapsed: sidebarCollapsed, 'sidebar-open': sidebarOpen }">
+      <aside v-if="!sidebarCollapsed" class="sidebar-panel border-marquee-right" :class="{ collapsed: sidebarCollapsed, 'sidebar-open': sidebarOpen }" :style="{ width: sidebarResize.width.value + 'px' }">
         <div class="sidebar-header">
           <span class="logo-text"><m-svg name="star" style="position: absolute;left:120px;top:18px;"/>✨ My Workbench</span>
           <n-button v-if="!isMobile" text class="icon-btn" @click="sidebarCollapsed = true" title="收起侧栏">
@@ -83,18 +83,43 @@
       </aside>
     </Transition>
 
+    <!-- 侧边栏拖拽手柄 -->
+    <div
+      v-if="!isMobile && !sidebarCollapsed"
+      class="resize-handle resize-handle-sidebar"
+      :class="{ active: sidebarResize.isDragging.value }"
+      :style="{ left: sidebarResize.width.value + 'px' }"
+      v-bind="sidebarResize.handleProps"
+    ></div>
+
     <!-- ========== 工作区（知识库面板 + 主区域） ========== -->
     <div
       class="workspace"
       :style="{
-        paddingLeft: (!isMobile && !sidebarCollapsed) ? '260px' : '0'
+        paddingLeft: (!isMobile && !sidebarCollapsed) ? sidebarResize.width.value + 'px' : '0'
       }"
     >
       <!-- 知识库目录侧栏 -->
-      <KbTreePanel v-if="kbOpen" show-close @close="closeKnowledge" />
+      <KbTreePanel v-if="kbOpen" show-close :width="treePanelResize.width.value" @close="closeKnowledge" />
+
+      <!-- 知识库树 → 内容 拖拽手柄 -->
+      <div
+        v-if="kbOpen"
+        class="resize-handle"
+        :class="{ active: treePanelResize.isDragging.value }"
+        v-bind="treePanelResize.handleProps"
+      ></div>
 
       <!-- 知识库内容窗口（打开文件后才展开） -->
-      <KbContentPanel v-if="kbOpen && kbStore.currentPath" @close="kbStore.resetSelection()" />
+      <KbContentPanel v-if="kbOpen && kbStore.currentPath" :width="contentPanelResize.width.value" @close="kbStore.resetSelection()" />
+
+      <!-- 知识库内容 → 主区域 拖拽手柄 -->
+      <div
+        v-if="kbOpen && kbStore.currentPath"
+        class="resize-handle"
+        :class="{ active: contentPanelResize.isDragging.value }"
+        v-bind="contentPanelResize.handleProps"
+      ></div>
 
       <!-- 主区域 -->
       <main
@@ -277,7 +302,7 @@ import SettingsDrawer from '@/components/SettingsDrawer.vue'
 import ToolsDrawer from '@/components/ToolsDrawer.vue'
 import KbTreePanel from '@/components/kb/KbTreePanel.vue'
 import KbContentPanel from '@/components/kb/KbContentPanel.vue'
-import mSvg from '@/components/MSvg.vue'
+import mSvg from '@/components/mSvg.vue'
 // import MessageList from '@/components/VirtualMessageList.vue'
 import MessageList from '@/components/MessageList.vue'
 import ChatInput from '@/components/ChatInput.vue'
@@ -286,6 +311,7 @@ import { useModel } from '@/composables/useModel'
 import { useFileUpload } from '@/composables/useFileUpload'
 import { useChat } from '@/composables/useChat'
 import { useMessageActions } from '@/composables/useMessageActions'
+import { useResizeHandle } from '@/composables/useResizeHandle'
 import { localIP, uploadDir } from '@/utils/message'
 
 const route = useRoute()
@@ -303,6 +329,17 @@ const showQRCode = ref(true)
 
 // 知识库面板（桌面端在对话页内嵌打开）
 const kbOpen = ref(false)
+
+// 面板拖拽调整宽度
+const sidebarResize = useResizeHandle({
+  minWidth: 180, maxWidth: 400, storageKey: 'panel-sidebar-width', initialWidth: 260, direction: 'right',
+})
+const treePanelResize = useResizeHandle({
+  minWidth: 150, maxWidth: 500, storageKey: 'panel-tree-width', initialWidth: 240, direction: 'right',
+})
+const contentPanelResize = useResizeHandle({
+  minWidth: 240, maxWidth: 700, storageKey: 'panel-content-width', initialWidth: 420, direction: 'right',
+})
 
 const isDark = computed(() => configStore.themeMode === 'dark')
 
@@ -552,6 +589,29 @@ onUnmounted(() => {
   font-family: 'Inter', 'Segoe UI', sans-serif;
   overflow: hidden;
   position: relative;
+}
+
+/* ========== 拖拽手柄 ========== */
+.resize-handle {
+  width: 4px;
+  flex-shrink: 0;
+  cursor: col-resize;
+  background: transparent;
+  transition: background 0.15s;
+  z-index: 10;
+  user-select: none;
+}
+.resize-handle:hover,
+.resize-handle.active {
+  background: var(--accent-color, #4a7cf7);
+}
+
+/* 侧边栏拖拽手柄（绝对定位，跟随侧边栏右边缘） */
+.resize-handle-sidebar {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  height: 100%;
 }
 
 .sidebar-enter-active,

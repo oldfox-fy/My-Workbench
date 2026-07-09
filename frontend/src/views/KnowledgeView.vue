@@ -56,9 +56,24 @@
 
     <!-- 主体：左树 + 右内容 -->
     <div class="kb-body">
-      <KbTreePanel />
+      <KbTreePanel :width="treePanelResize.width.value" />
 
-      <KbContentPanel v-if="kbStore.currentPath" @close="kbStore.resetSelection()" />
+      <!-- 知识库树 → 内容 拖拽手柄 -->
+      <div
+        class="resize-handle"
+        :class="{ active: treePanelResize.isDragging.value }"
+        v-bind="treePanelResize.handleProps"
+      ></div>
+
+      <KbContentPanel v-if="kbStore.currentPath" :width="contentPanelResize.width.value" @close="kbStore.resetSelection()" />
+
+      <!-- 知识库内容 → 引导区 拖拽手柄 -->
+      <div
+        v-if="kbStore.currentPath"
+        class="resize-handle"
+        :class="{ active: contentPanelResize.isDragging.value }"
+        v-bind="contentPanelResize.handleProps"
+      ></div>
 
       <!-- 未选中文件时的引导 -->
       <div v-else class="kb-guide">
@@ -83,6 +98,7 @@ import { MarkdownRender } from 'markstream-vue'
 import 'markstream-vue/index.css'
 import { useConfigStore } from '@/stores/config'
 import { useKnowledgeStore } from '@/stores/knowledge'
+import { useResizeHandle } from '@/composables/useResizeHandle'
 import { kbSearch, type SearchHit } from '@/api/knowledge'
 import KbTreePanel from '@/components/kb/KbTreePanel.vue'
 import KbContentPanel from '@/components/kb/KbContentPanel.vue'
@@ -93,6 +109,14 @@ const router = useRouter()
 const configStore = useConfigStore()
 const kbStore = useKnowledgeStore()
 const message = useMessage()
+
+// 面板拖拽调整宽度（与 ChatWindow 共用 localStorage key）
+const treePanelResize = useResizeHandle({
+  minWidth: 150, maxWidth: 500, storageKey: 'panel-tree-width', initialWidth: 240, direction: 'right',
+})
+const contentPanelResize = useResizeHandle({
+  minWidth: 240, maxWidth: 700, storageKey: 'panel-content-width', initialWidth: 420, direction: 'right',
+})
 
 // ---------- 语义搜索 ----------
 const searchQuery = ref('')
@@ -215,6 +239,21 @@ onMounted(async () => {
 
 /* 主体 */
 .kb-body { flex: 1; display: flex; overflow: hidden; }
+
+/* 拖拽手柄 */
+.resize-handle {
+  width: 4px;
+  flex-shrink: 0;
+  cursor: col-resize;
+  background: transparent;
+  transition: background 0.15s;
+  z-index: 10;
+  user-select: none;
+}
+.resize-handle:hover,
+.resize-handle.active {
+  background: var(--accent-color, #4a7cf7);
+}
 
 /* 引导页 */
 .kb-guide { flex: 1; overflow: hidden; }

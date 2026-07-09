@@ -100,7 +100,7 @@
 import { ref, PropType } from 'vue'
 import { NButton, NInput, NUpload, NIcon, type UploadFileInfo } from 'naive-ui'
 import { ArrowDownOutline, DocumentOutline } from '@vicons/ionicons5'
-import mSvg from '@/components/MSvg.vue'
+import mSvg from '@/components/mSvg.vue'
 
 
 const props = defineProps({

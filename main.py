@@ -20,6 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from backend.routes import register_all_routers
 from backend.database import init_db
 from backend.mcp_client import MCPClientManager
+from backend.services.skills import SkillRegistry
 from config_loader import config
 
 
@@ -77,6 +78,7 @@ async def lifespan(app: FastAPI):
     ready_event = asyncio.Event()
     app.state.ready_event = ready_event
     app.state.mcp_manager = None
+    app.state.skill_registry = None
     app.state.init_success = False
     app.state.init_error = None
 
@@ -87,6 +89,10 @@ async def lifespan(app: FastAPI):
             mcp_manager = MCPClientManager()
             await mcp_manager.connect_from_config(config.mcp_config_path)
             app.state.mcp_manager = mcp_manager
+            # 加载自定义技能注册表（依赖 DB，已 init_db 之后）
+            skill_registry = SkillRegistry()
+            await skill_registry.reload()
+            app.state.skill_registry = skill_registry
             app.state.init_success = True
             ready_event.set()
             logger.info("✅ 后台基础设施全部初始化完毕！")

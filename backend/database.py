@@ -43,7 +43,8 @@ async def init_db():
             top_p REAL DEFAULT 1.0,
             top_k INTEGER DEFAULT 40,
             frequency_penalty REAL DEFAULT 0.0,
-            presence_penalty REAL DEFAULT 0.0
+            presence_penalty REAL DEFAULT 0.0,
+            skills TEXT NOT NULL DEFAULT '[]'
         )
     """)
 
@@ -112,5 +113,37 @@ async def init_db():
         )
     """)
 
+    # 自定义技能（Skill）：前台可视化注册，动态加载，无需重启
+    #   skill_type: 'prompt'（提示词 + 工具白名单，人人可建）
+    #             | 'code'（可执行 Python 脚本，仅管理员可建/编辑）
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS skills (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            title TEXT NOT NULL,
+            description TEXT DEFAULT '',
+            skill_type TEXT NOT NULL DEFAULT 'prompt',
+            enabled INTEGER NOT NULL DEFAULT 1,
+            instruction TEXT DEFAULT '',
+            tools TEXT NOT NULL DEFAULT '[]',
+            code TEXT DEFAULT '',
+            parameters TEXT NOT NULL DEFAULT '{}',
+            isolated INTEGER NOT NULL DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    # ---- 轻量迁移：为旧版数据库补齐新增列 ----
+    await _ensure_column(db, "profiles", "skills", "TEXT NOT NULL DEFAULT '[]'")
+
     await db.commit()
     await db.close()
+
+
+async def _ensure_column(db, table: str, column: str, ddl: str):
+    """若表缺少指定列则动态添加（兼容旧版数据库）。"""
+    cursor = await db.execute(f"PRAGMA table_info({table})")
+    rows = await cursor.fetchall()
+    existing = {row[1] for row in rows}
+    if column not in existing:
+        await db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")

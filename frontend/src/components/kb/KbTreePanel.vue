@@ -1,5 +1,5 @@
 <template>
-  <div class="kb-tree-panel">
+  <div class="kb-tree-panel" :style="{ width: (width ?? 240) + 'px' }">
     <!-- 顶部：标题 + 目录操作 -->
     <div class="kb-tree-head">
       <span class="kb-tree-title">
@@ -24,6 +24,9 @@
         <n-button size="tiny" text @click="refreshTree" title="刷新">
           <template #icon><n-icon><RefreshOutline /></n-icon></template>
         </n-button>
+        <n-button size="tiny" text @click="goGraph" title="知识图谱">
+          <template #icon><n-icon><GitNetworkOutline /></n-icon></template>
+        </n-button>
         <n-button size="tiny" text @click="selectFolder" :title="kbStore.root">
           <template #icon><n-icon><FolderOpenOutline /></n-icon></template>
         </n-button>
@@ -39,6 +42,7 @@
             label-field="label"
             children-field="children"
             :node-props="nodeProps"
+            :render-label="renderLabel"
             @update:selected-keys="onSelect"
           />
           <n-empty v-else-if="!kbStore.loading" description="空空如也，先新建一个笔记或文件夹吧" style="margin-top:40px" />
@@ -83,23 +87,30 @@
 
 <script setup lang="ts">
 import { ref, computed } from 'vue'
+import { useRouter } from 'vue-router'
 import {
   NButton, NIcon, NText, NTree, NScrollbar, NSpin, NEmpty,
   NInput, NModal, useMessage, useDialog
 } from 'naive-ui'
 import type { TreeOption } from 'naive-ui'
+import { h } from 'vue'
 import {
   LibraryOutline, CloseOutline, FolderOpenOutline, FolderOutline,
-  DocumentTextOutline, RefreshOutline
+  DocumentTextOutline, RefreshOutline, LockClosedOutline, GitNetworkOutline
 } from '@vicons/ionicons5'
 import { useKnowledgeStore, type KbTreeNode } from '@/stores/knowledge'
 
-defineProps<{ showClose?: boolean }>()
+defineProps<{ showClose?: boolean; width?: number }>()
 const emit = defineEmits<{ (e: 'close'): void }>()
 
+const router = useRouter()
 const message = useMessage()
 const dialog = useDialog()
 const kbStore = useKnowledgeStore()
+
+function goGraph() {
+  router.push('/knowledge/graph')
+}
 
 const selectedKeys = computed(() => kbStore.selectedKey ? [kbStore.selectedKey] : [])
 
@@ -125,9 +136,30 @@ async function refreshTree() {
   await kbStore.loadTree()
 }
 
-// 目录树节点：右键删除
+// 目录树节点：自定义标签（只读节点加锁图标）
+function renderLabel({ option }: { option: TreeOption }) {
+  const node = option as unknown as KbTreeNode
+  if (node.readonly) {
+    return h('span', { style: { display: 'inline-flex', alignItems: 'center', gap: '4px' } }, [
+      h('span', {}, node.label),
+      h(NIcon, { size: 13, style: { color: 'var(--text-secondary)', opacity: 0.7 } }, () => h(LockClosedOutline))
+    ])
+  }
+  return node.label
+}
+
+// 目录树节点：右键删除（只读节点阻止删除）
 function nodeProps({ option }: { option: TreeOption }) {
   const node = option as unknown as KbTreeNode
+  if (node.readonly) {
+    return {
+      oncontextmenu(e: MouseEvent) {
+        e.preventDefault()
+        message.warning('「' + node.label + '」位于只读目录（公共基础），不可删除')
+      },
+      title: '只读目录，不可删除'
+    }
+  }
   return {
     oncontextmenu(e: MouseEvent) {
       e.preventDefault()
@@ -239,7 +271,6 @@ function confirmDelete(node: KbTreeNode) {
 
 <style scoped>
 .kb-tree-panel {
-  width: 240px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;

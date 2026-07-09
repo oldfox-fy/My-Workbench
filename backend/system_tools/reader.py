@@ -296,17 +296,47 @@ class DocxHandler(FormatHandler):
     @classmethod
     def can_handle(cls, ctx: ReadContext) -> bool:
         return ctx.path.suffix.lower() == '.docx'
-    
+
     @classmethod
     def read(cls, ctx: ReadContext) -> FileReadResult:
         docx = _get_docx()
         if docx is None:
+            # 尝试 markitdown 兜底
+            md = _get_markitdown()
+            if md:
+                try:
+                    result = md.convert(str(ctx.path))
+                    return FileReadResult(
+                        content=result.text_content,
+                        format='markdown',
+                        mime_type='text/markdown',
+                        metadata={'fallback': 'markitdown'}
+                    )
+                except Exception:
+                    pass
             raise ImportError("读取 DOCX 需要安装 python-docx: pip install python-docx")
-        
-        doc = docx.Document(ctx.path)
+
+        try:
+            doc = docx.Document(ctx.path)
+        except Exception as e:
+            # python-docx 失败时尝试 markitdown 兜底
+            md = _get_markitdown()
+            if md:
+                try:
+                    result = md.convert(str(ctx.path))
+                    return FileReadResult(
+                        content=result.text_content,
+                        format='markdown',
+                        mime_type='text/markdown',
+                        metadata={'fallback': 'markitdown', 'error': str(e)}
+                    )
+                except Exception:
+                    pass
+            raise FileReadError(f"DOCX 读取失败: {e}", code='DOCX_READ_FAIL') from e
+
         paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
         content = '\n\n'.join(paragraphs)
-        
+
         tables_md = []
         for table in doc.tables:
             rows = []
@@ -314,7 +344,7 @@ class DocxHandler(FormatHandler):
                 # 清理换行符和管道符，防止 Markdown 表格断裂
                 cells = [cell.text.replace('\n', '<br>').replace('|', '\\|') for cell in row.cells]
                 rows.append('| ' + ' | '.join(cells) + ' |')
-            
+
             if rows:
                 # 修复: 根据实际第一行的单元格数生成分隔行
                 n_cols = rows[0].count('|') - 1
@@ -322,10 +352,10 @@ class DocxHandler(FormatHandler):
                     header_sep = '|' + '|'.join(['---'] * n_cols) + '|'
                     rows.insert(1, header_sep)
                 tables_md.append('\n'.join(rows))
-        
+
         if tables_md:
             content += '\n\n' + '\n\n'.join(tables_md)
-        
+
         return FileReadResult(
             content=content,
             format='markdown',
@@ -337,17 +367,30 @@ class DocxHandler(FormatHandler):
 class PDFHandler(FormatHandler):
     """PDF 处理器，增加页数限制"""
     MAX_PAGES = 200
-    
+
     @classmethod
     def can_handle(cls, ctx: ReadContext) -> bool:
         return ctx.path.suffix.lower() == '.pdf'
-    
+
     @classmethod
     def read(cls, ctx: ReadContext) -> FileReadResult:
         PyPDF2 = _get_pypdf()
         if PyPDF2 is None:
+            # 尝试 markitdown 兜底
+            md = _get_markitdown()
+            if md:
+                try:
+                    result = md.convert(str(ctx.path))
+                    return FileReadResult(
+                        content=result.text_content,
+                        format='markdown',
+                        mime_type='text/markdown',
+                        metadata={'fallback': 'markitdown'}
+                    )
+                except Exception:
+                    pass
             raise ImportError("读取 PDF 需要安装 PyPDF2: pip install PyPDF2")
-        
+
         text_parts = []
         total_pages = 0
         try:
@@ -355,7 +398,7 @@ class PDFHandler(FormatHandler):
                 reader = PyPDF2.PdfReader(f)
                 total_pages = len(reader.pages)
                 pages_to_read = reader.pages[:cls.MAX_PAGES]
-                
+
                 for i, page in enumerate(pages_to_read):
                     try:
                         text = page.extract_text()
@@ -363,12 +406,25 @@ class PDFHandler(FormatHandler):
                             text_parts.append(f"## Page {i + 1}\n\n{text}")
                     except Exception:
                         text_parts.append(f"## Page {i + 1}\n\n[无法提取文本]")
-                        
+
             if total_pages > cls.MAX_PAGES:
                 text_parts.append(f"\n[已截断：仅显示前 {cls.MAX_PAGES} 页，共 {total_pages} 页]")
         except Exception as e:
+            # PyPDF2 失败时尝试 markitdown 兜底
+            md = _get_markitdown()
+            if md:
+                try:
+                    result = md.convert(str(ctx.path))
+                    return FileReadResult(
+                        content=result.text_content,
+                        format='markdown',
+                        mime_type='text/markdown',
+                        metadata={'fallback': 'markitdown', 'error': str(e)}
+                    )
+                except Exception:
+                    pass
             raise FileReadError(f"PDF 读取失败: {e}", code='PDF_READ_FAIL') from e
-        
+
         return FileReadResult(
             content='\n\n'.join(text_parts),
             format='markdown',

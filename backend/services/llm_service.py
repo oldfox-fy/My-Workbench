@@ -32,6 +32,7 @@ class LLMService:
         mcp_manager=None,
         params: Dict = None,
         message_id: Optional[int] = None,
+        skill_registry=None,
     ) -> AsyncGenerator[str, None]:
         params = params or {}
 
@@ -86,7 +87,7 @@ class LLMService:
         current_messages = messages.copy()
 
         if tools is None and enable_tools:
-            tools = await get_all_tools(mcp_manager)
+            tools = await get_all_tools(mcp_manager, skill_registry)
 
         reasoning_start_time = None
 
@@ -377,7 +378,7 @@ class LLMService:
                 start_time = time.time()
                 failed = False
                 try:
-                    result = await execute_tool(func_name, args, mcp_manager)
+                    result = await execute_tool(func_name, args, mcp_manager, skill_registry)
                     if isinstance(result, str):
                         # 尝试解析 JSON 字符串
                         try:

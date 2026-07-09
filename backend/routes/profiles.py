@@ -14,8 +14,9 @@ class ProfileCreate(BaseModel):
     temperature: float = Field(default=1.0, ge=0.0, le=2.0)
     top_p: float = Field(default=1.0, ge=0.0, le=1.0)
     top_k: int = Field(default=40, ge=1, le=100)
-    frequency_penalty: float = Field(default=0.0, ge=-2.0, le=2.0) 
+    frequency_penalty: float = Field(default=0.0, ge=-2.0, le=2.0)
     presence_penalty: float = Field(default=0.0, ge=-2.0, le=2.0)
+    skills: List[str] = []
 
 class ProfileResponse(BaseModel):
     id: int
@@ -27,18 +28,21 @@ class ProfileResponse(BaseModel):
     top_k: int
     frequency_penalty: float
     presence_penalty: float
+    skills: List[str] = []
 
 # 创建角色
 @router.post("/", response_model=ProfileResponse)
 async def create_profile(profile: ProfileCreate):
     db = await get_db()
     tools_json = json.dumps(profile.tools)
+    skills_json = json.dumps(profile.skills)
     cursor = await db.execute(
-        """INSERT INTO profiles 
-           (name, tools, profile_prompt, temperature, top_p, top_k, frequency_penalty, presence_penalty)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        """INSERT INTO profiles
+           (name, tools, profile_prompt, temperature, top_p, top_k, frequency_penalty, presence_penalty, skills)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (profile.name, tools_json, profile.profile_prompt,
-         profile.temperature, profile.top_p, profile.top_k, profile.frequency_penalty, profile.presence_penalty)
+         profile.temperature, profile.top_p, profile.top_k, profile.frequency_penalty, profile.presence_penalty,
+         skills_json)
     )
     await db.commit()
     profile_id = cursor.lastrowid
@@ -52,7 +56,8 @@ async def create_profile(profile: ProfileCreate):
         "top_p": profile.top_p,
         "top_k": profile.top_k,
         "frequency_penalty": profile.frequency_penalty,
-        "presence_penalty": profile.presence_penalty
+        "presence_penalty": profile.presence_penalty,
+        "skills": profile.skills
     }
 
 # 更新角色
@@ -60,14 +65,15 @@ async def create_profile(profile: ProfileCreate):
 async def update_profile(profile_id: int, profile: ProfileCreate):
     db = await get_db()
     tools_json = json.dumps(profile.tools)
+    skills_json = json.dumps(profile.skills)
     cursor = await db.execute(
-        """UPDATE profiles 
+        """UPDATE profiles
            SET name = ?, tools = ?, profile_prompt = ?,
-               temperature = ?, top_p = ?, top_k = ?, frequency_penalty = ?, presence_penalty = ?
+               temperature = ?, top_p = ?, top_k = ?, frequency_penalty = ?, presence_penalty = ?, skills = ?
            WHERE id = ?""",
         (profile.name, tools_json, profile.profile_prompt,
          profile.temperature, profile.top_p, profile.top_k, profile.frequency_penalty, profile.presence_penalty,
-         profile_id)
+         skills_json, profile_id)
     )
     if cursor.rowcount == 0:
         await db.close()
@@ -83,7 +89,8 @@ async def update_profile(profile_id: int, profile: ProfileCreate):
         "top_p": profile.top_p,
         "top_k": profile.top_k,
         "frequency_penalty": profile.frequency_penalty,
-        "presence_penalty": profile.presence_penalty
+        "presence_penalty": profile.presence_penalty,
+        "skills": profile.skills
     }
 
 # 获取所有角色
@@ -92,7 +99,7 @@ async def list_profiles():
     db = await get_db()
     cursor = await db.execute(
         """SELECT id, name, tools, profile_prompt,
-                  temperature, top_p, top_k, frequency_penalty, presence_penalty
+                  temperature, top_p, top_k, frequency_penalty, presence_penalty, skills
            FROM profiles"""
     )
     rows = await cursor.fetchall()
@@ -108,7 +115,8 @@ async def list_profiles():
             "top_p": row[5] if row[5] is not None else 1.0,
             "top_k": row[6] if row[6] is not None else 40,
             "frequency_penalty": row[7] if row[7] is not None else 0.0,
-            "presence_penalty": row[8] if row[8] is not None else 0.0
+            "presence_penalty": row[8] if row[8] is not None else 0.0,
+            "skills": __parse_tools(row[9]) if len(row) > 9 else []
         })
     return results
 

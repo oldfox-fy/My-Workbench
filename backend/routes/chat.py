@@ -48,11 +48,16 @@ async def get_mcp_manager(request: Request):
     return request.app.state.mcp_manager
 
 
+async def get_skill_registry(request: Request):
+    return getattr(request.app.state, "skill_registry", None)
+
+
 @router.post("/chat")
 async def chat(
     request: ChatRequest,
     fastapi_request: Request,
-    mcp_manager=Depends(get_mcp_manager)
+    mcp_manager=Depends(get_mcp_manager),
+    skill_registry=Depends(get_skill_registry),
 ):
     try:
         # 1. 创建 LLM 服务实例
@@ -86,13 +91,14 @@ async def chat(
         local_tools = get_local_tools()
         tools = [t for t in local_tools if t["function"]["name"] in default_tools]
         profile_prompt = ""
+        profile_skill_prompt = ""
         params = {}
 
         # 如果携带了 profile_id，获取角色信息
         if request.enable_tools and request.profile_id is not None:
             db = await get_db()
             cursor = await db.execute(
-                "SELECT tools, profile_prompt, temperature, top_p, top_k, frequency_penalty, presence_penalty FROM profiles WHERE id = ?",
+                "SELECT tools, profile_prompt, temperature, top_p, top_k, frequency_penalty, presence_penalty, skills FROM profiles WHERE id = ?",
                 (request.profile_id,)
             )
             row = await cursor.fetchone()
@@ -108,6 +114,16 @@ async def chat(
                     "frequency_penalty": row[5] if row[5] is not None else 0.0,
                     "presence_penalty": row[6] if row[6] is not None else 0.0,
                 }
+                profile_skills = json.loads(row[7] or "[]") if len(row) > 7 and row[7] else []
+
+                # 展开角色勾选的技能：prompt 技能 → 注入指令 + 追加工具白名单；code 技能 → 可调用 function
+                allowed_code_tool_names = []
+                if skill_registry and profile_skills:
+                    expanded = skill_registry.expand_for_profile(profile_skills)
+                    if expanded["instructions"]:
+                        profile_skill_prompt = "\n\n".join(expanded["instructions"])
+                    allowed_tools = list(set(allowed_tools) | expanded["allowed_tools"])
+                    allowed_code_tool_names = expanded["code_tool_names"]
 
                 # 筛选工具
                 mcp_tools = await get_mcp_tools(mcp_manager) if request.enable_tools else []
@@ -116,6 +132,11 @@ async def chat(
                 use_tools = [t for t in enable_tools if t["function"]["name"] in allowed_tools]
                 tools.extend(use_tools)
 
+                # 追加角色可用的 code 型技能定义
+                if skill_registry and allowed_code_tool_names:
+                    code_defs = skill_registry.code_tool_definitions()
+                    tools.extend([d for d in code_defs if d["function"]["name"] in allowed_code_tool_names])
+
         messages = [m for m in messages if m["role"] != "system"]
 
         system_prompt = BASE_SYSTEM_PROMPT.replace("{{workspace_path}}", backend.workspace_path)
@@ -123,6 +144,9 @@ async def chat(
         # profile_prompt 加入到 system_prompt 中
         if profile_prompt:
             system_prompt = f"{system_prompt}\n\n ### 角色扮演 \n\n{profile_prompt}"
+        # 技能指令（prompt 型技能）加入到 system_prompt 中
+        if profile_skill_prompt:
+            system_prompt = f"{system_prompt}\n\n ### 已启用技能 \n\n{profile_skill_prompt}"
 
         messages.insert(0, {"role": "system", "content": f"{system_prompt}\n\n{backend.workspace_path}"})
 
@@ -157,7 +181,8 @@ async def chat(
                 request=fastapi_request,
                 mcp_manager=mcp_manager,
                 params=params,
-                message_id=request.message_id
+                message_id=request.message_id,
+                skill_registry=skill_registry,
             ),
             media_type="text/event-stream"
         )

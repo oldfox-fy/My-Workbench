@@ -3,48 +3,130 @@
     <n-drawer-content title="设置" closable>
       <n-tabs default-value="model">
         <n-tab-pane name="model" tab="模型管理">
+          <n-tabs type="segment" default-value="workbench" size="small">
+            <!-- 工作台模型配置（原模型管理） -->
+            <n-tab-pane name="workbench" tab="工作台模型配置">
+              <n-space vertical>
+                <!-- 当前活跃模型指示 -->
+                <n-alert v-if="!configStore.activeModel" type="warning" title="尚未选择模型" />
+                <div v-else>
+                  <n-tag type="info" size="small">当前使用：{{ configStore.activeModel.name }}</n-tag>
+                </div>
+
+                <n-divider />
+
+                <!-- 模型列表 -->
+                <n-list hoverable clickable>
+                  <n-list-item v-for="model in configStore.savedModels" :key="model.id">
+                    <template #suffix>
+                      <n-space>
+                        <n-button text size="small" @click="editModel(model)">编辑</n-button>
+                        <n-popconfirm
+                        @positive-click="() => configStore.deleteModel(model.id)"
+                        negative-text="取消"
+                        positive-text="好的"
+                        :negative-button-props="{size: 'tiny'}"
+                        :positive-button-props="{size: 'tiny'}"
+                        >
+                          <template #trigger>
+                            <n-button text size="small" type="error">删除</n-button>
+                          </template>
+                          确定删除模型「{{ model.name }}」吗？
+                        </n-popconfirm>
+                      </n-space>
+                    </template>
+                    <div>
+                      <n-text strong>{{ model.name }}</n-text>
+                      <n-text depth="3"> · {{ model.type === 'local' ? '本地' : '云端' }}</n-text>
+                      <br />
+                      <n-text depth="3" style="font-size: 0.8rem">{{ model.modelName }}</n-text>
+                    </div>
+                  </n-list-item>
+                </n-list>
+
+                <n-button type="primary" block @click="openAddModelDialog">添加模型</n-button>
+              </n-space>
+            </n-tab-pane>
+
+            <!-- 知识库配置（原知识库设置面板） -->
+            <n-tab-pane name="knowledge" tab="知识库配置">
+              <KbSettingsPanel />
+            </n-tab-pane>
+          </n-tabs>
+        </n-tab-pane>
+
+        <!-- 技能管理 -->
+        <n-tab-pane name="skills" tab="技能管理">
           <n-space vertical>
-            <!-- 当前活跃模型指示 -->
-            <n-alert v-if="!configStore.activeModel" type="warning" title="尚未选择模型" />
-            <div v-else>
-              <n-tag type="info" size="small">当前使用：{{ configStore.activeModel.name }}</n-tag>
-            </div>
+            <n-text depth="3" style="font-size: 0.8rem">
+              可视化注册自定义技能：提示词技能（人人可建）动态注入指令与工具白名单；
+              可执行代码技能（仅管理员）动态注册为可调用工具，无需改后端、无需重启。
+            </n-text>
+
+            <n-space align="center" :size="8">
+              <n-text depth="3" style="font-size: 0.8rem">当前身份：</n-text>
+              <n-tag :type="skillStore.userRole === 'admin' ? 'success' : 'default'" size="small">
+                {{ skillStore.userRole === 'admin' ? '管理员' : '普通用户' }}
+              </n-tag>
+            </n-space>
 
             <n-divider />
 
-            <!-- 模型列表 -->
-            <n-list hoverable clickable>
-              <n-list-item v-for="model in configStore.savedModels" :key="model.id">
+            <n-list hoverable>
+              <n-list-item v-for="skill in skillStore.skills" :key="skill.id">
                 <template #suffix>
-                  <n-space>
-                    <n-button text size="small" @click="editModel(model)">编辑</n-button>
-                    <n-popconfirm 
-                    @positive-click="() => configStore.deleteModel(model.id)" 
-                    negative-text="取消" 
-                    positive-text="好的"
-                    :negative-button-props="{size: 'tiny'}"
-                    :positive-button-props="{size: 'tiny'}"
+                  <n-space align="center">
+                    <n-switch
+                      size="small"
+                      :value="skill.enabled"
+                      @update-value="(v: boolean) => onToggleSkill(skill, v)"
+                    />
+                    <n-button text size="small" @click="editSkill(skill)"
+                      :disabled="skill.skill_type === 'code' && !skillStore.isAdmin()">编辑</n-button>
+                    <n-button text size="small" @click="onExportSkill(skill)">导出</n-button>
+                    <n-popconfirm
+                      @positive-click="() => onDeleteSkill(skill)"
+                      negative-text="取消" positive-text="好的"
+                      :negative-button-props="{size: 'tiny'}"
+                      :positive-button-props="{size: 'tiny'}"
                     >
                       <template #trigger>
-                        <n-button text size="small" type="error">删除</n-button>
+                        <n-button text size="small" type="error"
+                          :disabled="skill.skill_type === 'code' && !skillStore.isAdmin()">删除</n-button>
                       </template>
-                      确定删除模型「{{ model.name }}」吗？
+                      确定删除技能「{{ skill.title }}」吗？
                     </n-popconfirm>
                   </n-space>
                 </template>
                 <div>
-                  <n-text strong>{{ model.name }}</n-text>
-                  <n-text depth="3"> · {{ model.type === 'local' ? '本地' : '云端' }}</n-text>
+                  <n-space align="center" :size="6">
+                    <n-text strong>{{ skill.title }}</n-text>
+                    <n-tag size="tiny" round :type="skill.skill_type === 'code' ? 'warning' : 'info'">
+                      {{ skill.skill_type === 'code' ? '代码' : '提示词' }}
+                    </n-tag>
+                    <n-tag v-if="skill.isolated" size="tiny" round>隔离</n-tag>
+                  </n-space>
                   <br />
-                  <n-text depth="3" style="font-size: 0.8rem">{{ model.modelName }}</n-text>
+                  <n-text depth="3" style="font-size: 0.75rem; word-break: break-all">
+                    {{ skill.name }}{{ skill.description ? ' · ' + skill.description : '' }}
+                  </n-text>
                 </div>
               </n-list-item>
             </n-list>
+            <p v-if="skillStore.skills.length === 0" style="color: gray; font-size: 0.85rem;">暂无技能，点击下方按钮注册。</p>
 
-            <n-button type="primary" block @click="openAddModelDialog">添加模型</n-button>
+            <n-space>
+              <n-button type="primary" style="flex: 1" @click="openAddSkillDialog">注册技能</n-button>
+              <n-button style="flex: 1" @click="triggerImportSkill" :loading="importing">导入压缩包</n-button>
+            </n-space>
+            <input
+              ref="skillFileInput"
+              type="file"
+              accept=".zip"
+              style="display: none"
+              @change="onImportSkillFile"
+            />
           </n-space>
-
-
         </n-tab-pane>
 
         <!-- MCP 接入 -->
@@ -98,10 +180,7 @@
           </n-space>
         </n-tab-pane>
 
-        <!-- 知识库设置 -->
-        <n-tab-pane name="knowledge" tab="知识库">
-          <KbSettingsPanel />
-        </n-tab-pane>
+        <!-- 知识库设置已并入「模型管理 → 知识库配置」 -->
 
         <!-- 其他设置 -->
         <n-tab-pane name="function" tab="功能设置">
@@ -122,6 +201,19 @@
                 <n-input style="width:70%" v-model:value="workspacePath" placeholder="选择或输入目录路径" @change="saveWorkspace(workspacePath)"/>
                 <n-button text @click="selectFolder">选择目录</n-button>
               </n-flex>
+            </n-form-item>
+            <n-form-item label="当前身份">
+              <n-flex align="center">
+                <n-radio-group :value="skillStore.userRole" @update-value="onChangeUserRole">
+                  <n-radio value="admin">管理员</n-radio>
+                  <n-radio value="user">普通用户</n-radio>
+                </n-radio-group>
+              </n-flex>
+            </n-form-item>
+            <n-form-item label=" " :show-feedback="false">
+              <n-text depth="3" style="font-size: 0.72rem">
+                管理员可创建/编辑「可执行代码技能」；普通用户仅能使用与创建「提示词技能」。
+              </n-text>
             </n-form-item>
           </n-form>
 
@@ -269,6 +361,30 @@
         </div>
         <p v-if="allTools.length === 0" style="color: gray;">暂无可用工具，请检查 MCP 服务或工具配置。</p>
       </n-form-item>
+      <n-form-item label="选择技能">
+        <div style="width: 420px; max-height: 160px; overflow-y: auto;">
+          <n-checkbox-group v-model:value="profileForm.skills">
+            <n-space vertical>
+              <n-checkbox v-for="skill in enabledSkills" :key="skill.name" :value="skill.name">
+                <n-popover trigger="hover" placement="right" :width="360">
+                  <template #trigger>
+                    <span style="cursor: pointer;">
+                      {{ skill.title }}
+                      <n-tag size="tiny" round :type="skill.skill_type === 'code' ? 'warning' : 'info'">
+                        {{ skill.skill_type === 'code' ? '代码' : '提示词' }}
+                      </n-tag>
+                    </span>
+                  </template>
+                  <div style="word-break: break-word; white-space: pre-wrap;">
+                    {{ skill.description || skill.instruction || '（无描述）' }}
+                  </div>
+                </n-popover>
+              </n-checkbox>
+            </n-space>
+          </n-checkbox-group>
+        </div>
+        <p v-if="enabledSkills.length === 0" style="color: gray;">暂无启用的技能，可在「技能管理」中注册。</p>
+      </n-form-item>
     </n-form>
     <n-collapse :default-expanded-names="[]">
       <n-collapse-item title="高级设置" name="params">
@@ -378,6 +494,85 @@
       </n-collapse-item>
     </n-collapse>
   </n-modal>
+
+  <!-- 注册/编辑技能模态框 -->
+  <n-modal
+    v-model:show="skillModalVisible"
+    :auto-focus="false"
+    preset="dialog"
+    draggable
+    :mask-closable="false"
+    style="max-width:560px;width:96%;"
+    :title="editingSkillId ? '编辑技能' : '注册技能'"
+    positive-text="保存"
+    negative-text="取消"
+    @positive-click="saveSkill"
+  >
+    <n-form :model="skillForm" label-placement="left" label-width="80">
+      <n-form-item label="显示名" required>
+        <n-input v-model:value="skillForm.title" placeholder="例如：周报生成器" :maxlength="30" />
+      </n-form-item>
+      <n-form-item label="标识" required>
+        <n-input v-model:value="skillForm.name" placeholder="唯一标识，字母/数字/下划线/连字符，如 weekly-report"
+          :disabled="!!editingSkillId" />
+      </n-form-item>
+      <n-form-item label="说明">
+        <n-input v-model:value="skillForm.description" type="textarea" placeholder="技能用途的简要描述"
+          :autosize="{ minRows: 1, maxRows: 3 }" />
+      </n-form-item>
+      <n-form-item label="类型">
+        <n-radio-group v-model:value="skillForm.skill_type">
+          <n-radio value="prompt">提示词技能</n-radio>
+          <n-radio value="code" :disabled="!skillStore.isAdmin()">可执行代码技能</n-radio>
+        </n-radio-group>
+      </n-form-item>
+
+      <!-- prompt 型：指令 + 工具白名单 -->
+      <template v-if="skillForm.skill_type === 'prompt'">
+        <n-form-item label="技能指令">
+          <n-input v-model:value="skillForm.instruction" type="textarea"
+            placeholder="启用后注入到系统提示的指令，指导模型如何运用此技能"
+            :autosize="{ minRows: 3, maxRows: 8 }" />
+        </n-form-item>
+        <n-form-item label="工具白名单">
+          <div style="width: 100%; max-height: 160px; overflow-y: auto;">
+            <n-checkbox-group v-model:value="skillForm.tools">
+              <n-space vertical>
+                <n-checkbox v-for="tool in allTools" :key="tool.function.name" :value="tool.function.name">
+                  <span style="cursor: pointer;">{{ tool.function.title }} - {{ tool.function.name }}</span>
+                </n-checkbox>
+              </n-space>
+            </n-checkbox-group>
+          </div>
+        </n-form-item>
+      </template>
+
+      <!-- code 型：参数 Schema + 源码（仅管理员） -->
+      <template v-else>
+        <n-alert type="warning" size="small" style="margin-bottom:8px">
+          代码技能会在受限沙箱中执行，仅管理员可编辑。请勿粘贴不可信代码。
+        </n-alert>
+        <n-form-item label="参数Schema">
+          <n-input v-model:value="skillParamsText" type="textarea"
+            placeholder='JSON Schema，例如：{"type":"object","properties":{"x":{"type":"number"}},"required":["x"]}'
+            :autosize="{ minRows: 2, maxRows: 6 }" />
+        </n-form-item>
+        <n-form-item label="Python代码">
+          <n-input v-model:value="skillForm.code" type="textarea"
+            placeholder="必须定义 run(**kwargs)，返回值将回传给模型。可用 json/math/re 等安全模块。"
+            :autosize="{ minRows: 4, maxRows: 12 }" />
+        </n-form-item>
+      </template>
+
+      <n-form-item label="上下文隔离">
+        <n-switch v-model:value="skillForm.isolated" />
+        <n-text depth="3" style="font-size:0.72rem;margin-left:8px">独立命名空间执行，不共享状态</n-text>
+      </n-form-item>
+      <n-form-item label="启用">
+        <n-switch v-model:value="skillForm.enabled" />
+      </n-form-item>
+    </n-form>
+  </n-modal>
 </template>
 
 <script setup lang="ts">
@@ -386,14 +581,15 @@ import {
   NDrawer, NDrawerContent, NForm, NFormItem, NInput, NPopover, NFlex,
   NRadioGroup, NRadio, NSwitch, NButton, NSpace, NDivider, NIcon,
   NTabs, NTabPane, NList, NListItem, NPopconfirm, NTag, NAlert, 
-  NModal, NSelect, NCheckboxGroup, NCheckbox, NText, useMessage, NSlider,
+  NModal, NSelect, NCheckboxGroup, NCheckbox, NText, useMessage, useDialog, NSlider,
   NInputNumber, NCollapseItem, NCollapse
 } from 'naive-ui'
 import { useChatStore } from '@/stores/chat'
 import { useConfigStore, type ModelConfig } from '@/stores/config'
 import { useProfileStore, type Profile } from '@/stores/profiles'
 import { useMcpStore, type MCPServer } from '@/stores/mcp'
-import mSvg from '@/components/MSvg.vue'
+import { useSkillStore, type Skill, type SkillType } from '@/stores/skills'
+import mSvg from '@/components/mSvg.vue'
 import KbSettingsPanel from '@/components/kb/KbSettingsPanel.vue'
 
 
@@ -401,10 +597,12 @@ const props = defineProps<{ show: boolean }>()
 const emit = defineEmits<{ 'update:show': [value: boolean] }>()
 
 const message = useMessage()
+const dialog = useDialog()
 const chatStore = useChatStore()
 const configStore = useConfigStore()
 const profileStore = useProfileStore()
 const mcpStore = useMcpStore()
+const skillStore = useSkillStore()
 const version = ref(import.meta.env.VITE_APP_VERSION)
 const profileId = ref()
 
@@ -412,10 +610,14 @@ const profileId = ref()
 const showModelDialog = ref(false)
 const editingModelId = ref<string | null>(null)
 
+const enabledSkills = computed(() => skillStore.skills.filter(s => s.enabled))
+
 watch(() => props.show, (val) => {
   if (val) {
     profileId.value = profileStore.activeProfileId
     mcpStore.loadServers()
+    skillStore.loadSkills()
+    skillStore.loadUserRole()
   }
 })
 
@@ -688,6 +890,7 @@ const editingProfile = ref<Profile | null>(null)
 const profileForm = reactive({
   name: '',
   tools: [] as string[],
+  skills: [] as string[],
   profile_prompt: '',
   temperature: 1,
   top_p: 1,
@@ -704,10 +907,12 @@ function openCreateProfile() {
   if(allTools.value.length === 0) {
     loadTools()
   }
+  skillStore.loadSkills()
   isEditing.value = false
   editingProfile.value = null
   profileForm.name = ''
   profileForm.tools = []
+  profileForm.skills = []
   profileForm.profile_prompt = ''
   profileForm.temperature = 1
   profileForm.top_p = 1
@@ -722,11 +927,13 @@ function openEditProfile() {
   if(allTools.value.length === 0) {
     loadTools()
   }
+  skillStore.loadSkills()
   isEditing.value = true
   const p = profileStore.activeProfile
   editingProfile.value = { ...p }
   profileForm.name = p.name
   profileForm.tools = [...p.tools]
+  profileForm.skills = [...(p.skills || [])]
   profileForm.profile_prompt = p.profile_prompt || ''
   // 读取角色保存的参数，若旧角色没有则使用默认值
   profileForm.temperature = p.temperature ?? 1
@@ -738,16 +945,6 @@ function openEditProfile() {
 }
 
 async function saveProfile() {
-  const payload = {
-    name: profileForm.name,
-    tools: profileForm.tools,
-    profile_prompt: profileForm.profile_prompt,
-    temperature: profileForm.temperature,
-    top_p: profileForm.top_p,
-    top_k: profileForm.top_k,
-    frequency_penalty: profileForm.frequency_penalty,
-    presence_penalty: profileForm.presence_penalty,
-  }
   if (isEditing.value && editingProfile.value) {
     await profileStore.updateProfile(
       editingProfile.value.id,
@@ -758,7 +955,8 @@ async function saveProfile() {
       profileForm.top_p,
       profileForm.top_k,
       profileForm.frequency_penalty,
-      profileForm.presence_penalty
+      profileForm.presence_penalty,
+      profileForm.skills
     )
   } else {
     await profileStore.createProfile(
@@ -769,7 +967,8 @@ async function saveProfile() {
       profileForm.top_p,
       profileForm.top_k,
       profileForm.frequency_penalty,
-      profileForm.presence_penalty
+      profileForm.presence_penalty,
+      profileForm.skills
     )
   }
   profileModalVisible.value = false
@@ -778,6 +977,172 @@ async function saveProfile() {
 async function deleteCurrentProfile() {
   if (profileStore.activeProfile) {
     await profileStore.deleteProfile(profileStore.activeProfile.id)
+  }
+}
+
+// ---------- 身份切换 ----------
+async function onChangeUserRole(role: 'admin' | 'user') {
+  try {
+    await skillStore.setUserRole(role)
+    message.success(role === 'admin' ? '已切换为管理员' : '已切换为普通用户')
+  } catch (e: any) {
+    message.error(e.message || '切换失败')
+  }
+}
+
+// ---------- 技能管理 ----------
+const skillModalVisible = ref(false)
+const editingSkillId = ref<number | null>(null)
+const skillParamsText = ref('{}')
+
+// ---------- 压缩包导入 / 导出 ----------
+const skillFileInput = ref<HTMLInputElement | null>(null)
+const importing = ref(false)
+
+function triggerImportSkill() {
+  skillFileInput.value?.click()
+}
+
+async function doImport(file: File, overwrite: boolean) {
+  importing.value = true
+  try {
+    const skill = await skillStore.importSkillPackage(file, overwrite)
+    message.success(`已${overwrite ? '覆盖' : '导入'}技能「${skill.title}」`)
+  } catch (e: any) {
+    if (e.conflict) {
+      dialog.warning({
+        title: '技能已存在',
+        content: '同名技能已存在，是否覆盖？',
+        positiveText: '覆盖',
+        negativeText: '取消',
+        onPositiveClick: () => doImport(file, true)
+      })
+    } else {
+      message.error(e.message || '导入失败')
+    }
+  } finally {
+    importing.value = false
+  }
+}
+
+async function onImportSkillFile(e: Event) {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''  // 允许重复选择同一文件
+  if (!file) return
+  await doImport(file, false)
+}
+
+function onExportSkill(skill: Skill) {
+  const a = document.createElement('a')
+  a.href = skillStore.exportSkillUrl(skill.id)
+  a.download = `${skill.name}.zip`
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+}
+
+const skillForm = reactive<{
+  name: string
+  title: string
+  description: string
+  skill_type: SkillType
+  enabled: boolean
+  instruction: string
+  tools: string[]
+  code: string
+  isolated: boolean
+}>({
+  name: '', title: '', description: '', skill_type: 'prompt',
+  enabled: true, instruction: '', tools: [], code: '', isolated: false
+})
+
+function resetSkillForm() {
+  skillForm.name = ''
+  skillForm.title = ''
+  skillForm.description = ''
+  skillForm.skill_type = 'prompt'
+  skillForm.enabled = true
+  skillForm.instruction = ''
+  skillForm.tools = []
+  skillForm.code = ''
+  skillForm.isolated = false
+  skillParamsText.value = '{}'
+}
+
+function openAddSkillDialog() {
+  if (allTools.value.length === 0) loadTools()
+  editingSkillId.value = null
+  resetSkillForm()
+  skillModalVisible.value = true
+}
+
+function editSkill(skill: Skill) {
+  if (allTools.value.length === 0) loadTools()
+  editingSkillId.value = skill.id
+  skillForm.name = skill.name
+  skillForm.title = skill.title
+  skillForm.description = skill.description
+  skillForm.skill_type = skill.skill_type
+  skillForm.enabled = skill.enabled
+  skillForm.instruction = skill.instruction
+  skillForm.tools = [...(skill.tools || [])]
+  skillForm.code = skill.code
+  skillForm.isolated = skill.isolated
+  skillParamsText.value = JSON.stringify(skill.parameters || {}, null, 2)
+  skillModalVisible.value = true
+}
+
+async function saveSkill() {
+  if (!skillForm.title.trim()) { message.warning('显示名不能为空'); return false }
+  if (!skillForm.name.trim()) { message.warning('标识不能为空'); return false }
+  let parameters: Record<string, any> = {}
+  if (skillForm.skill_type === 'code') {
+    if (!skillForm.code.includes('def run')) {
+      message.warning('代码技能必须定义 run(**kwargs) 函数'); return false
+    }
+    try {
+      parameters = skillParamsText.value.trim() ? JSON.parse(skillParamsText.value) : {}
+    } catch {
+      message.error('参数 Schema 不是合法 JSON'); return false
+    }
+  }
+  const payload = {
+    name: skillForm.name.trim(),
+    title: skillForm.title.trim(),
+    description: skillForm.description,
+    skill_type: skillForm.skill_type,
+    enabled: skillForm.enabled,
+    instruction: skillForm.instruction,
+    tools: skillForm.tools,
+    code: skillForm.code,
+    parameters,
+    isolated: skillForm.isolated,
+  }
+  try {
+    await skillStore.saveSkill(payload, editingSkillId.value ?? undefined)
+    message.success('已保存')
+    skillModalVisible.value = false
+  } catch (e: any) {
+    message.error(e.message || '保存失败')
+    return false
+  }
+}
+
+async function onToggleSkill(skill: Skill, enabled: boolean) {
+  try {
+    await skillStore.toggleSkill(skill.id, enabled)
+  } catch (e: any) {
+    message.error(e.message || '操作失败')
+  }
+}
+
+async function onDeleteSkill(skill: Skill) {
+  try {
+    await skillStore.deleteSkill(skill.id)
+    message.success('已删除')
+  } catch (e: any) {
+    message.error(e.message || '删除失败')
   }
 }
 
