@@ -422,7 +422,8 @@ const { currentInput, isLoading, streamingContent, regeneratingMsg,
     return new Promise((resolve) => {
       approvalCallId.value = callId
       approvalToolName.value = toolName
-      approvalArgsPreview.value = argsPreview
+      // base64 解码参数预览
+      try { approvalArgsPreview.value = atob(argsPreview) } catch { approvalArgsPreview.value = argsPreview }
       approvalResolve.value = resolve
       nextTick(() => approvalDialogRef.value?.show())
     })

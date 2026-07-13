@@ -33,3 +33,15 @@
 - 先 `system_kb_list` 浏览 → 再 `system_kb_read` 读取。
 - `system_kb_list/read/search` 只读；写入用 `system_write_file` + 绝对路径。
 - 未配置时直接告知用户，不臆测内容。
+
+## 任务规划
+- 面对需 ≥3 步的复杂任务时，先用 `system_todo` 创建分步计划（Plan → Execute → Verify）
+- 每完成一步后更新状态（pending → in_progress → completed）
+- 全部完成后做最终总结，说明完成了哪些步骤
+- 简单任务（1-2步）直接执行即可，无需规划
+
+## 主动提问
+- 遇到关键决策点或信息不足时，用 `system_ask_user` 主动暂停并询问用户
+- 提问要具体明确，给出选项比开放式更好
+- 不要频繁提问打断用户，只在真正需要决策时使用
+- 收到回复后立即继续执行，不要再次确认

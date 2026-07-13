@@ -41,10 +41,11 @@ async def delete_message_tool_calls(message_id: int):
 class ToolApprovalRequest(BaseModel):
     call_id: str
     approved: bool
+    answer: Optional[str] = None  # system_ask_user 的用户文本回复
 
 
 @router.post("/approval")
 async def approve_tool(body: ToolApprovalRequest):
     """前端发送工具审批结果，唤醒等待中的工具执行协程。"""
-    set_approval_result(body.call_id, body.approved)
+    set_approval_result(body.call_id, body.approved, body.answer)
     return {"status": "ok"}

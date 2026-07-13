@@ -13,10 +13,13 @@ from config_loader import config as app_config
 # 工具审批：模块级状态（同一进程内共享）
 _pending_approvals: Dict[str, asyncio.Event] = {}
 _approval_results: Dict[str, bool] = {}
+_approval_answers: Dict[str, str] = {}  # system_ask_user 的用户文本回复
 
-def set_approval_result(call_id: str, approved: bool):
-    """由 POST /api/tool-approval 端点调用，设置审批结果并唤醒等待的协程。"""
+def set_approval_result(call_id: str, approved: bool, answer: str = None):
+    """由 POST /api/tool-calls/approval 端点调用，设置审批结果并唤醒等待的协程。"""
     _approval_results[call_id] = approved
+    if answer:
+        _approval_answers[call_id] = answer
     event = _pending_approvals.pop(call_id, None)
     if event:
         event.set()
@@ -541,8 +544,11 @@ class LLMService:
                 if approval_enabled and func_name in sensitive_set:
                     local_call_id = preview_snapshot.get(idx, {}).get('call_id', '')
                     raw_args = tc["function"]["arguments"]
-                    args_preview = raw_args[:120] if raw_args else "{}"
-                    approval_needed.append((idx, local_call_id, func_name, args_preview))
+                    args_preview = raw_args[:500] if raw_args else "{}"
+                    # base64 编码参数，避免特殊字符破坏 marker 格式
+                    import base64
+                    encoded_args = base64.b64encode(args_preview.encode()).decode()
+                    approval_needed.append((idx, local_call_id, func_name, encoded_args))
 
             # 发出审批请求，等待前端响应
             rejected_call_ids = set()
@@ -575,6 +581,7 @@ class LLMService:
             for idx, tc in valid_calls.items():
                 if idx not in pending_executions:
                     local_call_id = preview_snapshot.get(idx, {}).get('call_id', '')
+                    func_name = tc["function"]["name"]
                     if local_call_id in rejected_call_ids:
                         # 被拒绝的工具：构造一个跳过结果
                         async def _rejected(idx=idx, tc=tc, pi=preview_snapshot.get(idx, {})):
@@ -588,6 +595,20 @@ class LLMService:
                                 "parse_error": None,
                             }
                         fresh_coros.append(_rejected())
+                    elif func_name == "system_ask_user" and local_call_id in _approval_answers:
+                        # ask_user 获得了用户文本回复：跳过实际执行，直接返回答案
+                        user_answer = _approval_answers.pop(local_call_id)
+                        async def _answer_result(idx=idx, tc=tc, pi=preview_snapshot.get(idx, {})):
+                            return {
+                                "idx": idx,
+                                "local_call_id": pi.get('call_id', ''),
+                                "real_tool_call_id": tc.get("id"),
+                                "func_name": tc["function"]["name"],
+                                "failed": False,
+                                "tool_content": json.dumps({"success": True, "answer": user_answer}, ensure_ascii=False),
+                                "parse_error": None,
+                            }
+                        fresh_coros.append(_answer_result())
                     else:
                         fresh_indices.append(idx)
                         fresh_coros.append(_execute_one_tool(idx, tc, preview_snapshot.get(idx, {})))

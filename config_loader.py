@@ -93,6 +93,7 @@ class AppConfig:
         self.tool_approval_sensitive = set(ta.get("sensitive_tools", [
             "system_write_file", "system_patch_file",
             "system_run_command", "system_delegate_task",
+            "system_ask_user",
         ]))
         self.tool_approval_session_whitelist = ta.get("session_whitelist", True)
 
