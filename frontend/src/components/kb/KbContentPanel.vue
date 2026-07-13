@@ -33,7 +33,7 @@
       </n-space>
     </div>
     <div class="kb-content-scroll">
-      <!-- 编辑模式：支持 [[ 双链自动补全 -->
+      <!-- 编辑模式 -->
       <div v-if="editing" class="kb-editor-wrap">
         <textarea
           ref="editorRef"
@@ -45,53 +45,51 @@
           @scroll="closeSuggest"
           @blur="onEditorBlur"
         ></textarea>
-        <!-- [[ 补全下拉 -->
         <ul v-if="suggest.show" class="kb-suggest" :style="suggestStyle">
-          <li
-            v-for="(item, i) in suggest.items"
-            :key="item"
-            :class="{ active: i === suggest.active }"
-            @mousedown.prevent="applySuggest(item)"
-          >{{ item }}</li>
+          <li v-for="(item, i) in suggest.items" :key="item" :class="{ active: i === suggest.active }" @mousedown.prevent="applySuggest(item)">{{ item }}</li>
           <li v-if="suggest.items.length === 0" class="kb-suggest-empty">无匹配笔记</li>
         </ul>
       </div>
       <!-- 预览模式 -->
       <div v-else class="kb-preview">
-        <!-- 图片内嵌查看（点击放大） -->
         <div v-if="kbStore.fileFormat === 'image'" class="kb-image-view">
           <img :src="kbStore.rawUrl" :alt="kbStore.currentPath" @click="zoomed = true" title="点击放大" />
         </div>
-
-        <!-- PDF 内嵌查看（由内核原生渲染） -->
-        <iframe
-          v-else-if="kbStore.fileFormat === 'pdf'"
-          class="kb-pdf-view"
-          :src="kbStore.rawUrl"
-          :title="kbStore.currentPath"
-        ></iframe>
-
-        <MarkdownRender
-          v-else-if="isMarkdown"
-          :custom-id="`kb-${kbStore.currentPath}`"
-          :content="renderedContent"
-          :final="true"
-        />
+        <object v-else-if="kbStore.fileFormat === 'pdf'" class="kb-pdf-view" :data="kbStore.rawUrl" type="application/pdf" :title="kbStore.currentPath">
+          <p>浏览器不支持内嵌 PDF 预览，<a :href="kbStore.rawUrl" target="_blank">点此在新标签页打开</a></p>
+        </object>
+        <MarkdownRender v-else-if="isMarkdown" :custom-id="`kb-${kbStore.currentPath}`" :content="renderedContent" :final="true" />
         <pre v-else class="kb-plain">{{ kbStore.fileContent }}</pre>
+      </div>
+    </div>
 
-        <!-- 反向链接面板 -->
-        <div v-if="isMarkdown && backlinks.length" class="kb-backlinks">
-          <div class="kb-backlinks-title">🔗 反向链接（{{ backlinks.length }}）</div>
-          <div
-            v-for="bl in backlinks"
-            :key="bl.file_path"
-            class="kb-backlink-item"
-            @click="openPath(bl.file_path)"
-          >{{ bl.file_path }}</div>
-        </div>
-
-        <!-- 附注笔记：为非 md 资源（pdf/图片/docx 等）提供双链附注 -->
-        <KbSidecarPanel v-if="showSidecar" :target="kbStore.currentPath" />
+    <!-- 底部固定面板：标签 + 附注/反向链接 -->
+    <div v-if="kbStore.currentPath" class="kb-bottom-panel">
+      <!-- 标签栏 -->
+      <div class="kb-tags-bar">
+        <span class="kb-tags-label">🏷️</span>
+        <n-tag v-for="(tag, i) in fileTags" :key="i" size="small" closable @on-close="() => removeTag(i)" type="info">
+          {{ tag }}
+        </n-tag>
+        <n-input
+          v-if="addingTag"
+          ref="tagInputRef"
+          v-model:value="newTag"
+          size="tiny"
+          placeholder="输入标签（不含#）"
+          style="width: 120px"
+          @keydown.enter="confirmAddTag"
+          @blur="confirmAddTag"
+        />
+        <n-button v-else size="tiny" secondary type="info" @click="startAddTag">+ 标签</n-button>
+        <span v-if="!kbStore.isEditable" style="font-size:0.7rem;color:var(--text-secondary);margin-left:4px">（只读）</span>
+      </div>
+      <!-- 附注笔记（仅非 md 需要） -->
+      <KbSidecarPanel v-if="showSidecar" :target="kbStore.currentPath" />
+      <!-- 反向链接（仅 md） -->
+      <div v-if="isMarkdown && backlinks.length" class="kb-backlinks">
+        <div class="kb-backlinks-title">🔗 反向链接（{{ backlinks.length }}）</div>
+        <div v-for="bl in backlinks" :key="bl.file_path" class="kb-backlink-item" @click="openPath(bl.file_path)">{{ bl.file_path }}</div>
       </div>
     </div>
 
@@ -109,7 +107,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
-import { NButton, NIcon, NSpace, NTag, useMessage } from 'naive-ui'
+import { NButton, NIcon, NSpace, NTag, NInput, useMessage } from 'naive-ui'
 import { CloseOutline, CreateOutline, LockClosedOutline, OpenOutline } from '@vicons/ionicons5'
 import { MarkdownRender } from 'markstream-vue'
 import 'markstream-vue/index.css'
@@ -288,11 +286,80 @@ function applySuggest(item: string) {
   })
 }
 
-// 切换文件时退出编辑态、刷新反链
+// ---------- 标签 ----------
+const fileTags = ref<string[]>([])
+const addingTag = ref(false)
+const newTag = ref('')
+const tagInputRef = ref<InstanceType<typeof NInput> | null>(null)
+
+// 从文件内容解析已有标签
+function parseTags() {
+  if (!kbStore.currentPath) { fileTags.value = []; return }
+  const content = kbStore.fileContent
+  const tags = new Set<string>()
+  // 匹配 #中文标签 或 #english_tag 或 #混合-标签
+  const re = /(?:^|\s)#([\w一-鿿/-]+)/g
+  let m
+  while ((m = re.exec(content)) !== null) {
+    tags.add(m[1])
+  }
+  fileTags.value = Array.from(tags)
+}
+
+// 切换文件时重新解析
 watch(() => kbStore.currentPath, () => {
   editing.value = false
   loadBacklinks()
 })
+// 文件内容变化时重新解析标签
+watch(() => kbStore.fileContent, () => {
+  parseTags()
+})
+
+// 标签增删
+function startAddTag() {
+  addingTag.value = true
+  newTag.value = ''
+  nextTick(() => tagInputRef.value?.focus())
+}
+
+async function confirmAddTag() {
+  const tag = newTag.value.trim()
+  addingTag.value = false
+  if (!tag || fileTags.value.includes(tag)) return
+  fileTags.value.push(tag)
+  await saveTagsToFile()
+}
+
+async function removeTag(idx: number) {
+  fileTags.value.splice(idx, 1)
+  await saveTagsToFile()
+}
+
+async function saveTagsToFile() {
+  // 将标签写回文件内容：在内容末尾追加或替换已有的 #标签 行
+  try {
+    if (!kbStore.isEditable) {
+      message.warning('该文件不可编辑，标签无法保存')
+      // 恢复
+      parseTags()
+      return
+    }
+    let content = kbStore.fileContent
+    // 移除内容中所有已有的 #标签
+    content = content.replace(/(?:^|\s)#([\w一-鿿/-]+)/g, '').replace(/\n{3,}/g, '\n\n').trim()
+    // 在末尾追加标签
+    if (fileTags.value.length > 0) {
+      content += '\n\n' + fileTags.value.map(t => `#${t}`).join(' ')
+    }
+    await kbStore.saveFile(kbStore.currentPath, content)
+    kbStore.fileContent = content
+    message.success('标签已保存')
+  } catch (e: any) {
+    message.error(e.message || '保存标签失败')
+    parseTags()
+  }
+}
 
 function startEdit() {
   editContent.value = kbStore.fileContent
@@ -322,6 +389,7 @@ async function save() {
 onMounted(() => {
   loadNoteNames()
   loadBacklinks()
+  parseTags()
   // 事件委托：预览区 wikilink 点击
   document.addEventListener('click', onPreviewClick, true)
 })
@@ -462,10 +530,28 @@ onBeforeUnmount(() => {
   background: #fff;
 }
 
-/* 反向链接 */
+/* 底部固定面板 */
+.kb-bottom-panel {
+  flex-shrink: 0;
+  border-top: var(--glass-border);
+  max-height: 45%;
+  overflow-y: auto;
+}
+
+/* 标签栏 */
+.kb-tags-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 16px;
+  flex-wrap: wrap;
+  border-bottom: var(--glass-border);
+}
+.kb-tags-label { font-size: 0.85rem; }
+
+/* 反向链接（底部面板内） */
 .kb-backlinks {
-  margin-top: 28px;
-  padding-top: 16px;
+  padding: 12px 16px;
   border-top: var(--glass-border);
 }
 .kb-backlinks-title {

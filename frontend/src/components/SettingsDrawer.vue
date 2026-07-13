@@ -1,5 +1,5 @@
 <template>
-  <n-drawer :show="show" :auto-focus="false" @update:show="(val: boolean) => emit('update:show', val)" width="400">
+  <n-drawer :show="show" :auto-focus="false" @update:show="(val: boolean) => emit('update:show', val)" width="800">
     <n-drawer-content title="设置" closable>
       <n-tabs default-value="model">
         <n-tab-pane name="model" tab="模型管理">
@@ -72,49 +72,6 @@
 
             <n-divider />
 
-            <n-list hoverable>
-              <n-list-item v-for="skill in skillStore.skills" :key="skill.id">
-                <template #suffix>
-                  <n-space align="center">
-                    <n-switch
-                      size="small"
-                      :value="skill.enabled"
-                      @update-value="(v: boolean) => onToggleSkill(skill, v)"
-                    />
-                    <n-button text size="small" @click="editSkill(skill)"
-                      :disabled="skill.skill_type === 'code' && !skillStore.isAdmin()">编辑</n-button>
-                    <n-button text size="small" @click="onExportSkill(skill)">导出</n-button>
-                    <n-popconfirm
-                      @positive-click="() => onDeleteSkill(skill)"
-                      negative-text="取消" positive-text="好的"
-                      :negative-button-props="{size: 'tiny'}"
-                      :positive-button-props="{size: 'tiny'}"
-                    >
-                      <template #trigger>
-                        <n-button text size="small" type="error"
-                          :disabled="skill.skill_type === 'code' && !skillStore.isAdmin()">删除</n-button>
-                      </template>
-                      确定删除技能「{{ skill.title }}」吗？
-                    </n-popconfirm>
-                  </n-space>
-                </template>
-                <div>
-                  <n-space align="center" :size="6">
-                    <n-text strong>{{ skill.title }}</n-text>
-                    <n-tag size="tiny" round :type="skill.skill_type === 'code' ? 'warning' : 'info'">
-                      {{ skill.skill_type === 'code' ? '代码' : '提示词' }}
-                    </n-tag>
-                    <n-tag v-if="skill.isolated" size="tiny" round>隔离</n-tag>
-                  </n-space>
-                  <br />
-                  <n-text depth="3" style="font-size: 0.75rem; word-break: break-all">
-                    {{ skill.name }}{{ skill.description ? ' · ' + skill.description : '' }}
-                  </n-text>
-                </div>
-              </n-list-item>
-            </n-list>
-            <p v-if="skillStore.skills.length === 0" style="color: gray; font-size: 0.85rem;">暂无技能，点击下方按钮注册。</p>
-
             <n-space>
               <n-button type="primary" style="flex: 1" @click="openAddSkillDialog">注册技能</n-button>
               <n-button style="flex: 1" @click="triggerImportSkill" :loading="importing">导入压缩包</n-button>
@@ -126,6 +83,55 @@
               style="display: none"
               @change="onImportSkillFile"
             />
+
+            <n-grid :cols="2" :x-gap="12" :y-gap="12">
+              <n-gi v-for="skill in pagedSkills" :key="skill.id">
+                <n-card size="small" hoverable class="item-card">
+                  <template #header>
+                    <n-space align="center" :size="6">
+                      <n-text strong>{{ skill.title }}</n-text>
+                      <n-tag size="tiny" round :type="skill.skill_type === 'code' ? 'warning' : 'info'">
+                        {{ skill.skill_type === 'code' ? '代码' : '提示词' }}
+                      </n-tag>
+                      <n-tag v-if="skill.isolated" size="tiny" round>隔离</n-tag>
+                    </n-space>
+                  </template>
+                  <template #header-extra>
+                    <n-switch
+                      size="small"
+                      :value="skill.enabled"
+                      @update-value="(v: boolean) => onToggleSkill(skill, v)"
+                    />
+                  </template>
+                  <n-text depth="3" tag="div" style="font-size: 0.75rem; word-break: break-all">
+                    {{ skill.name }}{{ skill.description ? ' · ' + skill.description : '' }}
+                  </n-text>
+                  <template #action>
+                    <n-space align="center" justify="end">
+                      <n-button text size="small" @click="editSkill(skill)"
+                        :disabled="skill.skill_type === 'code' && !skillStore.isAdmin()">编辑</n-button>
+                      <n-button text size="small" @click="onExportSkill(skill)">导出</n-button>
+                      <n-popconfirm
+                        @positive-click="() => onDeleteSkill(skill)"
+                        negative-text="取消" positive-text="好的"
+                        :negative-button-props="{size: 'tiny'}"
+                        :positive-button-props="{size: 'tiny'}"
+                      >
+                        <template #trigger>
+                          <n-button text size="small" type="error"
+                            :disabled="skill.skill_type === 'code' && !skillStore.isAdmin()">删除</n-button>
+                        </template>
+                        确定删除技能「{{ skill.title }}」吗？
+                      </n-popconfirm>
+                    </n-space>
+                  </template>
+                </n-card>
+              </n-gi>
+            </n-grid>
+            <div v-if="skillStore.skills.length > PAGE_SIZE" style="display: flex; justify-content: center; margin-top: 12px;">
+              <n-pagination v-model:page="skillPage" :page-size="PAGE_SIZE" :item-count="skillStore.skills.length" />
+            </div>
+            <p v-if="skillStore.skills.length === 0" style="color: gray; font-size: 0.85rem;">暂无技能，点击上方按钮注册。</p>
           </n-space>
         </n-tab-pane>
 
@@ -138,45 +144,49 @@
 
             <n-divider />
 
-            <n-list hoverable clickable>
-              <n-list-item v-for="server in mcpStore.servers" :key="server.name">
-                <template #suffix>
-                  <n-space>
-                    <n-button text size="small" @click="editMcpServer(server)">编辑</n-button>
-                    <n-popconfirm
-                      @positive-click="() => deleteMcpServer(server.name)"
-                      negative-text="取消"
-                      positive-text="好的"
-                      :negative-button-props="{size: 'tiny'}"
-                      :positive-button-props="{size: 'tiny'}"
-                    >
-                      <template #trigger>
-                        <n-button text size="small" type="error">删除</n-button>
-                      </template>
-                      确定删除 MCP 服务「{{ server.name }}」吗？
-                    </n-popconfirm>
-                  </n-space>
-                </template>
-                <div>
-                  <n-space align="center" :size="6">
-                    <n-text strong>{{ server.name }}</n-text>
-                    <n-tag :type="server.connected ? 'success' : 'error'" size="tiny" round>
-                      {{ server.connected ? '已连接' : '未连接' }}
-                    </n-tag>
-                    <n-text depth="3" style="font-size: 0.75rem">
-                      {{ server.transport === 'stdio' ? '本地' : '远程' }} · {{ server.tools.length }} 个工具
-                    </n-text>
-                  </n-space>
-                  <br />
-                  <n-text depth="3" style="font-size: 0.75rem; word-break: break-all">
+            <n-button type="primary" block @click="openAddMcpDialog">添加 MCP 服务</n-button>
+
+            <n-grid :cols="2" :x-gap="12" :y-gap="12">
+              <n-gi v-for="server in pagedMcpServers" :key="server.name">
+                <n-card size="small" hoverable class="item-card">
+                  <template #header>
+                    <n-space align="center" :size="6">
+                      <n-text strong>{{ server.name }}</n-text>
+                      <n-tag :type="server.connected ? 'success' : 'error'" size="tiny" round>
+                        {{ server.connected ? '已连接' : '未连接' }}
+                      </n-tag>
+                    </n-space>
+                  </template>
+                  <n-text depth="3" tag="div" style="font-size: 0.75rem">
+                    {{ server.transport === 'stdio' ? '本地' : '远程' }} · {{ server.tools.length }} 个工具
+                  </n-text>
+                  <n-text depth="3" tag="div" style="font-size: 0.75rem; word-break: break-all; margin-top: 4px;">
                     {{ server.transport === 'stdio' ? (server.command + ' ' + (server.args || []).join(' ')) : server.url }}
                   </n-text>
-                </div>
-              </n-list-item>
-            </n-list>
-            <p v-if="mcpStore.servers.length === 0" style="color: gray; font-size: 0.85rem;">暂无 MCP 服务，点击下方按钮添加。</p>
-
-            <n-button type="primary" block @click="openAddMcpDialog">添加 MCP 服务</n-button>
+                  <template #action>
+                    <n-space align="center" justify="end">
+                      <n-button text size="small" @click="editMcpServer(server)">编辑</n-button>
+                      <n-popconfirm
+                        @positive-click="() => deleteMcpServer(server.name)"
+                        negative-text="取消"
+                        positive-text="好的"
+                        :negative-button-props="{size: 'tiny'}"
+                        :positive-button-props="{size: 'tiny'}"
+                      >
+                        <template #trigger>
+                          <n-button text size="small" type="error">删除</n-button>
+                        </template>
+                        确定删除 MCP 服务「{{ server.name }}」吗？
+                      </n-popconfirm>
+                    </n-space>
+                  </template>
+                </n-card>
+              </n-gi>
+            </n-grid>
+            <div v-if="mcpStore.servers.length > PAGE_SIZE" style="display: flex; justify-content: center; margin-top: 12px;">
+              <n-pagination v-model:page="mcpPage" :page-size="PAGE_SIZE" :item-count="mcpStore.servers.length" />
+            </div>
+            <p v-if="mcpStore.servers.length === 0" style="color: gray; font-size: 0.85rem;">暂无 MCP 服务，点击上方按钮添加。</p>
           </n-space>
         </n-tab-pane>
 
@@ -580,9 +590,9 @@ import { ref, reactive, watch, onMounted, computed } from 'vue'
 import {
   NDrawer, NDrawerContent, NForm, NFormItem, NInput, NPopover, NFlex,
   NRadioGroup, NRadio, NSwitch, NButton, NSpace, NDivider, NIcon,
-  NTabs, NTabPane, NList, NListItem, NPopconfirm, NTag, NAlert, 
+  NTabs, NTabPane, NList, NListItem, NPopconfirm, NTag, NAlert,
   NModal, NSelect, NCheckboxGroup, NCheckbox, NText, useMessage, useDialog, NSlider,
-  NInputNumber, NCollapseItem, NCollapse
+  NInputNumber, NCollapseItem, NCollapse, NGrid, NGi, NCard, NPagination
 } from 'naive-ui'
 import { useChatStore } from '@/stores/chat'
 import { useConfigStore, type ModelConfig } from '@/stores/config'
@@ -612,9 +622,22 @@ const editingModelId = ref<string | null>(null)
 
 const enabledSkills = computed(() => skillStore.skills.filter(s => s.enabled))
 
+// ---------- 卡片分页（每行 2 个，每页 2 行 = 每页 4 个） ----------
+const PAGE_SIZE = 4
+const skillPage = ref(1)
+const mcpPage = ref(1)
+const pagedSkills = computed(() =>
+  skillStore.skills.slice((skillPage.value - 1) * PAGE_SIZE, skillPage.value * PAGE_SIZE)
+)
+const pagedMcpServers = computed(() =>
+  mcpStore.servers.slice((mcpPage.value - 1) * PAGE_SIZE, mcpPage.value * PAGE_SIZE)
+)
+
 watch(() => props.show, (val) => {
   if (val) {
     profileId.value = profileStore.activeProfileId
+    skillPage.value = 1
+    mcpPage.value = 1
     mcpStore.loadServers()
     skillStore.loadSkills()
     skillStore.loadUserRole()
@@ -1158,4 +1181,7 @@ onMounted(() => {
 
 <style scoped>
 .n-tab-pane {margin-bottom:20px;}
+.item-card {
+  height: 100%;
+}
 </style>

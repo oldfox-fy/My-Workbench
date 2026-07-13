@@ -2,11 +2,26 @@
 import uuid
 import json
 import time
+import asyncio
 from fastapi import Request
 from openai import AsyncOpenAI, APIError
 from typing import List, Dict, AsyncGenerator, Optional
 from backend.services.tools import get_all_tools, execute_tool
 from backend.db.tool_calls import create_tool_call, update_tool_call, update_tool_call_arguments
+
+
+# 可重试的 HTTP 状态码（限流 + 服务端临时故障）
+_RETRYABLE_STATUSES = {429, 500, 502, 503, 504}
+
+# 默认重试配置
+DEFAULT_MAX_RETRIES = 3
+DEFAULT_BASE_DELAY = 1.0  # 秒
+
+
+def _is_retryable(error: APIError) -> bool:
+    """判断 API 错误是否可通过重试恢复"""
+    status = getattr(error, 'status_code', None) or getattr(error, 'http_status', None)
+    return status in _RETRYABLE_STATUSES
 
 
 class LLMService:
@@ -17,11 +32,19 @@ class LLMService:
                  model_name: str,
                  api_key: str = "",
                  base_url: str = None,
-                 thinking: str = 'enabled'):
+                 thinking: str = 'enabled',
+                 max_retries: int = DEFAULT_MAX_RETRIES,
+                 base_delay: float = DEFAULT_BASE_DELAY,
+                 fallback_config: Optional[Dict] = None):
         self.model_type = model_type
         self.model_name = model_name
         self.thinking = thinking
+        self.max_retries = max_retries
+        self.base_delay = base_delay
+        self.fallback_config = fallback_config
         self.client = AsyncOpenAI(api_key=api_key or None, base_url=base_url)
+        # 备用客户端（惰性创建，仅在触发降级时初始化）
+        self._fallback_client = None
 
     async def generate_response(
         self,
@@ -103,7 +126,7 @@ class LLMService:
         last_step_usage = None
         last_step_generation_time = 0.0
 
-        MAX_STEPS = 60
+        MAX_STEPS = 10
         MAX_CONSECUTIVE_FAILURES = 3
         consecutive_failures = 0
         force_final = False
@@ -165,10 +188,54 @@ class LLMService:
                 kwargs["tools"] = tools
                 kwargs["tool_choice"] = "auto"
 
-            try:
-                response = await self.client.chat.completions.create(**kwargs)
-            except APIError as e:
-                yield f"\n❌ 模型服务错误：{e.message}"
+            # ---------- API 调用（含重试与降级） ----------
+            response = None
+            api_error = None
+            client = self.client  # 当前使用的客户端（可能已在之前的步骤中降级）
+
+            for attempt in range(self.max_retries + 1):
+                try:
+                    response = await client.chat.completions.create(**kwargs)
+                    api_error = None
+                    break
+                except APIError as e:
+                    api_error = e
+                    if attempt < self.max_retries and _is_retryable(e):
+                        delay = self.base_delay * (2 ** attempt)  # 指数退避: 1s, 2s, 4s
+                        yield (f"\n⚠️ API 调用失败（{e.message}），"
+                               f"{delay:.0f}s 后重试（{attempt + 1}/{self.max_retries}）...\n")
+                        await asyncio.sleep(delay)
+                    elif self.fallback_config and client is not self._fallback_client:
+                        # 主模型不可用，尝试切换到备用模型
+                        yield (f"\n🔄 主模型暂时不可用（{e.message}），"
+                               f"正在切换到备用模型：{self.fallback_config.get('model_name', '')}...\n")
+                        if self._fallback_client is None:
+                            self._fallback_client = AsyncOpenAI(
+                                api_key=self.fallback_config.get('api_key') or None,
+                                base_url=self.fallback_config.get('base_url') or None,
+                            )
+                        client = self._fallback_client
+                        kwargs["model"] = self.fallback_config.get("model_name", self.model_name)
+                        # 备用模型重试一次
+                        try:
+                            response = await client.chat.completions.create(**kwargs)
+                            api_error = None
+                            yield "✅ 备用模型连接成功，继续处理...\n"
+                            break
+                        except APIError as e2:
+                            api_error = e2
+                            yield f"\n❌ 备用模型同样失败：{e2.message}\n"
+                            break
+                    else:
+                        if not self.fallback_config:
+                            yield f"\n❌ 模型服务错误（已重试 {attempt} 次）：{e.message}"
+                        break
+                except Exception as e:
+                    api_error = APIError(message=str(e))
+                    yield f"\n❌ 模型调用异常：{str(e)}\n"
+                    break
+
+            if api_error:
                 break
 
             first_token_time = None
@@ -340,31 +407,28 @@ class LLMService:
             }
             current_messages.append(assistant_msg)
 
-            # ---------- 执行工具 ----------
-            for idx, tc in valid_calls.items():
-                if idx not in tool_preview_active:
-                    print(f"[WARN] 跳过工具 {tc['function']['name']}，因为未找到预览状态")
-                    continue
+            # ---------- 并行执行工具 ----------
+            # 快照 tool_preview_active（在并行执行前完成读取，避免协程间竞态）
+            preview_snapshot = {
+                idx: dict(info)
+                for idx, info in tool_preview_active.items()
+                if idx in valid_calls
+            }
 
-                local_call_id = tool_preview_active[idx]['call_id']
-
-                # 获取 Assistant 消息中使用的真实 ID
-                # OpenAI 要求 Tool 消息的 tool_call_id 必须与 Assistant 消息中的 id 严格一致
+            async def _execute_one_tool(idx, tc, preview_info):
+                """执行单个工具调用，返回结果元组 (idx, exec_result)。
+                此函数在 asyncio.gather 中并行运行，不 yield SSE 标记。"""
+                local_call_id = preview_info['call_id']
                 real_tool_call_id = tc.get("id")
-
                 func_name = tc["function"]["name"] or "未知工具"
                 raw_args = tc["function"]["arguments"]
 
-                if not tool_preview_active[idx].get('preview_sent', False):
-                    # 如果上面的流式阶段没有发（可能是非流式或者异常情况），在这里补发
-                    yield f"<!--tool_preview:start:{local_call_id}:{func_name}-->"
-                    tool_preview_active[idx]['preview_sent'] = True
-
+                # 解析参数
+                parse_error = None
                 try:
                     args = json.loads(raw_args) if raw_args else {}
                 except json.JSONDecodeError as e:
-                    error_detail = f"JSON 解析失败: {e}\n原始参数: {raw_args[:200]}"
-                    yield f"\n❌ 工具 `{func_name}` 参数错误：{error_detail}\n"
+                    parse_error = f"JSON 解析失败: {e}\n原始参数: {raw_args[:200]}"
                     args = {"raw": raw_args, "parse_error": str(e)}
 
                 # 更新数据库中的参数
@@ -380,17 +444,14 @@ class LLMService:
                 try:
                     result = await execute_tool(func_name, args, mcp_manager, skill_registry)
                     if isinstance(result, str):
-                        # 尝试解析 JSON 字符串
                         try:
                             result_obj = json.loads(result)
                             if isinstance(result_obj, dict) and result_obj.get("success") is False:
                                 failed = True
                         except json.JSONDecodeError:
-                            # 非 JSON 字符串，检查是否为旧版错误提示
                             if result.startswith("工具执行出错:"):
                                 failed = True
                     elif isinstance(result, dict) and result.get("success") is False:
-                        # 如果直接返回的是字典对象
                         failed = True
                 except Exception as e:
                     error_msg = str(e)
@@ -415,8 +476,48 @@ class LLMService:
                     except Exception as e:
                         print(f"[DB] Failed to update result: {e}")
 
-                # 更新连续失败计数
-                if failed:
+                # 构建工具内容
+                if isinstance(result, dict):
+                    tool_content = json.dumps(result, ensure_ascii=False)
+                else:
+                    tool_content = str(result)
+
+                return {
+                    "idx": idx,
+                    "local_call_id": local_call_id,
+                    "real_tool_call_id": real_tool_call_id,
+                    "func_name": func_name,
+                    "failed": failed,
+                    "tool_content": tool_content,
+                    "parse_error": parse_error,
+                }
+
+            # 并行执行所有工具调用
+            coros = [
+                _execute_one_tool(idx, tc, preview_snapshot.get(idx, {}))
+                for idx, tc in valid_calls.items()
+            ]
+            exec_results = await asyncio.gather(*coros)
+
+            # 按 idx 排序后顺序处理结果（保持 tool_call_id 顺序一致性）
+            exec_results.sort(key=lambda r: r["idx"])
+
+            for r in exec_results:
+                idx = r["idx"]
+                local_call_id = r["local_call_id"]
+                func_name = r["func_name"]
+
+                # 发送补发的 tool_preview:start（如果不是流式阶段已发送）
+                preview_info = preview_snapshot.get(idx, {})
+                if not preview_info.get('preview_sent', False):
+                    yield f"<!--tool_preview:start:{local_call_id}:{func_name}-->"
+
+                # 参数解析错误的提示
+                if r["parse_error"]:
+                    yield f"\n❌ 工具 `{r['func_name']}` 参数错误：{r['parse_error']}\n"
+
+                # 更新连续失败计数 + 发送状态标记
+                if r["failed"]:
                     consecutive_failures += 1
                     yield f"<!--tool_status:{local_call_id}:error-->"
                 else:
@@ -424,24 +525,18 @@ class LLMService:
                     yield f"<!--tool_status:{local_call_id}:success-->"
 
                 yield f"<!--tool_preview:end:{local_call_id}-->"
-                del tool_preview_active[idx]
 
-                # 使用 real_tool_call_id 关联上下文
-                # 如果 real_tool_call_id 为空（理论上不应该，除非流式解析异常），则使用 local_call_id 兜底
-                final_id_for_context = real_tool_call_id if real_tool_call_id else local_call_id
-
-                if isinstance(result, dict):
-                    # 如果是字典，转为标准 JSON 字符串 (ensure_ascii=False 保证中文正常显示)
-                    tool_content = json.dumps(result, ensure_ascii=False)
-                else:
-                    # 如果已经是字符串或其他类型，直接转字符串即可，不要再次 json.dumps
-                    tool_content = str(result)
-
+                # 追加 tool 消息到上下文
+                final_id_for_context = r["real_tool_call_id"] if r["real_tool_call_id"] else local_call_id
                 current_messages.append({
                     "role": "tool",
                     "tool_call_id": final_id_for_context,
-                    "content": tool_content
+                    "content": r["tool_content"]
                 })
+
+            # 清理已处理的 tool_preview_active
+            for r in exec_results:
+                tool_preview_active.pop(r["idx"], None)
 
             yield "<!--tool_calls:end-->"
 

@@ -12,12 +12,24 @@
         </span>
       </div>
       <div class="kb-topbar-right">
+        <n-select
+          v-model:value="searchQuery"
+          :options="historyOptions"
+          placeholder="输入关键词匹配文件名..."
+          clearable
+          filterable
+          tag
+          @update:value="onSearch"
+          style="width: 240px"
+        />
         <n-checkbox v-model:checked="showAttachments" @update:checked="applyFilter">显示附件</n-checkbox>
         <n-checkbox v-model:checked="includeTags" @update:checked="reload">显示标签</n-checkbox>
+        <n-checkbox v-if="embeddingAvailable" v-model:checked="includeSemantic" @update:checked="reload">语义关联</n-checkbox>
         <n-text depth="3" v-if="graph" class="kb-graph-stats">
           {{ graph.stats.note_count }} 笔记
           <span v-if="graph.stats.attachment_count">· {{ graph.stats.attachment_count }} 附件</span>
           · {{ graph.stats.edge_count }} 链接
+          <span v-if="semanticEdgeCount">· {{ semanticEdgeCount }} 语义</span>
           <span v-if="graph.stats.missing_count">· {{ graph.stats.missing_count }} 未创建</span>
         </n-text>
         <n-button size="small" text @click="reload" title="刷新">
@@ -55,8 +67,8 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
-import { NButton, NIcon, NText, NSpin, NCheckbox, useMessage } from 'naive-ui'
-import { ArrowBackOutline, GitNetworkOutline, RefreshOutline } from '@vicons/ionicons5'
+import { NButton, NIcon, NText, NSpin, NCheckbox, NSelect, NInput, useMessage } from 'naive-ui'
+import { ArrowBackOutline, GitNetworkOutline, RefreshOutline, SearchOutline } from '@vicons/ionicons5'
 import { useConfigStore } from '@/stores/config'
 import { useKnowledgeStore } from '@/stores/knowledge'
 import { getGraph, type GraphData, type GraphNode } from '@/api/knowledge'
@@ -73,6 +85,29 @@ const loading = ref(false)
 const error = ref('')
 const includeTags = ref(false)
 const showAttachments = ref(true)
+const includeSemantic = ref(localStorage.getItem('kbGraphSemantic') === '1')
+const embeddingAvailable = ref(false)
+const semanticEdgeCount = ref(0)
+
+// 关键词搜索 & 历史记录
+const searchQuery = ref("")
+const keywordHistory = ref<string[]>(loadKeywordHistory())
+const historyOptions = ref<{ label: string; value: string }[]>(buildHistoryOptions())
+
+function loadKeywordHistory(): string[] {
+  try { return JSON.parse(localStorage.getItem('kbGraphKeywords') || '[]') }
+  catch { return [] }
+}
+function saveKeywordHistory() {
+  localStorage.setItem('kbGraphKeywords', JSON.stringify(keywordHistory.value))
+}
+function buildHistoryOptions() {
+  const opts = [{ label: '（输入关键词搜索文件名）', value: '' }]
+  for (const kw of keywordHistory.value) {
+    opts.push({ label: kw, value: kw })
+  }
+  return opts
+}
 
 // 物理节点
 interface PNode extends GraphNode { x: number; y: number; vx: number; vy: number }
@@ -107,6 +142,7 @@ function palette() {
     tag: '#e08a3c',
     edge: dark ? 'rgba(150,160,190,0.25)' : 'rgba(80,90,120,0.22)',
     edgeMissing: dark ? 'rgba(150,150,150,0.15)' : 'rgba(150,150,150,0.2)',
+    semantic: dark ? 'rgba(180,130,255,0.35)' : 'rgba(130,80,200,0.28)',
     label: dark ? '#cfd3dc' : '#333',
   }
 }
@@ -115,13 +151,37 @@ async function reload() {
   loading.value = true
   error.value = ''
   try {
-    graph.value = await getGraph(includeTags.value)
+    graph.value = await getGraph(
+      includeTags.value, includeSemantic.value,
+      0.72, [], searchQuery.value,
+    )
+    embeddingAvailable.value = graph.value.stats?.embedding_available ?? false
+    if (!embeddingAvailable.value) includeSemantic.value = false
+    localStorage.setItem('kbGraphSemantic', includeSemantic.value ? '1' : '0')
     initSimulation()
   } catch (e: any) {
     error.value = e.message || '构建图谱失败'
   } finally {
     loading.value = false
   }
+}
+
+function onSearch() {
+  const kw = searchQuery.value.trim()
+  if (!kw) {
+    reload()
+    return
+  }
+  // 保存到历史记录
+  if (!keywordHistory.value.includes(kw)) {
+    keywordHistory.value.unshift(kw)
+    if (keywordHistory.value.length > 20) keywordHistory.value.pop()
+    saveKeywordHistory()
+    historyOptions.value = buildHistoryOptions()
+  }
+  // 弹出提醒
+  message.warning('由于模型限制，目前只支持文件名关联！', { duration: 4000 })
+  reload()
 }
 
 function initSimulation() {
@@ -149,6 +209,7 @@ function initSimulation() {
   edges = graph.value.edges
     .map(e => ({ s: idMap.get(e.source)!, t: idMap.get(e.target)!, type: e.type }))
     .filter(e => e.s && e.t)
+  semanticEdgeCount.value = graph.value.edges.filter(e => e.type === 'semantic').length
   scale = 1; offsetX = 0; offsetY = 0
   alpha = 1
   startLoop()
@@ -224,13 +285,25 @@ function draw() {
 
   // 边
   for (const e of edges) {
-    ctx.strokeStyle = e.type === 'missing' ? c.edgeMissing : c.edge
-    ctx.lineWidth = 1 / scale
+    if (e.type === 'semantic') {
+      ctx.strokeStyle = c.semantic
+      ctx.setLineDash([5 / scale, 5 / scale])
+      ctx.lineWidth = 0.8 / scale
+    } else if (e.type === 'missing') {
+      ctx.strokeStyle = c.edgeMissing
+      ctx.setLineDash([])
+      ctx.lineWidth = 1 / scale
+    } else {
+      ctx.strokeStyle = c.edge
+      ctx.setLineDash([])
+      ctx.lineWidth = 1 / scale
+    }
     ctx.beginPath()
     ctx.moveTo(e.s.x, e.s.y)
     ctx.lineTo(e.t.x, e.t.y)
     ctx.stroke()
   }
+  ctx.setLineDash([])  // reset
   // 节点
   for (const n of nodes) {
     const r = nodeRadius(n)

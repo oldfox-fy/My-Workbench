@@ -7,6 +7,12 @@ import time
 import argparse
 import mimetypes
 import asyncio
+
+# 强制 Windows 使用 ProactorEventLoop（支持子进程）。
+# Python 3.8+ 默认即为此策略，但某些第三方库/环境可能将其覆写为
+# SelectorEventLoop，导致 system_run_command 无法启动子进程。
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 from contextlib import asynccontextmanager
 
 import uvicorn
@@ -165,6 +171,7 @@ async def serve_generated_file(request: Request, file_path: str):
         _Path(_backend.workspace_path).resolve() if _backend.workspace_path else None,
         _Path(config.generate_dir).resolve(),
         _Path(config.uploads_dir).resolve(),
+        _Path(_backend.kb_path).resolve() if getattr(_backend, "kb_path", "") else None,
     ]
     allowed = [d for d in allowed if d]
 

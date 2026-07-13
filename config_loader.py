@@ -61,6 +61,21 @@ class AppConfig:
         # 其他配置项
         self.max_upload_size = int(self.raw_config.get("max_upload_size_mb", 100)) * 1024 * 1024
 
+        # 模型调用容错配置
+        retry_cfg = self.raw_config.get("retry", {}) or {}
+        self.max_retries = int(retry_cfg.get("max_retries", 3))
+        self.base_delay = float(retry_cfg.get("base_delay", 1.0))
+
+        # 模型降级配置
+        fb = self.raw_config.get("fallback", {}) or {}
+        self.fallback_config = None
+        if fb.get("enabled", False) and fb.get("model_name"):
+            self.fallback_config = {
+                "model_name": fb.get("model_name", ""),
+                "base_url": fb.get("base_url", ""),
+                "api_key": fb.get("api_key", ""),
+            }
+
     def _resolve_path(self, path_str: str, base: Path) -> Path:
         """将路径字符串解析为 Path 对象，支持绝对路径和相对路径"""
         p = Path(path_str)

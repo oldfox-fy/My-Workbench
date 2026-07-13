@@ -146,10 +146,27 @@ async def semantic_search(req: SearchIn):
 # ──────────────────────── 双链与图谱（M3 / M4） ────────────────────────
 
 @router.get("/graph")
-async def knowledge_graph(include_tags: bool = False):
-    """构建知识库双链图谱：节点（笔记/虚节点/标签）+ 边（wiki/md/tag/missing）。"""
+async def knowledge_graph(
+    include_tags: bool = False,
+    include_semantic: bool = False,
+    semantic_threshold: float = 0.72,
+    files: str = "",
+    keyword: str = "",
+):
+    """构建知识库双链图谱。
+
+    - files: 逗号分隔的文件相对路径，限定图谱范围。
+    - keyword: 按文件名（含路径）模糊匹配，大小写不敏感。
+    """
     try:
-        return await kb_graph.build_graph(include_tags=include_tags)
+        scope_files = [f.strip() for f in files.split(",") if f.strip()] if files else None
+        return await kb_graph.build_graph(
+            include_tags=include_tags,
+            include_semantic=include_semantic,
+            semantic_threshold=semantic_threshold,
+            scope_files=scope_files,
+            keyword=keyword.strip(),
+        )
     except kb_graph.KbNotConfiguredError as e:
         raise HTTPException(400, str(e))
 

@@ -22,3 +22,15 @@ static_dir: "html"
 
 # 其他配置
 max_upload_size_mb: 100
+
+# 模型调用容错配置（可选）
+retry:
+  max_retries: 3      # API 调用失败最大重试次数
+  base_delay: 1.0     # 重试基础间隔（秒），实际延迟 = base_delay * 2^attempt
+
+# 可选：模型调用失败时的全局降级配置
+fallback:
+  enabled: false
+  model_name: ""
+  base_url: ""
+  api_key: ""

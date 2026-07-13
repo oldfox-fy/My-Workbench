@@ -120,22 +120,41 @@ export interface GraphNode {
 export interface GraphEdge {
   source: string
   target: string
-  type: 'wiki' | 'md' | 'tag' | 'missing'
+  type: 'wiki' | 'md' | 'tag' | 'missing' | 'semantic'
 }
 
 export interface GraphData {
   nodes: GraphNode[]
   edges: GraphEdge[]
-  stats: { note_count: number; edge_count: number; missing_count: number; attachment_count?: number }
+  stats: {
+    note_count: number
+    edge_count: number
+    missing_count: number
+    attachment_count?: number
+    embedding_available?: boolean
+  }
 }
 
 export interface Backlink {
   file_path: string
-  type: 'wiki' | 'md'
+  type: 'wiki' | 'md' | 'semantic'
 }
 
-export async function getGraph(includeTags = false): Promise<GraphData> {
-  const res = await fetch(`/api/kb/graph?include_tags=${includeTags}`)
+export async function getGraph(
+  includeTags = false,
+  includeSemantic = false,
+  semanticThreshold = 0.72,
+  files: string[] = [],
+  keyword = "",
+): Promise<GraphData> {
+  const params = new URLSearchParams({ include_tags: String(includeTags) })
+  if (includeSemantic) {
+    params.set('include_semantic', 'true')
+    params.set('semantic_threshold', String(semanticThreshold))
+  }
+  if (files.length) params.set('files', files.join(','))
+  if (keyword) params.set('keyword', keyword)
+  const res = await fetch(`/api/kb/graph?${params}`)
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))
     throw new Error(err.detail || '构建图谱失败')

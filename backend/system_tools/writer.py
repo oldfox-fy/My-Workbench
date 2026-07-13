@@ -16,13 +16,21 @@ MAX_FILE_SIZE = 100 * 1024 * 1024  # 100 MB
 # ──────────────────────── 路径校验（统一出口） ────────────────────────
 
 def _get_allowed_dirs() -> list[Path]:
-    """获取允许写入的目录列表。"""
+    """获取允许写入的目录列表（工作区 + 知识库）。"""
     raw = backend.workspace_path
     if not raw:
         raise RuntimeError("backend.workspace_path 未配置")
     if isinstance(raw, (list, tuple)):
-        return [Path(p).resolve() for p in raw if p]
-    return [Path(raw).resolve()]
+        dirs = [Path(p).resolve() for p in raw if p]
+    else:
+        dirs = [Path(raw).resolve()]
+    # 知识库路径（若已配置）也允许写入
+    kb = getattr(backend, "kb_path", "")
+    if kb:
+        kb_path = Path(kb).resolve()
+        if kb_path not in dirs:
+            dirs.append(kb_path)
+    return dirs
 
 
 def _validate(path: str) -> Tuple[Optional[Path], Optional[str]]:

@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from typing import List, Dict, Optional, Any
 from backend.services.llm_service import LLMService
 from backend.services.tools import get_local_tools, get_mcp_tools, get_all_tools
+from backend.services.context_compressor import compress_messages
 from backend.database import get_db
 from backend.utils.base import resource_path, get_current_time, get_local_ip
 from config_loader import config
@@ -25,7 +26,7 @@ with open(full_path, 'r', encoding="utf-8") as f:
 BASE_SYSTEM_PROMPT = BASE_SYSTEM_PROMPT.replace("{{uploads_dir}}", str(config.uploads_dir))
 
 
-disabled_tools = ['system_write_file', 'system_patch_file', 'system_create_project_tree', 'system_read_file_list']
+disabled_tools = ['system_write_file', 'system_patch_file', 'system_create_project_tree', 'system_read_file_list', 'system_run_command']
 default_tools = ['system_get_weather', 'system_read_file', 'system_kb_list', 'system_kb_read', 'system_kb_search']
 
 class ModelConfig(BaseModel):
@@ -61,25 +62,36 @@ async def chat(
 ):
     try:
         # 1. 创建 LLM 服务实例
+        # 从全局配置读取容错参数
+        max_retries = getattr(config, 'max_retries', 3)
+        base_delay = getattr(config, 'base_delay', 1.0)
+        fallback_cfg = getattr(config, 'fallback_config', None)
+
         if request.llm_config:
-            config = request.llm_config
-            if config.type == "local":
+            llm_cfg = request.llm_config
+            if llm_cfg.type == "local":
                 service = LLMService(
                     model_type="local",
-                    model_name=config.model_name,
-                    base_url=config.base_url,
-                    api_key=config.api_key,
-                    thinking=config.thinking
+                    model_name=llm_cfg.model_name,
+                    base_url=llm_cfg.base_url,
+                    api_key=llm_cfg.api_key,
+                    thinking=llm_cfg.thinking,
+                    max_retries=max_retries,
+                    base_delay=base_delay,
+                    fallback_config=fallback_cfg,
                 )
             else:
-                if not config.api_key:
+                if not llm_cfg.api_key:
                     raise HTTPException(status_code=400, detail="线上模型必须提供 API Key")
                 service = LLMService(
                     model_type="online",
-                    model_name=config.model_name,
-                    base_url=config.base_url,
-                    api_key=config.api_key,
-                    thinking=config.thinking
+                    model_name=llm_cfg.model_name,
+                    base_url=llm_cfg.base_url,
+                    api_key=llm_cfg.api_key,
+                    thinking=llm_cfg.thinking,
+                    max_retries=max_retries,
+                    base_delay=base_delay,
+                    fallback_config=fallback_cfg,
                 )
         else:
             service = LLMService.instance
@@ -140,6 +152,7 @@ async def chat(
         messages = [m for m in messages if m["role"] != "system"]
 
         system_prompt = BASE_SYSTEM_PROMPT.replace("{{workspace_path}}", backend.workspace_path)
+        system_prompt = system_prompt.replace("{{kb_path}}", getattr(backend, "kb_path", "") or backend.workspace_path)
         system_prompt = system_prompt.replace("{{time_now}}", get_current_time())
         # profile_prompt 加入到 system_prompt 中
         if profile_prompt:
@@ -172,7 +185,11 @@ async def chat(
                         text = MISC_MARKERS.sub('', text)
                         part["text"] = text
 
-        # 3. 流式响应（使用关键字参数，避免顺序错误）
+        # 3. 上下文压缩（长对话自动压缩中间部分，防止 token 溢出）
+        if request.enable_tools and len(messages) > 12:
+            messages = compress_messages(messages, max_tokens=8000, keep_recent=10)
+
+        # 4. 流式响应
         return StreamingResponse(
             service.generate_response(
                 messages=messages,

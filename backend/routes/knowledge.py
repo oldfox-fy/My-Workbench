@@ -11,6 +11,9 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import quote as _quote
 
+# 强制初始化 MIME 类型数据库（Windows 上注册表可能不可靠）
+mimetypes.init()
+
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -225,6 +228,9 @@ async def set_root(req: RootRequest):
     if not os.path.isdir(req.path):
         raise HTTPException(400, "提供的路径不是一个有效目录")
     backend.kb_path = req.path
+    # 确保「生成内容」目录存在
+    gen_dir = os.path.join(req.path, "生成内容")
+    os.makedirs(gen_dir, exist_ok=True)
     return {"status": "ok", "path": backend.kb_path}
 
 
@@ -305,6 +311,22 @@ async def get_file(path: str):
     }
 
 
+# MIME 类型显式映射（Windows 上 mimetypes.guess_type 可能返回 None，导致浏览器下载而非预览）
+_MIME_MAP = {
+    ".pdf": "application/pdf",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".bmp": "image/bmp",
+    ".webp": "image/webp",
+    ".ico": "image/x-icon",
+    ".svg": "image/svg+xml",
+    ".tiff": "image/tiff",
+    ".tif": "image/tiff",
+}
+
+
 @router.get("/raw")
 async def get_raw_file(path: str):
     """流式返回知识库内文件的原始字节（供图片 <img> / PDF <iframe> 内嵌查看）。"""
@@ -312,11 +334,13 @@ async def get_raw_file(path: str):
     safe_path = _safe(path, root)
     if not safe_path.exists() or not safe_path.is_file():
         raise HTTPException(404, "文件不存在")
-    media_type, _ = mimetypes.guess_type(str(safe_path))
+    ext = safe_path.suffix.lower()
+    media_type = _MIME_MAP.get(ext) or mimetypes.guess_type(str(safe_path))[0]
     return FileResponse(
         str(safe_path),
         media_type=media_type or "application/octet-stream",
         filename=safe_path.name,
+        content_disposition_type="inline",
     )
 
 
