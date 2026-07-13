@@ -32,6 +32,31 @@
         </n-button>
       </n-space>
     </div>
+    <!-- 标签行 -->
+    <div v-if="kbStore.currentPath" class="kb-tags-row">
+      <n-space :size="4" align="center">
+        <n-tag
+          v-for="tag in currentTags"
+          :key="tag.id"
+          :color="{ color: tag.color, textColor: '#fff' }"
+          size="small"
+          closable
+          @close="removeFileTag(tag)"
+        >{{ tag.name }}</n-tag>
+        <n-button text size="tiny" @click="showTagInput = !showTagInput" title="添加标签">
+          <template #icon><n-icon :size="14"><AddOutline /></n-icon></template>
+        </n-button>
+        <n-input
+          v-if="showTagInput"
+          v-model:value="newTagName"
+          size="tiny"
+          placeholder="标签名"
+          style="width:80px"
+          @keydown.enter="addTag"
+          @blur="addTag"
+        />
+      </n-space>
+    </div>
     <div class="kb-content-scroll">
       <!-- 编辑模式 -->
       <div v-if="editing" class="kb-editor-wrap">
@@ -108,7 +133,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import { NButton, NIcon, NSpace, NTag, NInput, useMessage } from 'naive-ui'
-import { CloseOutline, CreateOutline, LockClosedOutline, OpenOutline } from '@vicons/ionicons5'
+import { CloseOutline, CreateOutline, LockClosedOutline, OpenOutline, AddOutline } from '@vicons/ionicons5'
 import { MarkdownRender } from 'markstream-vue'
 import 'markstream-vue/index.css'
 import { useKnowledgeStore } from '@/stores/knowledge'
@@ -122,6 +147,48 @@ const message = useMessage()
 const kbStore = useKnowledgeStore()
 
 const editing = ref(false)
+
+// 标签
+const currentTags = ref<{ id: number; name: string; color: string }[]>([])
+const showTagInput = ref(false)
+const newTagName = ref('')
+
+async function loadTags() {
+  if (!kbStore.currentPath) return
+  try {
+    const resp = await fetch(`/api/kb/files/tags?file_path=${encodeURIComponent(kbStore.currentPath)}`)
+    if (resp.ok) currentTags.value = await resp.json()
+  } catch { /* ignore */ }
+}
+
+async function addTag() {
+  const name = newTagName.value.trim()
+  newTagName.value = ''
+  showTagInput.value = false
+  if (!name || !kbStore.currentPath) return
+
+  const newTags = [...currentTags.value.map(t => t.name), name]
+  await fetch(`/api/kb/files/tags?file_path=${encodeURIComponent(kbStore.currentPath)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ tags: newTags }),
+  })
+  await loadTags()
+}
+
+async function removeFileTag(tag: { id: number; name: string }) {
+  const newTags = currentTags.value.filter(t => t.id !== tag.id).map(t => t.name)
+  await fetch(`/api/kb/files/tags?file_path=${encodeURIComponent(kbStore.currentPath)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ tags: newTags }),
+  })
+  await loadTags()
+}
+
+watch(() => kbStore.currentPath, () => {
+  if (kbStore.currentPath) loadTags()
+}, { immediate: true })
 const editContent = ref('')
 const saving = ref(false)
 const editorRef = ref<HTMLTextAreaElement | null>(null)

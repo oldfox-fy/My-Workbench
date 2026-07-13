@@ -271,3 +271,22 @@ tools:
       required: ["task"]
     module: backend.system_tools.delegate
     function_name: delegate_task
+
+  - name: system_web_fetch
+    title: 网页抓取
+    description: >
+      抓取网页内容并保存到知识库。自动将 HTML 转为 Markdown 格式，
+      保存到「07-生成内容/web_fetch/」目录，可后续通过知识库检索工具查找。
+      适用于用户要求"收藏这篇文章"或"把这个网页存到知识库"的场景。
+    parameters:
+      type: object
+      properties:
+        url:
+          type: string
+          description: 要抓取的网页完整地址（https://...）。
+        path:
+          type: string
+          description: 保存子目录（相对于知识库的「07-生成内容/web_fetch/」），省略则自动使用时间戳命名。
+      required: ["url"]
+    module: backend.system_tools.web_fetch
+    function_name: web_fetch

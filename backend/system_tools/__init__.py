@@ -9,3 +9,4 @@ from . import runner
 from . import weather
 from . import writer
 from . import delegate
+from . import web_fetch

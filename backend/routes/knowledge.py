@@ -8,7 +8,7 @@ import shutil
 import asyncio
 import mimetypes
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
 from urllib.parse import quote as _quote
 
 # 强制初始化 MIME 类型数据库（Windows 上注册表可能不可靠）
@@ -465,3 +465,112 @@ async def delete_entry(req: DeleteRequest):
     except OSError as e:
         raise HTTPException(400, f"删除失败：{e}")
     return {"status": "ok"}
+
+
+# ──────────── 标签系统 ────────────
+
+class TagCreate(BaseModel):
+    name: str
+    color: Optional[str] = "#6366f1"
+
+class FileTagSet(BaseModel):
+    tags: List[str] = []
+
+
+@router.get("/tags")
+async def list_tags():
+    """列出所有标签。"""
+    db = await get_db()
+    try:
+        cursor = await db.execute("SELECT id, name, color FROM kb_tags ORDER BY name")
+        rows = await cursor.fetchall()
+        return [{"id": r[0], "name": r[1], "color": r[2]} for r in rows]
+    finally:
+        await db.close()
+
+
+@router.post("/tags")
+async def create_tag(data: TagCreate):
+    """创建新标签。"""
+    db = await get_db()
+    try:
+        await db.execute("INSERT OR IGNORE INTO kb_tags (name, color) VALUES (?, ?)", (data.name.strip(), data.color))
+        await db.commit()
+        cursor = await db.execute("SELECT id, name, color FROM kb_tags WHERE name = ?", (data.name.strip(),))
+        row = await cursor.fetchone()
+        return {"id": row[0], "name": row[1], "color": row[2]} if row else {"status": "ok"}
+    finally:
+        await db.close()
+
+
+@router.delete("/tags/{tag_id}")
+async def delete_tag(tag_id: int):
+    """删除标签（同时清除所有文件上的此标签）。"""
+    db = await get_db()
+    try:
+        await db.execute("DELETE FROM kb_tags WHERE id = ?", (tag_id,))
+        await db.commit()
+        return {"status": "ok"}
+    finally:
+        await db.close()
+
+
+@router.get("/files/tags")
+async def get_file_tags(file_path: str = ""):
+    """获取指定文件的标签列表。"""
+    if not file_path:
+        raise HTTPException(400, "file_path 不能为空")
+    db = await get_db()
+    try:
+        cursor = await db.execute(
+            "SELECT kt.id, kt.name, kt.color FROM kb_tags kt "
+            "JOIN kb_file_tags kft ON kt.id = kft.tag_id WHERE kft.file_path = ? ORDER BY kt.name",
+            (file_path,),
+        )
+        rows = await cursor.fetchall()
+        return [{"id": r[0], "name": r[1], "color": r[2]} for r in rows]
+    finally:
+        await db.close()
+
+
+@router.post("/files/tags")
+async def set_file_tags(data: FileTagSet, file_path: str = ""):
+    """设置文件标签（替换模式：先清空再设置）。"""
+    if not file_path:
+        raise HTTPException(400, "file_path 不能为空")
+    db = await get_db()
+    try:
+        # 清空旧标签
+        await db.execute("DELETE FROM kb_file_tags WHERE file_path = ?", (file_path,))
+        # 为每个标签名查找或创建 tag，然后关联
+        for name in data.tags:
+            name = name.strip()
+            if not name:
+                continue
+            await db.execute("INSERT OR IGNORE INTO kb_tags (name, color) VALUES (?, ?)", (name, "#6366f1"))
+            cursor = await db.execute("SELECT id FROM kb_tags WHERE name = ?", (name,))
+            row = await cursor.fetchone()
+            if row:
+                await db.execute("INSERT OR IGNORE INTO kb_file_tags (file_path, tag_id) VALUES (?, ?)", (file_path, row[0]))
+        await db.commit()
+        return {"status": "ok"}
+    finally:
+        await db.close()
+
+
+@router.get("/tree-by-tag")
+async def tree_by_tag(tag: str = ""):
+    """按标签筛选文件树（只返回有该标签的文件路径）。"""
+    if not tag:
+        return {"files": []}
+    db = await get_db()
+    try:
+        cursor = await db.execute(
+            "SELECT DISTINCT kft.file_path FROM kb_file_tags kft "
+            "JOIN kb_tags kt ON kt.id = kft.tag_id WHERE kt.name = ? ORDER BY kft.file_path",
+            (tag.strip(),),
+        )
+        rows = await cursor.fetchall()
+        return {"tag": tag, "files": [r[0] for r in rows]}
+    finally:
+        await db.close()

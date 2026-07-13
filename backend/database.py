@@ -176,6 +176,24 @@ async def init_db():
         )
     """)
 
+    # 知识库标签系统
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS kb_tags (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            color TEXT DEFAULT '#6366f1',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS kb_file_tags (
+            file_path TEXT NOT NULL,
+            tag_id INTEGER NOT NULL,
+            PRIMARY KEY (file_path, tag_id),
+            FOREIGN KEY (tag_id) REFERENCES kb_tags(id) ON DELETE CASCADE
+        )
+    """)
+
     # ---- 轻量迁移：为旧版数据库补齐新增列 ----
     await _ensure_column(db, "profiles", "skills", "TEXT NOT NULL DEFAULT '[]'")
     # 对话分叉
