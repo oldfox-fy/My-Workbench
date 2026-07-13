@@ -10,8 +10,31 @@
                 <!-- 当前活跃模型指示 -->
                 <n-alert v-if="!configStore.activeModel" type="warning" title="尚未选择模型" />
                 <div v-else>
-                  <n-tag type="info" size="small">当前使用：{{ configStore.activeModel.name }}</n-tag>
+                  <n-space align="center">
+                    <n-tag type="info" size="small">当前使用：{{ configStore.activeModel.name }}</n-tag>
+                    <n-tag v-if="configStore.activeModel.role && configStore.activeModel.role !== 'default'"
+                      :type="roleTagType(configStore.activeModel.role)" size="small">
+                      {{ roleLabel(configStore.activeModel.role) }}
+                    </n-tag>
+                  </n-space>
                 </div>
+
+                <n-divider />
+
+                <!-- 智能切换开关 -->
+                <n-space align="center" justify="space-between">
+                  <div>
+                    <n-text strong>智能模型切换</n-text>
+                    <br/>
+                    <n-text depth="3" style="font-size: 0.75rem">
+                      上传图片自动切视觉模型，语音输入切语音模型，分析推理切推理模型
+                    </n-text>
+                  </div>
+                  <n-switch v-model:value="configStore.autoSwitch" @update:value="onAutoSwitchChange" />
+                </n-space>
+                <n-alert v-if="configStore.autoSwitch" type="success" size="small" style="margin-top: 8px">
+                  已启用 · 系统将根据输入内容自动选择最合适的模型
+                </n-alert>
 
                 <n-divider />
 
@@ -38,6 +61,10 @@
                     <div>
                       <n-text strong>{{ model.name }}</n-text>
                       <n-text depth="3"> · {{ model.type === 'local' ? '本地' : '云端' }}</n-text>
+                      <n-tag v-if="model.role && model.role !== 'default'"
+                        :type="roleTagType(model.role)" size="tiny" style="margin-left: 4px">
+                        {{ roleLabel(model.role) }}
+                      </n-tag>
                       <br />
                       <n-text depth="3" style="font-size: 0.8rem">{{ model.modelName }}</n-text>
                     </div>
@@ -323,6 +350,21 @@
       </n-form-item>
       <n-form-item label="API Key">
         <n-input v-model:value="modelForm.apiKey" type="password" placeholder="sk-..." />
+      </n-form-item>
+      <n-form-item label="模型角色">
+        <n-radio-group v-model:value="modelForm.role">
+          <n-radio v-for="r in MODEL_ROLES" :key="r.value" :value="r.value">
+            <n-popover trigger="hover" placement="top">
+              <template #trigger>
+                <span>{{ r.label }}</span>
+              </template>
+              {{ r.desc }}
+            </n-popover>
+          </n-radio>
+        </n-radio-group>
+        <n-text depth="3" style="font-size: 0.7rem; margin-top: 4px">
+          用于智能模型切换：系统根据输入类型自动选择对应角色的模型
+        </n-text>
       </n-form-item>
     </n-form>
   </n-modal>
@@ -628,7 +670,7 @@ import {
   NInputNumber, NCollapseItem, NCollapse, NGrid, NGi, NCard, NPagination, NColorPicker
 } from 'naive-ui'
 import { useChatStore } from '@/stores/chat'
-import { useConfigStore, type ModelConfig } from '@/stores/config'
+import { useConfigStore, MODEL_ROLES, type ModelConfig } from '@/stores/config'
 import { useProfileStore, type Profile } from '@/stores/profiles'
 import { useMcpStore, type MCPServer } from '@/stores/mcp'
 import { useSkillStore, type Skill, type SkillType } from '@/stores/skills'
@@ -647,6 +689,28 @@ const profileStore = useProfileStore()
 const mcpStore = useMcpStore()
 const skillStore = useSkillStore()
 const version = ref(import.meta.env.VITE_APP_VERSION)
+
+// ── 模型角色辅助函数 ──
+function roleLabel(role: string): string {
+  const found = MODEL_ROLES.find(r => r.value === role)
+  return found?.label || role
+}
+function roleTagType(role: string): 'info' | 'success' | 'warning' | 'error' | 'default' {
+  const map: Record<string, any> = {
+    vision: 'success',
+    reasoning: 'warning',
+    audio: 'info',
+    fast: 'default',
+  }
+  return map[role] || 'default'
+}
+function onAutoSwitchChange(val: boolean) {
+  if (val) {
+    message.success('智能模型切换已开启')
+  } else {
+    message.info('已关闭智能切换，将始终使用当前选中模型')
+  }
+}
 
 // ── 主题自定义 ──
 const presetColors = ['#6366f1', '#ec4899', '#14b8a6', '#f59e0b', '#ef4444', '#8b5cf6']
@@ -722,12 +786,14 @@ const modelForm = reactive<{
   modelName?: string
   baseUrl: string
   apiKey: string
+  role: string
 }>({
   name: '',
   type: 'local',
   modelName: undefined,
   baseUrl: '',
-  apiKey: ''
+  apiKey: '',
+  role: 'default',
 })
 
 function handleProfile(val: boolean) {
@@ -741,6 +807,7 @@ function openAddModelDialog() {
   modelForm.modelName = undefined
   modelForm.baseUrl = ''
   modelForm.apiKey = ''
+  modelForm.role = 'default'
   showModelDialog.value = true
 }
 
@@ -751,6 +818,7 @@ function editModel(model: ModelConfig) {
   modelForm.modelName = model.modelName
   modelForm.baseUrl = model.baseUrl
   modelForm.apiKey = model.apiKey || ''
+  modelForm.role = model.role || 'default'
   showModelDialog.value = true
 }
 
@@ -775,10 +843,14 @@ async function fetchModels() {
     })
     const data = await res.json()
     if(data.detail) {
-      if (data.detail.indexOf('timed out') !== -1) {
-        message.error('请求超时，请检查网络')
+      const detail = String(data.detail)
+      if (detail.includes('timed out') || detail.includes('timeout')) {
+        message.error('请求超时，请检查网络或 Base URL 地址')
+      } else if (detail.includes('Connection refused') || detail.includes('Connection error') || detail.includes('connect')) {
+        message.error('无法连接到服务器，请检查 Base URL 是否正确')
       } else {
-        message.error("请正确填写API Key")
+        // 显示后端的实际错误信息，帮用户定位问题
+        message.error(detail.length > 150 ? detail.slice(0, 150) + '…' : detail)
       }
       modelOptions.value = []
       return

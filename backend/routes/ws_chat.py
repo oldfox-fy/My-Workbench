@@ -23,6 +23,9 @@ from fastapi import WebSocket, WebSocketDisconnect
 
 from backend.services.llm_service import LLMService, set_approval_result
 from backend.services.tools import get_local_tools, get_mcp_tools
+from backend.services.model_router import (
+    detect_input_role, get_model_by_role, _looks_vision_capable,
+)
 from backend.database import get_db
 from backend.utils.base import resource_path, get_current_time
 from config_loader import config as app_config
@@ -109,7 +112,51 @@ async def _handle_chat(ws: WebSocket, data: dict, cancel_event: asyncio.Event):
     """处理 chat 消息：构建 LLMService → 流式返回结果。"""
     try:
         llm_cfg = data.get("llm_config", {})
+        messages = data.get("messages", [])
+        enable_tools = data.get("enable_tools", False)
+        auto_switch = data.get("auto_switch", False)
+
+        # ── 智能模型路由 ──
+        if auto_switch and llm_cfg:
+            detected_role = detect_input_role(messages, enable_tools)
+
+            current_model = llm_cfg.get("model_name", "")
+            need_switch = True
+            if detected_role == "vision" and _looks_vision_capable(current_model):
+                need_switch = False
+            elif detected_role == "default":
+                need_switch = False
+            elif detected_role == "image_gen":
+                need_switch = True  # 生图总是需要切到专门的生图模型
+
+            if need_switch:
+                routed_model = await get_model_by_role(detected_role)
+                if routed_model and routed_model.get("modelName") != current_model:
+                    role_labels = {"vision": "视觉", "audio": "语音", "reasoning": "推理", "fast": "快速", "image_gen": "生图"}
+                    label = role_labels.get(detected_role, detected_role)
+                    await ws.send_json({"type": "chunk", "content": f"\n🔄 智能切换：检测到{label}需求 → `{routed_model['modelName']}`\n"})
+                    llm_cfg = {
+                        "type": routed_model["type"],
+                        "model_name": routed_model["modelName"],
+                        "base_url": routed_model.get("baseUrl"),
+                        "api_key": routed_model.get("apiKey", ""),
+                        "thinking": llm_cfg.get("thinking", "enabled"),
+                        "role": routed_model.get("role", "default"),
+                    }
+                elif detected_role != "default":
+                    role_labels = {"vision": "视觉", "audio": "语音", "reasoning": "推理", "image_gen": "生图"}
+                    label = role_labels.get(detected_role, detected_role)
+                    await ws.send_json({"type": "chunk", "content": f"\n💡 检测到{label}输入，未配置对应角色模型，继续使用当前模型。\n"})
+
         if llm_cfg:
+            model_role = llm_cfg.get("role", "default") or "default"
+            # 前端可能不发送 role，从数据库兜底查找
+            if model_role == "default":
+                from backend.services.model_router import lookup_model_role
+                model_role = await lookup_model_role(
+                    llm_cfg.get("model_name", ""),
+                    llm_cfg.get("base_url", ""),
+                )
             service = LLMService(
                 model_type=llm_cfg.get("type", "online"),
                 model_name=llm_cfg.get("model_name", ""),
@@ -119,6 +166,7 @@ async def _handle_chat(ws: WebSocket, data: dict, cancel_event: asyncio.Event):
                 max_retries=getattr(app_config, "max_retries", 3),
                 base_delay=getattr(app_config, "base_delay", 1.0),
                 fallback_config=getattr(app_config, "fallback_config", None),
+                role=model_role,
             )
         else:
             service = LLMService.instance
@@ -126,8 +174,6 @@ async def _handle_chat(ws: WebSocket, data: dict, cancel_event: asyncio.Event):
                 await ws.send_json({"type": "error", "message": "请先配置模型"})
                 return
 
-        messages = data.get("messages", [])
-        enable_tools = data.get("enable_tools", False)
         profile_id = data.get("profile_id")
         params = data.get("params", {})
 

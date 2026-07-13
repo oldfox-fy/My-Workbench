@@ -175,6 +175,10 @@
                 placeholder="选择模型"
                 @update:value="switchActiveModel"
               />
+              <n-tag v-if="configStore.autoSwitch" type="success" size="tiny" round
+                style="margin-left: 4px; cursor: pointer" @click="configStore.toggleAutoSwitch()">
+                🤖 自动
+              </n-tag>
             </div>
             <div class="toolbar-right">
               <n-select

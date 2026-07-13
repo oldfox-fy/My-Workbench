@@ -9,6 +9,7 @@ from typing import List, Dict, AsyncGenerator, Optional
 from backend.services.tools import get_all_tools, execute_tool
 from backend.db.tool_calls import create_tool_call, update_tool_call, update_tool_call_arguments
 from config_loader import config as app_config
+from backend.utils.base import normalize_base_url
 
 # 工具审批：模块级状态（同一进程内共享）
 _pending_approvals: Dict[str, asyncio.Event] = {}
@@ -50,14 +51,16 @@ class LLMService:
                  thinking: str = 'enabled',
                  max_retries: int = DEFAULT_MAX_RETRIES,
                  base_delay: float = DEFAULT_BASE_DELAY,
-                 fallback_config: Optional[Dict] = None):
+                 fallback_config: Optional[Dict] = None,
+                 role: str = 'default'):
         self.model_type = model_type
         self.model_name = model_name
+        self.role = role  # 模型角色：image_gen → 走 images.generate 而非 chat.completions
         self.thinking = thinking
         self.max_retries = max_retries
         self.base_delay = base_delay
         self.fallback_config = fallback_config
-        self.client = AsyncOpenAI(api_key=api_key or None, base_url=base_url)
+        self.client = AsyncOpenAI(api_key=api_key or None, base_url=normalize_base_url(base_url or ""))
         # 备用客户端（惰性创建，仅在触发降级时初始化）
         self._fallback_client = None
 
@@ -77,7 +80,9 @@ class LLMService:
         params = params or {}
 
         # ---------- 图像生成分支 ----------
-        if "image" in self.model_name.lower():
+        # 使用模型角色判断（而非名字里是否有 "image"），因为主流生图模型
+        # 如 dall-e-3、stable-diffusion、FLUX、Kolors 名字里都不含 "image"。
+        if self.role == "image_gen":
             prompt = ""
             for msg in reversed(messages):
                 if msg.get("role") == "user":
@@ -118,7 +123,16 @@ class LLMService:
                 return
 
             except APIError as e:
-                yield f"❌ 图像生成 API 错误：{e.message}"
+                # 提供更精准的错误提示
+                msg = e.message
+                hint = ""
+                if "20012" in msg or "does not exist" in msg.lower():
+                    hint = (
+                        f"\n\n💡 **模型名 `{self.model_name}` 在当前服务商不支持图像生成。**\n"
+                        "请到 设置 → 模型 → 图像生成角色 中更换为正确的生图模型名。\n"
+                        "例如硅基流动可用：`stabilityai/stable-diffusion-3-5-large`"
+                    )
+                yield f"❌ 图像生成 API 错误：{msg}{hint}"
             except Exception as e:
                 yield f"❌ 图像生成失败：{str(e)}"
             return
@@ -233,7 +247,7 @@ class LLMService:
                         if self._fallback_client is None:
                             self._fallback_client = AsyncOpenAI(
                                 api_key=self.fallback_config.get('api_key') or None,
-                                base_url=self.fallback_config.get('base_url') or None,
+                                base_url=normalize_base_url(self.fallback_config.get('base_url') or ''),
                             )
                         client = self._fallback_client
                         kwargs["model"] = self.fallback_config.get("model_name", self.model_name)

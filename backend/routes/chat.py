@@ -10,6 +10,10 @@ from backend.services.llm_service import LLMService
 from backend.services.tools import get_local_tools, get_mcp_tools, get_all_tools
 from backend.services.context_compressor import compress_messages
 from backend.services.session_memory import search_relevant_memories, index_assistant_message
+from backend.services.model_router import (
+    detect_input_role, get_model_by_role, get_default_model,
+    should_switch_for_images, _looks_vision_capable,
+)
 from backend.database import get_db
 from backend.utils.base import resource_path, get_current_time, get_local_ip
 from config_loader import config
@@ -31,12 +35,54 @@ BASE_SYSTEM_PROMPT = BASE_SYSTEM_PROMPT.replace("{{uploads_dir}}", str(config.up
 disabled_tools = ['system_write_file', 'system_patch_file', 'system_create_project_tree', 'system_read_file_list', 'system_run_command']
 default_tools = ['system_get_weather', 'system_read_file', 'system_kb_list', 'system_kb_read', 'system_kb_search']
 
+# ── 命令执行意图检测：按需自动注入 system_run_command ──
+# 避免该工具始终挂载导致每次请求都携带额外 token，同时确保用户需要时可用。
+_COMMAND_INTENT_KEYWORDS = [
+    # 中文信号词
+    "运行", "执行", "编译", "构建", "安装", "生成",
+    "跑一下", "跑脚本", "跑个", "写个脚本", "命令行", "终端",
+    # 英文信号词
+    "run", "execute", "compile", "build", "install",
+    "generate", "node ", "python ", "pip ", "npm ",
+    "npx ", "yarn ", "pnpm ", "cargo ", "go ",
+    # 产物生成类（通常需要跑脚本产出文件）
+    "生成ppt", "ppt", "pptx", "生成报告", "导出",
+    "下载文件", "生成图表", "生成图片",
+]
+
+
+def _detect_command_intent(messages: list) -> bool:
+    """扫描最近几条用户消息，判断是否需要命令执行能力。"""
+    user_msgs = [m for m in messages if m.get("role") == "user"]
+    if not user_msgs:
+        return False
+    # 只检查最近的用户消息（避免历史对话干扰）
+    recent = user_msgs[-1]
+    content = recent.get("content", "")
+    if isinstance(content, list):
+        # 多模态消息：提取文本部分
+        content = " ".join(p.get("text", "") for p in content if isinstance(p, dict))
+    if not isinstance(content, str):
+        return False
+    text = content.lower()
+    for kw in _COMMAND_INTENT_KEYWORDS:
+        kw_lower = kw.lower().rstrip()
+        if len(kw_lower) <= 3:
+            # 短关键词用词边界匹配，防止 "ppt" 误匹配 "prompt"、"run" 误匹配 "runtime"
+            if re.search(rf'\b{re.escape(kw_lower)}\b', text):
+                return True
+        else:
+            if kw_lower in text:
+                return True
+    return False
+
 class ModelConfig(BaseModel):
     type: str
     model_name: str
     base_url: Optional[str] = None
     api_key: Optional[str] = None
     thinking: str = 'enabled'
+    role: str = 'default'  # 模型角色：用于 LLMService 区分 API 路由（image_gen → images.generate）
 
 
 class ChatRequest(BaseModel):
@@ -45,6 +91,7 @@ class ChatRequest(BaseModel):
     llm_config: Optional[ModelConfig] = None
     profile_id: Optional[int] = None
     message_id: Optional[int] = None
+    auto_switch: bool = False  # 是否启用智能模型切换
 
 
 async def get_mcp_manager(request: Request):
@@ -69,8 +116,52 @@ async def chat(
         base_delay = getattr(config, 'base_delay', 1.0)
         fallback_cfg = getattr(config, 'fallback_config', None)
 
+        # ── 智能模型路由 ──
+        routed_role = None  # 记录被路由到的角色
+        route_notice = None  # 诊断消息（将插入到流开头）
+        if request.auto_switch and request.llm_config:
+            detected_role = detect_input_role(request.messages, request.enable_tools)
+
+            # 如果当前模型已支持所需能力，不切换
+            current_model = request.llm_config.model_name or ""
+            need_switch = True
+            if detected_role == "vision" and _looks_vision_capable(current_model):
+                need_switch = False
+            elif detected_role == "default":
+                need_switch = False  # 无需特殊能力，不切换
+            elif detected_role == "image_gen":
+                need_switch = True  # 生图总是需要切到专门的生图模型
+
+            if need_switch:
+                routed_model = await get_model_by_role(detected_role)
+                if routed_model and routed_model.get("modelName") != current_model:
+                    routed_role = detected_role
+                    old_name = request.llm_config.model_name
+                    request.llm_config.model_name = routed_model["modelName"]
+                    request.llm_config.type = routed_model["type"]
+                    request.llm_config.base_url = routed_model.get("baseUrl")
+                    request.llm_config.api_key = routed_model.get("apiKey", "")
+                    request.llm_config.role = routed_model.get("role", "default")  # 传递角色给 LLMService
+                    role_labels = {"vision": "视觉", "audio": "语音", "reasoning": "推理", "fast": "快速", "image_gen": "生图"}
+                    label = role_labels.get(detected_role, detected_role)
+                    route_notice = f"\n🔄 智能切换：检测到{label}需求，从 `{old_name}` 切换到 `{routed_model['modelName']}`\n"
+                elif detected_role != "default":
+                    role_labels = {"vision": "视觉", "audio": "语音", "reasoning": "推理", "image_gen": "生图"}
+                    label = role_labels.get(detected_role, detected_role)
+                    route_notice = (f"\n💡 检测到{label}输入，但未配置对应角色模型。"
+                                    f"请在设置中为模型添加「{label}」角色后即可自动切换。"
+                                    f"当前继续使用 `{current_model}` 处理。\n")
+
         if request.llm_config:
             llm_cfg = request.llm_config
+            model_role = getattr(llm_cfg, 'role', 'default') or 'default'
+            # 前端可能不发送 role（用户手动选模型而非自动切换），从数据库兜底查找
+            if model_role == 'default':
+                from backend.services.model_router import lookup_model_role
+                model_role = await lookup_model_role(
+                    llm_cfg.model_name or "",
+                    llm_cfg.base_url or "",
+                )
             if llm_cfg.type == "local":
                 service = LLMService(
                     model_type="local",
@@ -81,6 +172,7 @@ async def chat(
                     max_retries=max_retries,
                     base_delay=base_delay,
                     fallback_config=fallback_cfg,
+                    role=model_role,
                 )
             else:
                 if not llm_cfg.api_key:
@@ -94,6 +186,7 @@ async def chat(
                     max_retries=max_retries,
                     base_delay=base_delay,
                     fallback_config=fallback_cfg,
+                    role=model_role,
                 )
         else:
             service = LLMService.instance
@@ -107,6 +200,19 @@ async def chat(
         profile_prompt = ""
         profile_skill_prompt = ""
         params = {}
+
+        # ── 智能按需注入 system_run_command ──
+        # 即使用户未开启角色/未选角色，只要对话中检测到命令执行意图，
+        # 就将 system_run_command 注入当前请求的工具列表。避免该工具
+        # 始终挂载造成的 token 浪费，同时确保「生成 PPT / 运行脚本」
+        # 等场景下 LLM 能直接调用。
+        if _detect_command_intent(messages):
+            runner_tool = [t for t in local_tools if t["function"]["name"] == "system_run_command"]
+            # 去重：避免已通过角色白名单添加后重复
+            existing_names = {t["function"]["name"] for t in tools}
+            for t in runner_tool:
+                if t["function"]["name"] not in existing_names:
+                    tools.append(t)
 
         # 如果携带了 profile_id，获取角色信息
         if request.enable_tools and request.profile_id is not None:
@@ -226,6 +332,9 @@ async def chat(
         # 4. 流式响应（含自动会话记忆索引）
         async def stream_with_memory():
             """流式响应的同时收集纯文本，结束后自动索引到会话记忆。"""
+            if route_notice:
+                yield route_notice
+
             collected_text = []
             async for chunk in service.generate_response(
                 messages=messages,

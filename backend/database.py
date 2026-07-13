@@ -199,6 +199,8 @@ async def init_db():
     # 对话分叉
     await _ensure_column(db, "chats", "parent_chat_id", "TEXT DEFAULT NULL")
     await _ensure_column(db, "chats", "branched_at_message_id", "INTEGER DEFAULT NULL")
+    # 模型角色（自动切换）
+    await _ensure_column(db, "models", "role", "TEXT NOT NULL DEFAULT 'default'")
 
     await db.commit()
     await db.close()

@@ -5,6 +5,7 @@ from backend.db.tool_calls import (
     get_tool_calls_by_message,
     delete_tool_calls_by_message,
 )
+from typing import Optional
 from pydantic import BaseModel
 from backend.services.llm_service import set_approval_result
 

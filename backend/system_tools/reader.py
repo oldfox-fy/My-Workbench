@@ -76,6 +76,16 @@ def _get_pypdf():
     except ImportError:
         return None
 
+
+@lru_cache(maxsize=1)
+def _get_pdfplumber():
+    """pdfplumber / pdfminer.six — 对 CJK/CID 字体 PDF 支持远优于 PyPDF2"""
+    try:
+        import pdfplumber
+        return pdfplumber
+    except ImportError:
+        return None
+
 @lru_cache(maxsize=1)
 def _get_chardet():
     try:
@@ -365,7 +375,7 @@ class DocxHandler(FormatHandler):
 
 
 class PDFHandler(FormatHandler):
-    """PDF 处理器，增加页数限制"""
+    """PDF 处理器，多引擎策略：pdfplumber (CJK/CID 最优) → PyPDF2 → markitdown"""
     MAX_PAGES = 200
 
     @classmethod
@@ -373,63 +383,141 @@ class PDFHandler(FormatHandler):
         return ctx.path.suffix.lower() == '.pdf'
 
     @classmethod
-    def read(cls, ctx: ReadContext) -> FileReadResult:
-        PyPDF2 = _get_pypdf()
-        if PyPDF2 is None:
-            # 尝试 markitdown 兜底
-            md = _get_markitdown()
-            if md:
-                try:
-                    result = md.convert(str(ctx.path))
-                    return FileReadResult(
-                        content=result.text_content,
-                        format='markdown',
-                        mime_type='text/markdown',
-                        metadata={'fallback': 'markitdown'}
-                    )
-                except Exception:
-                    pass
-            raise ImportError("读取 PDF 需要安装 PyPDF2: pip install PyPDF2")
-
+    def _extract_with_pdfplumber(cls, filepath: str) -> tuple:
+        """使用 pdfplumber (pdfminer.six) 提取文本。
+        对中文 CID 字体、CMap 编码 PDF 支持远优于 PyPDF2。"""
+        pdfplumber = _get_pdfplumber()
+        if pdfplumber is None:
+            return None, []
         text_parts = []
         total_pages = 0
+        with pdfplumber.open(filepath) as pdf:
+            total_pages = len(pdf.pages)
+            pages = pdf.pages[:cls.MAX_PAGES]
+            for i, page in enumerate(pages):
+                try:
+                    text = page.extract_text()
+                    if text and text.strip():
+                        text_parts.append(f"## Page {i + 1}\n\n{text}")
+                except Exception:
+                    text_parts.append(f"## Page {i + 1}\n\n[无法提取文本]")
+        return total_pages, text_parts
+
+    @classmethod
+    def _extract_with_pypdf2(cls, filepath: str) -> tuple:
+        """使用 PyPDF2 提取文本，作为 pdfplumber 的备选。"""
+        PyPDF2 = _get_pypdf()
+        if PyPDF2 is None:
+            return None, []
+        text_parts = []
+        total_pages = 0
+        with open(filepath, 'rb') as f:
+            reader = PyPDF2.PdfReader(f)
+            total_pages = len(reader.pages)
+            pages_to_read = reader.pages[:cls.MAX_PAGES]
+            for i, page in enumerate(pages_to_read):
+                try:
+                    text = page.extract_text()
+                    if text and text.strip():
+                        text_parts.append(f"## Page {i + 1}\n\n{text}")
+                except Exception:
+                    text_parts.append(f"## Page {i + 1}\n\n[无法提取文本]")
+        return total_pages, text_parts
+
+    @classmethod
+    def _is_garbled(cls, text: str) -> bool:
+        """启发式检测：提取结果是否因 CID 字体等原因产生乱码。
+        如果连续出现大量不可读字符或 CID 模式，则判定为乱码。"""
+        if not text or not text.strip():
+            return True
+        stripped = text.strip()
+        total = len(stripped)
+        if total < 20:
+            return False  # 太短无法判断
+        # 统计 CJK 字符占比
+        cjk = sum(1 for c in stripped if '一' <= c <= '鿿'
+                  or '㐀' <= c <= '䶿'
+                  or '豈' <= c <= '﫿')
+        # 如果文本较长但 CJK 字符极少，且含有大量非打印字符，判定为乱码
+        non_printable = sum(1 for c in stripped if ord(c) < 0x20 and c not in '\n\r\t')
+        if non_printable > total * 0.1:
+            return True
+        # 含有大量 CID 数字模式（如 (cid:1234)）也判定为乱码
+        cid_pattern = stripped.count('(cid:')
+        if cid_pattern > 3:
+            return True
+        return False
+
+    @classmethod
+    def read(cls, ctx: ReadContext) -> FileReadResult:
+        text_parts = []
+        total_pages = 0
+        engine = None
+        errors = []
+
+        # 策略 1：pdfplumber（对 CID/CJK 支持最好）
         try:
-            with open(ctx.path, 'rb') as f:
-                reader = PyPDF2.PdfReader(f)
-                total_pages = len(reader.pages)
-                pages_to_read = reader.pages[:cls.MAX_PAGES]
-
-                for i, page in enumerate(pages_to_read):
-                    try:
-                        text = page.extract_text()
-                        if text:
-                            text_parts.append(f"## Page {i + 1}\n\n{text}")
-                    except Exception:
-                        text_parts.append(f"## Page {i + 1}\n\n[无法提取文本]")
-
-            if total_pages > cls.MAX_PAGES:
-                text_parts.append(f"\n[已截断：仅显示前 {cls.MAX_PAGES} 页，共 {total_pages} 页]")
+            total_pages, text_parts = cls._extract_with_pdfplumber(str(ctx.path))
+            if text_parts:
+                combined = '\n\n'.join(text_parts)
+                if not cls._is_garbled(combined):
+                    engine = 'pdfplumber'
+                else:
+                    # pdfplumber 也出乱码，清空用下一个引擎
+                    errors.append(f'pdfplumber: garbled (CJK ratio low or CID detected)')
+                    text_parts = []
         except Exception as e:
-            # PyPDF2 失败时尝试 markitdown 兜底
+            errors.append(f'pdfplumber: {e}')
+
+        # 策略 2：PyPDF2（标准 PDF 较好，但 CID 字体是弱项）
+        if not text_parts:
+            try:
+                total_pages, text_parts = cls._extract_with_pypdf2(str(ctx.path))
+                if text_parts:
+                    combined = '\n\n'.join(text_parts)
+                    if not cls._is_garbled(combined):
+                        engine = 'pyPDF2'
+                    else:
+                        errors.append(f'pyPDF2: garbled (CJK ratio low or CID detected)')
+                        text_parts = []
+            except Exception as e:
+                errors.append(f'pyPDF2: {e}')
+
+        # 策略 3：markitdown 兜底
+        if not text_parts:
             md = _get_markitdown()
             if md:
                 try:
                     result = md.convert(str(ctx.path))
-                    return FileReadResult(
-                        content=result.text_content,
-                        format='markdown',
-                        mime_type='text/markdown',
-                        metadata={'fallback': 'markitdown', 'error': str(e)}
-                    )
-                except Exception:
-                    pass
-            raise FileReadError(f"PDF 读取失败: {e}", code='PDF_READ_FAIL') from e
+                    content = result.text_content
+                    if content and content.strip():
+                        text_parts = [content]
+                        engine = 'markitdown'
+                    else:
+                        errors.append('markitdown: empty output')
+                except Exception as e:
+                    errors.append(f'markitdown: {e}')
+
+        # 所有引擎都失败
+        if not text_parts:
+            raise FileReadError(
+                f"PDF 解析失败，所有引擎均无法提取文本。\n错误详情：{'; '.join(errors)}",
+                code='PDF_READ_FAIL'
+            )
+
+        if total_pages > cls.MAX_PAGES:
+            text_parts.append(f"\n[已截断：仅显示前 {cls.MAX_PAGES} 页，共 {total_pages} 页]")
 
         return FileReadResult(
             content='\n\n'.join(text_parts),
             format='markdown',
             mime_type='text/markdown',
-            metadata={'pages': total_pages, 'truncated': total_pages > cls.MAX_PAGES}
+            metadata={
+                'pages': total_pages,
+                'truncated': total_pages > cls.MAX_PAGES,
+                'engine': engine,
+                'errors': errors if errors else None,
+            }
         )
 
 

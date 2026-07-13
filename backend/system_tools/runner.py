@@ -7,11 +7,18 @@
 - 工作目录（cwd）必须落在工作区目录内，防止越权到任意路径执行。
 - 强制超时，防止进程挂死拖垮事件循环。
 - 输出做大小截断，防止超大日志撑爆上下文。
+
+跨平台可靠性：
+- 使用 subprocess.run() + ThreadPoolExecutor，不依赖 asyncio 子进程 API。
+- 避免 Windows 下 ProactorEventLoop / SelectorEventLoop 兼容性问题，
+  以及 uvicorn reload spawn 子进程导致的事件循环策略失效。
 """
 import asyncio
+import concurrent.futures
 import os
 import sys
 import shlex
+import subprocess
 import logging
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -80,6 +87,26 @@ def _truncate(text: str) -> str:
     return f"{head}\n...（输出过长，已截断，共 {len(text)} 字符）"
 
 
+def _run_sync(
+    args: list[str] | str,
+    cwd: str,
+    timeout: int,
+    shell: bool,
+) -> subprocess.CompletedProcess:
+    """
+    在独立线程中执行 subprocess.run()，不接触事件循环。
+    这是解决 Windows 下 ProactorEventLoop / uvicorn reload
+    子进程兼容问题的关键——完全绕过 asyncio 子进程 API。
+    """
+    return subprocess.run(
+        args,
+        capture_output=True,
+        cwd=cwd,
+        timeout=timeout,
+        shell=shell,
+    )
+
+
 async def run_command(
     command: str,
     cwd: Optional[str] = None,
@@ -100,13 +127,27 @@ async def run_command(
     Returns:
         dict：包含 success、return_code、stdout、stderr、cwd、command、timed_out 等字段。
     """
+    # 统一错误返回的基准字段
+    def _error(msg: str, **extra) -> Dict[str, Any]:
+        return {
+            "success": False,
+            "return_code": -1,
+            "timed_out": extra.pop("timed_out", False),
+            "error": msg,
+            "command": command,
+            "cwd": "",
+            "stdout": "",
+            "stderr": "",
+            **extra,
+        }
+
     if not command or not command.strip():
-        return {"success": False, "error": "command 不能为空"}
+        return _error("command 不能为空")
 
     try:
         safe_cwd = _resolve_cwd(cwd)
     except (ValueError, RuntimeError) as e:
-        return {"success": False, "error": f"工作目录校验失败：{e}"}
+        return _error(f"工作目录校验失败：{e}")
 
     if not safe_cwd.exists() or not safe_cwd.is_dir():
         # 自动创建目录（常见场景：模型在知识库「生成内容」目录首次执行命令）
@@ -114,7 +155,7 @@ async def run_command(
             safe_cwd.mkdir(parents=True, exist_ok=True)
             logger.info(f"[runner] 自动创建工作目录: {safe_cwd}")
         except (PermissionError, OSError) as e:
-            return {"success": False, "error": f"工作目录不存在且无法自动创建：{safe_cwd}（{e}）"}
+            return _error(f"工作目录不存在且无法自动创建：{safe_cwd}（{e}）", cwd=str(safe_cwd))
 
     try:
         eff_timeout = max(1, min(int(timeout), MAX_TIMEOUT))
@@ -125,84 +166,60 @@ async def run_command(
     _SHELL_CHARS = set("|&><;$`")
     needs_shell = any(c in command for c in _SHELL_CHARS)
 
-    proc = None
-    last_error = None
-
-    # 策略：优先 exec（Windows 更可靠），需要 shell 特性时用 shell
-    methods_to_try = []
+    # 构建参数：非 shell 模式需要解析为列表
     if needs_shell:
-        methods_to_try.append(("shell", asyncio.create_subprocess_shell))
+        proc_args = command
+        use_shell = True
     else:
         try:
-            args = shlex.split(command)
+            proc_args = shlex.split(command)
         except ValueError:
-            args = command.split()
-        methods_to_try.append(("exec", lambda cmd=args, **kw: asyncio.create_subprocess_exec(*cmd, **kw)))
-        methods_to_try.append(("shell", asyncio.create_subprocess_shell))
+            proc_args = command.split()
+        use_shell = False
 
-    for method_name, factory in methods_to_try:
-        try:
-            if method_name == "shell":
-                proc = await factory(
-                    command,
-                    cwd=str(safe_cwd),
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                )
-            else:
-                proc = await factory(
-                    cwd=str(safe_cwd),
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                )
-            last_error = None
-            break
-        except Exception as e:
-            last_error = e
-            logger.warning(f"[runner] {method_name} 方式启动失败: {e!r}")
-
-    if last_error is not None:
-        logger.error(f"[runner] 所有启动方式均失败: command={command!r}, cwd={safe_cwd}, last_error={last_error!r}")
-        hint = ""
-        if isinstance(last_error, FileNotFoundError):
-            hint = f"。提示：找不到可执行程序，请检查命令中的程序名是否在 PATH 中（当前 Python: {sys.executable}）"
-        elif isinstance(last_error, PermissionError):
-            hint = "。提示：权限不足，请检查目标目录的访问权限"
-        elif isinstance(last_error, RuntimeError):
-            hint = "。提示：事件循环不支持子进程（Windows 需 ProactorEventLoop）"
-        return {
-            "success": False,
-            "error": f"启动进程失败：{last_error}{hint}",
-            "command": command,
-            "cwd": str(safe_cwd),
-        }
-
-    timed_out = False
+    # ── 核心：用 ThreadPoolExecutor + subprocess.run 替代 asyncio 子进程 API ──
+    # 优势：不依赖 ProactorEventLoop，uvicorn reload / 任何事件循环都能正常工作。
+    loop = asyncio.get_running_loop()
     try:
-        stdout_raw, stderr_raw = await asyncio.wait_for(proc.communicate(), timeout=eff_timeout)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            result = await asyncio.wait_for(
+                loop.run_in_executor(
+                    pool,
+                    _run_sync,
+                    proc_args,
+                    str(safe_cwd),
+                    eff_timeout,
+                    use_shell,
+                ),
+                timeout=eff_timeout + 10,  # 10s 容差：线程调度 + Python 清理
+            )
     except asyncio.TimeoutError:
-        timed_out = True
-        try:
-            proc.kill()
-        except ProcessLookupError:
-            pass
-        await proc.wait()
-        return {
-            "success": False,
-            "timed_out": True,
-            "error": f"命令执行超时（>{eff_timeout}s），已终止进程。",
-            "command": command,
-            "cwd": str(safe_cwd),
-        }
+        return _error(
+            f"命令执行超时（>{eff_timeout}s），已终止进程。",
+            timed_out=True, cwd=str(safe_cwd),
+        )
+    except subprocess.TimeoutExpired:
+        return _error(
+            f"命令执行超时（>{eff_timeout}s），已终止进程。",
+            timed_out=True, cwd=str(safe_cwd),
+        )
+    except Exception as e:
+        logger.error(f"[runner] 进程启动失败: command={command!r}, cwd={safe_cwd}, error={e!r}")
+        hint = ""
+        if isinstance(e, FileNotFoundError):
+            hint = f"。提示：找不到可执行程序，请检查命令中的程序名是否在 PATH 中（当前 Python: {sys.executable}）"
+        elif isinstance(e, PermissionError):
+            hint = "。提示：权限不足，请检查目标目录的访问权限"
+        return _error(f"启动进程失败：{e}{hint}", cwd=str(safe_cwd))
 
-    stdout = _truncate(_decode(stdout_raw or b""))
-    stderr = _truncate(_decode(stderr_raw or b""))
-    return_code = proc.returncode if proc.returncode is not None else -1
+    stdout = _truncate(_decode(result.stdout or b""))
+    stderr = _truncate(_decode(result.stderr or b""))
+    return_code = result.returncode if result.returncode is not None else -1
 
     return {
         "success": return_code == 0,
         "return_code": return_code,
-        "timed_out": timed_out,
+        "timed_out": False,
         "command": command,
         "cwd": str(safe_cwd),
         "stdout": stdout,

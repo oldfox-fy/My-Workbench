@@ -7,6 +7,17 @@ import { cleanMessages } from '@/utils/message'
 import type { UploadedFile } from '@/composables/useFileUpload'
 
 
+/** 检测消息中是否包含图片（前端侧判断，用于后端的 auto_switch 占位） */
+export function hasImageInMessages(msgs: Message[]): boolean {
+  return msgs.some(m => {
+    const refs = m.file_ref
+    if (!refs) return false
+    const arr = Array.isArray(refs) ? refs : [refs]
+    return arr.some((f: any) => f.type?.startsWith('image/'))
+  })
+}
+
+
 export function useChat() {
   const chatStore = useChatStore()
   const configStore = useConfigStore()
@@ -75,6 +86,21 @@ export function useChat() {
     return fullText
   }
 
+  /** 构建 llm_config，支持智能切换 */
+  function buildLlmConfig() {
+    const currentModel = configStore.activeModel
+    if (!currentModel) return null
+
+    return {
+      type: currentModel.type,
+      model_name: currentModel.modelName,
+      base_url: currentModel.baseUrl,
+      api_key: currentModel.apiKey,
+      thinking: localStorage.getItem('thinking') === 'true' ? 'enabled' : 'disabled',
+      role: currentModel.role || 'default',  // 传递模型角色，确保后端正确路由 API（如 image_gen → images.generate）
+    }
+  }
+
   /**
    * 发送新消息
    */
@@ -134,19 +160,16 @@ export function useChat() {
       const allMessages = chatStore.getActiveMessages()
       const apiMessages = await cleanMessages(allMessages)
 
-      const body = JSON.stringify({
+      const requestBody: any = {
         messages: apiMessages,
         enable_tools: chatStore.enableProfile,
-        llm_config: {
-          type: currentModel.type,
-          model_name: currentModel.modelName,
-          base_url: currentModel.baseUrl,
-          api_key: currentModel.apiKey,
-					thinking: localStorage.getItem('thinking') === 'true' ? 'enabled' : 'disabled'
-        },
+        llm_config: buildLlmConfig(),
         profile_id: chatStore.enableProfile ? profileStore.activeProfileId : null,
         message_id: assistantMessageId,
-      })
+        auto_switch: configStore.autoSwitch,  // 智能切换开关
+      }
+
+      const body = JSON.stringify(requestBody)
 
       setTimeout(() => scrollToBottom(), 160)
 
@@ -164,7 +187,7 @@ export function useChat() {
         if (localMsg) {
           localMsg.content = fullText
         }
-        chatStore.editMessage(<number>assistantMsg.id, fullText).catch((e: any) => 
+        chatStore.editMessage(<number>assistantMsg.id, fullText).catch((e: any) =>
           console.warn('更新助手消息失败', e)
         )
       }
@@ -191,7 +214,7 @@ export function useChat() {
           localMsg.content = errorContent
         }
         // ✅ 报错也是更新原消息
-        chatStore.editMessage(<number>assistantMsg.id, errorContent).catch((e: any) => 
+        chatStore.editMessage(<number>assistantMsg.id, errorContent).catch((e: any) =>
           console.warn('保存错误消息失败', e)
         )
       }
@@ -200,7 +223,7 @@ export function useChat() {
       isLoading.value = false
       streamingContent.value = ''
       if (onStreamEnd.value && fullText && chatStore.activeChatId === chatId) {
-        onStreamEnd.value(fullText) 
+        onStreamEnd.value(fullText)
       }
     }
   }
@@ -231,22 +254,19 @@ export function useChat() {
     }
     chatStore.addMessageToLocal(assistantMsg)
     await chatStore.saveMessageToBackend(assistantMsg)
-    const messageId = assistantMsg.id 
+    const messageId = assistantMsg.id
 
     try {
-			const body = JSON.stringify({
-				messages: await cleanMessages(chatStore.getActiveMessages()),
-				enable_tools: chatStore.enableProfile,
-				llm_config: {
-					type: currentModel.type,
-					model_name: currentModel.modelName,
-					base_url: currentModel.baseUrl,
-					api_key: currentModel.apiKey,
-					thinking: localStorage.getItem('thinking') === 'true' ? 'enabled' : 'disabled'
-				},
-				profile_id: chatStore.enableProfile ? profileStore.activeProfileId : null,
-				message_id: messageId,
-			})
+      const requestBody: any = {
+        messages: await cleanMessages(chatStore.getActiveMessages()),
+        enable_tools: chatStore.enableProfile,
+        llm_config: buildLlmConfig(),
+        profile_id: chatStore.enableProfile ? profileStore.activeProfileId : null,
+        message_id: messageId,
+        auto_switch: configStore.autoSwitch,
+      }
+
+      const body = JSON.stringify(requestBody)
 
       const response = await fetch('/api/chat', {
         method: 'POST',
@@ -256,7 +276,7 @@ export function useChat() {
       })
 
       const fullText = await readStream(response)
-      
+
       const localMsg = chatStore.currentChatMessages.find(m => m.id === assistantMsg.id)
       if (localMsg) localMsg.content = fullText
       chatStore.editMessage(<number>assistantMsg.id, fullText).catch(e => console.warn(e))
@@ -319,19 +339,16 @@ export function useChat() {
     streamingContent.value = ''
 
     try {
-			const body = JSON.stringify({
-				messages: await cleanMessages(history),
-				enable_tools: chatStore.enableProfile,
-				llm_config: {
-					type: currentModel.type,
-					model_name: currentModel.modelName,
-					base_url: currentModel.baseUrl,
-					api_key: currentModel.apiKey,
-					thinking: localStorage.getItem('thinking') === 'true' ? 'enabled' : 'disabled'
-				},
-				profile_id: chatStore.enableProfile ? profileStore.activeProfileId : null,
+      const requestBody: any = {
+        messages: await cleanMessages(history),
+        enable_tools: chatStore.enableProfile,
+        llm_config: buildLlmConfig(),
+        profile_id: chatStore.enableProfile ? profileStore.activeProfileId : null,
         message_id: messageId,
-			})
+        auto_switch: configStore.autoSwitch,
+      }
+
+      const body = JSON.stringify(requestBody)
 
       const response = await fetch('/api/chat', {
         method: 'POST',
@@ -438,6 +455,7 @@ export function useChat() {
         base_url: currentModel.baseUrl,
         api_key: currentModel.apiKey,
       } : undefined,
+      auto_switch: configStore.autoSwitch,  // 智能切换开关
     }
 
     // 设置消息处理
@@ -514,5 +532,6 @@ export function useChat() {
     stopGeneration,
     stopGenerationWs,
     ensureWs,
+    buildLlmConfig,
   }
 }

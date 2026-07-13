@@ -53,6 +53,16 @@ voice:
   tts_base_url: ""
   tts_api_key: ""
 
+# 智能模型切换配置（可选，默认关闭，由前端 localStorage 控制）
+auto_switch:
+  enabled: false          # 默认关闭，用户可在设置中手动开启
+  rules:                  # 角色 → 使用场景映射
+    vision: "图片/多模态输入"
+    audio: "语音输入/输出"
+    reasoning: "深度推理/分析/代码审查"
+    fast: "简单快速对话"
+    default: "以上均不匹配时的默认模型"
+
 # 工具审批配置（可选，默认启用）
 tool_approval:
   enabled: true

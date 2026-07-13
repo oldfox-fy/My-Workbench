@@ -54,6 +54,56 @@ def get_current_time(timezone: str = "local") -> str:
     except Exception as e:
         return f"获取时间失败：{str(e)}"
 
+# OpenAI 兼容 API 常见的具体端点路径（用户可能误填为 Base URL）
+_ENDPOINT_PATHS = {
+    "/models",
+    "/chat/completions",
+    "/completions",
+    "/embeddings",
+    "/audio/transcriptions",
+    "/audio/translations",
+    "/audio/speech",
+    "/images/generations",
+    "/images/edits",
+    "/moderations",
+    "/files",
+    "/fine_tuning",
+    "/fine-tunes",
+}
+
+
+def normalize_base_url(url: str) -> str:
+    """
+    规范化 OpenAI 兼容 API 的 Base URL。
+
+    自动处理两种常见错误：
+    1. 缺少 /v1 → 自动补全
+    2. 用户误填了具体端点（如 /chat/completions）→ 裁切到 /v1
+    """
+    if not url:
+        return url
+    from urllib.parse import urlparse
+
+    url = url.rstrip("/")
+    parsed = urlparse(url)
+    path = parsed.path
+
+    # 裁掉用户误填的具体端点路径（如 /v1/audio/transcriptions → /v1）
+    for ep in _ENDPOINT_PATHS:
+        if path.endswith(ep):
+            path = path[: -len(ep)].rstrip("/")
+            break
+
+    # 重建不包含多余路径的 URL
+    base = f"{parsed.scheme}://{parsed.netloc}{path}"
+
+    # 如果没有 /v 版本路径则追加 /v1
+    if not (path.endswith("/v1") or "/v1/" in path or "/v2/" in path or "/v2/" in path):
+        base += "/v1"
+
+    return base
+
+
 def get_local_ip():
     """获取本机IP地址"""
     try:
