@@ -253,6 +253,39 @@
             </n-space>
           </div>
         </n-tab-pane>
+
+        <!-- 外观设置 -->
+        <n-tab-pane name="appearance" tab="外观">
+          <n-form label-placement="left" label-width="80">
+            <n-form-item label="强调色">
+              <n-space :size="8">
+                <div v-for="c in presetColors" :key="c" class="color-swatch"
+                  :style="{ background: c }"
+                  :class="{ active: themeAccent === c }"
+                  @click="setAccent(c)" />
+                <n-color-picker :value="themeAccent" @update:value="setAccent" :modes="['hex']" />
+              </n-space>
+            </n-form-item>
+            <n-form-item label="圆角">
+              <n-slider v-model:value="themeRadius" :min="4" :max="24" :step="2" @update:value="applyRadius" />
+            </n-form-item>
+            <n-form-item label="字体">
+              <n-radio-group v-model:value="themeFontSize" @update:value="applyFontSize">
+                <n-radio value="14px">小</n-radio>
+                <n-radio value="16px">中</n-radio>
+                <n-radio value="18px">大</n-radio>
+              </n-radio-group>
+            </n-form-item>
+          </n-form>
+          <!-- 预览 -->
+          <div class="theme-preview" :style="previewStyle">
+            <div class="preview-header" :style="{ background: themeAccent }">预览标题</div>
+            <div class="preview-body">
+              <div class="preview-btn" :style="{ background: themeAccent, borderRadius: themeRadius + 'px' }">按钮</div>
+              <div class="preview-card" :style="{ borderRadius: themeRadius + 'px' }">卡片内容示例</div>
+            </div>
+          </div>
+        </n-tab-pane>
       </n-tabs>
       <div style="font-size:.6rem;color:#666;width:100%;text-align:center;position: absolute;left:0;right:10px;bottom: 6px">版本：{{ version }}</div>
     </n-drawer-content>
@@ -592,7 +625,7 @@ import {
   NRadioGroup, NRadio, NSwitch, NButton, NSpace, NDivider, NIcon,
   NTabs, NTabPane, NList, NListItem, NPopconfirm, NTag, NAlert,
   NModal, NSelect, NCheckboxGroup, NCheckbox, NText, useMessage, useDialog, NSlider,
-  NInputNumber, NCollapseItem, NCollapse, NGrid, NGi, NCard, NPagination
+  NInputNumber, NCollapseItem, NCollapse, NGrid, NGi, NCard, NPagination, NColorPicker
 } from 'naive-ui'
 import { useChatStore } from '@/stores/chat'
 import { useConfigStore, type ModelConfig } from '@/stores/config'
@@ -614,6 +647,41 @@ const profileStore = useProfileStore()
 const mcpStore = useMcpStore()
 const skillStore = useSkillStore()
 const version = ref(import.meta.env.VITE_APP_VERSION)
+
+// ── 主题自定义 ──
+const presetColors = ['#6366f1', '#ec4899', '#14b8a6', '#f59e0b', '#ef4444', '#8b5cf6']
+const themeAccent = ref(localStorage.getItem('themeAccent') || '')
+const themeRadius = ref(Number(localStorage.getItem('themeRadius') || '8'))
+const themeFontSize = ref(localStorage.getItem('themeFontSize') || '16px')
+
+function setAccent(color: string) {
+  themeAccent.value = color
+  localStorage.setItem('themeAccent', color)
+  document.documentElement.style.setProperty('--accent', color)
+  document.documentElement.style.setProperty('--accent-gradient', `linear-gradient(120deg, ${color}, ${color}cc)`)
+}
+
+function applyRadius(v: number) {
+  localStorage.setItem('themeRadius', String(v))
+  document.documentElement.style.setProperty('--border-radius', v + 'px')
+}
+
+function applyFontSize(v: string) {
+  localStorage.setItem('themeFontSize', v)
+  document.documentElement.style.fontSize = v
+}
+
+const previewStyle = computed(() => ({
+  borderRadius: themeRadius.value + 'px',
+  fontSize: themeFontSize.value,
+}))
+
+// 初始化主题
+onMounted(() => {
+  if (themeAccent.value) setAccent(themeAccent.value)
+  applyRadius(themeRadius.value)
+  applyFontSize(themeFontSize.value)
+})
 const profileId = ref()
 
 // 对话框状态
@@ -1184,4 +1252,19 @@ onMounted(() => {
 .item-card {
   height: 100%;
 }
+
+/* 主题自定义 */
+.color-swatch {
+  width: 28px; height: 28px; border-radius: 50%; cursor: pointer;
+  border: 2px solid transparent; transition: all .2s;
+}
+.color-swatch.active { border-color: var(--accent); transform: scale(1.2); }
+.theme-preview {
+  margin-top: 16px; padding: 12px; background: var(--bg-secondary);
+  border: 1px solid var(--border-color, #333);
+}
+.preview-header { color: #fff; padding: 8px 12px; border-radius: 6px 6px 0 0; font-weight: 600; }
+.preview-body { padding: 12px; display: flex; gap: 12px; align-items: center; }
+.preview-btn { color: #fff; padding: 6px 16px; font-size: 13px; }
+.preview-card { padding: 12px; background: var(--bg-tool); font-size: 13px; flex: 1; }
 </style>

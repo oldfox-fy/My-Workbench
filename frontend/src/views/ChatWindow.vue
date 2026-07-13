@@ -76,6 +76,12 @@
             </template>
             工具列表
           </n-button>
+          <n-button text @click="showStats = true">
+            <template #icon>
+              <n-icon><BarChartOutline /></n-icon>
+            </template>
+            使用统计
+          </n-button>
           <n-button text @click="importChat">
             <template #icon>
               <n-icon><CloudUploadOutline /></n-icon>
@@ -87,6 +93,10 @@
               <n-icon><SettingsOutline /></n-icon>
             </template>
             系统设置
+          </n-button>
+          <n-button v-if="hasUpdate" text type="warning" @click="openUpdateUrl">
+            <template #icon><n-icon><CloudDownloadOutline /></n-icon></template>
+            更新可用
           </n-button>
         </div>
       </aside>
@@ -253,6 +263,7 @@
 
     <!-- 工具列表抽屉 -->
     <ToolsDrawer v-model:show="showTools" />
+    <StatsDashboard v-model:show="showStats" />
 
     <!-- 工具审批弹窗 -->
     <ToolApprovalDialog
@@ -314,7 +325,7 @@ import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { NButton, NInput, NList, NListItem, NIcon, NScrollbar, NFlex, NSelect, NModal, NPopconfirm, NPopover, NQrCode } from 'naive-ui'
 import type { UploadFileInfo } from 'naive-ui'
-import { SettingsOutline, DocumentOutline, MenuOutline, QrCodeOutline, ConstructOutline, LibraryOutline, DownloadOutline, CloudUploadOutline } from '@vicons/ionicons5'
+import { SettingsOutline, DocumentOutline, MenuOutline, QrCodeOutline, ConstructOutline, LibraryOutline, DownloadOutline, CloudUploadOutline, BarChartOutline, CloudDownloadOutline } from '@vicons/ionicons5'
 import { useChatStore, type Message } from '@/stores/chat'
 import { useConfigStore, fileConfig } from '@/stores/config'
 import { useProfileStore } from '@/stores/profiles'
@@ -329,6 +340,7 @@ import mSvg from '@/components/mSvg.vue'
 import MessageList from '@/components/MessageList.vue'
 import ChatInput from '@/components/ChatInput.vue'
 import ToolApprovalDialog from '@/components/ToolApprovalDialog.vue'
+import StatsDashboard from '@/components/StatsDashboard.vue'
 
 import { useModel } from '@/composables/useModel'
 import { useFileUpload } from '@/composables/useFileUpload'
@@ -553,6 +565,25 @@ watch(() => chatStore.activeChatId, async (newId) => {
 const sidebarCollapsed = ref(true)
 const showSettings = ref(false)
 const showTools = ref(false)
+const showStats = ref(false)
+const hasUpdate = ref(false)
+const updateUrl = ref('')
+
+// 自动更新检查
+onMounted(async () => {
+  try {
+    const resp = await fetch('/api/check-update')
+    const data = await resp.json()
+    if (data.has_update) {
+      hasUpdate.value = true
+      updateUrl.value = data.download_url
+    }
+  } catch { /* ignore */ }
+})
+
+function openUpdateUrl() {
+  window.open(updateUrl.value, '_blank')
+}
 
 const profileOptions = computed(() =>
   profileStore.profiles.map((p) => ({ label: p.name, value: p.id }))

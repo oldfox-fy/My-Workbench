@@ -308,3 +308,55 @@ async def get_system_info():
         "upload_dir": config.uploads_dir,
         "local_ip": get_local_ip(),
     }
+
+
+# ──────────── 自动更新检查 ────────────
+import time as _time
+import os as _os
+
+_update_cache = {"ts": 0, "data": None}
+
+@router.get("/check-update")
+async def check_update():
+    """检查 GitHub Release 是否有新版本。缓存 1 小时。"""
+    global _update_cache
+    now = _time.time()
+    if _update_cache["data"] and now - _update_cache["ts"] < 3600:
+        return _update_cache["data"]
+
+    current_version = "0.0.0"
+    version_file = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.dirname(__file__))), "version.txt")
+    try:
+        with open(version_file, "r") as f:
+            current_version = f.read().strip()
+    except Exception:
+        pass
+
+    result = {"has_update": False, "current_version": current_version, "latest_version": "", "download_url": ""}
+
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                "https://api.github.com/repos/lumneo/LumNeo/releases/latest",
+                headers={"Accept": "application/vnd.github+json", "User-Agent": "MyWorkbench"},
+            )
+            if resp.status_code == 200:
+                release = resp.json()
+                latest = release.get("tag_name", "").lstrip("v")
+                if latest and latest != current_version:
+                    result["has_update"] = True
+                    result["latest_version"] = latest
+                    # 找 exe/zip 下载链接
+                    for asset in release.get("assets", []):
+                        name = asset.get("name", "")
+                        if name.endswith((".exe", ".zip")):
+                            result["download_url"] = asset.get("browser_download_url", "")
+                            break
+                    if not result["download_url"]:
+                        result["download_url"] = release.get("html_url", "")
+    except Exception:
+        pass  # 网络不可达时静默失败
+
+    _update_cache = {"ts": now, "data": result}
+    return result

@@ -49,3 +49,48 @@ async def approve_tool(body: ToolApprovalRequest):
     """前端发送工具审批结果，唤醒等待中的工具执行协程。"""
     set_approval_result(body.call_id, body.approved, body.answer)
     return {"status": "ok"}
+
+
+# ──────────── 使用统计 ────────────
+
+@router.get("/stats")
+async def get_stats():
+    """聚合使用统计：Token 消耗、工具调用、对话数据。"""
+    db = await get_db()
+    try:
+        # 对话总数
+        cur = await db.execute("SELECT COUNT(*) FROM chats")
+        chat_count = (await cur.fetchone())[0]
+
+        # 消息总数
+        cur = await db.execute("SELECT COUNT(*) FROM messages")
+        msg_count = (await cur.fetchone())[0]
+
+        # 工具调用总数 + 成功/失败
+        cur = await db.execute("SELECT COUNT(*), SUM(CASE WHEN status='success' THEN 1 ELSE 0 END), SUM(CASE WHEN status='error' THEN 1 ELSE 0 END) FROM tool_calls")
+        row = await cur.fetchone()
+        tool_total = row[0] or 0
+        tool_success = row[1] or 0
+        tool_error = row[2] or 0
+
+        # TOP 10 工具
+        cur = await db.execute("SELECT tool_name, COUNT(*) c FROM tool_calls GROUP BY tool_name ORDER BY c DESC LIMIT 10")
+        tool_top = [{"name": r[0], "count": r[1]} for r in await cur.fetchall()]
+
+        # 最近 30 天每日工具调用趋势
+        cur = await db.execute("""
+            SELECT DATE(created_at) as d, COUNT(*) as c
+            FROM tool_calls WHERE created_at >= DATE('now', '-30 days')
+            GROUP BY d ORDER BY d
+        """)
+        daily_trend = [{"date": r[0], "count": r[1]} for r in await cur.fetchall()]
+
+        return {
+            "chats": chat_count,
+            "messages": msg_count,
+            "tool_calls": {"total": tool_total, "success": tool_success, "error": tool_error},
+            "tool_top": tool_top,
+            "daily_trend": daily_trend,
+        }
+    finally:
+        await db.close()
