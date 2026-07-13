@@ -100,3 +100,15 @@ async def get_tool_call(call_id: str):
     if not record:
         raise HTTPException(status_code=404, detail="Tool call not found")
     return record.to_dict()
+
+
+# ──────────── Agent 追踪 ────────────
+
+@router.get("/message/{message_id}/trace")
+async def get_message_trace(message_id: int):
+    """获取消息的 Agent 执行追踪数据（Trace + Spans）。"""
+    from backend.services.tracer import get_trace_by_message
+    trace = await get_trace_by_message(message_id)
+    if not trace:
+        raise HTTPException(status_code=404, detail="Trace not found")
+    return trace

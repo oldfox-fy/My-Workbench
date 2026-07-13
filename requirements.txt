@@ -16,3 +16,8 @@ numpy>=1.26.0
 python-docx>=1.0.0
 PyPDF2>=3.0.0
 pdfplumber>=0.11.0
+
+# --- 可选：OCR 增强（安装失败不阻塞，系统自动降级）---
+pytesseract>=0.3.10        # Tesseract OCR Python 绑定
+Pillow>=10.0.0             # 图片处理（pytesseract 依赖）
+pdf2image>=1.17.0          # PDF → 图片转换（PDF OCR 所需）

@@ -2,18 +2,22 @@
 """
 子智能体委派工具：将独立子任务委派给轻量级子智能体并行处理。
 
-子智能体拥有独立上下文窗口和受限工具集，完成后将结果汇总回主智能体。
-适用于可并行分解的任务，如"把这三个文件分别翻译成英文"。
+支持三种模式：
+  - single（默认）：单个子 Agent
+  - sequential：多个 Agent 链式执行（前一个输出作为后一个的上下文）
+  - parallel：多个 Agent 并行执行同一任务，结果合并
+
+每个 Agent 可通过 agents 参数定义角色（role_name、goal、backstory）和工具集。
+也可通过 template_id 使用预设的 Crew 模板。
 
 安全约束：
-  - 子智能体最多 3 轮工具调用（防止过度递归）
+  - 子智能体最多 3 轮工具调用
   - 子智能体默认仅允许只读工具
-  - 子智能体禁止再调用 system_delegate_task（防无限递归）
+  - 子智能体禁止递归调用 system_delegate_task
 """
 import asyncio
 import json
 from typing import Any, Dict, List, Optional
-
 
 # 子智能体默认允许的只读工具
 DEFAULT_SUBAGENT_TOOLS = {
@@ -29,98 +33,149 @@ DEFAULT_SUBAGENT_TOOLS = {
 async def delegate_task(
     task: str,
     tools: Optional[List[str]] = None,
+    agents: Optional[List[Dict]] = None,
+    collaboration: str = "single",
+    template_id: Optional[int] = None,
     mcp_manager=None,
     skill_registry=None,
     llm_service=None,
     params: Optional[Dict] = None,
+    trace_manager=None,
     **_kwargs,
 ) -> Dict[str, Any]:
     """
     将子任务委派给子智能体执行。
 
     Args:
-        task: 子任务描述（需自包含，子智能体看不到主对话历史）
-        tools: 允许子智能体使用的工具列表。省略时仅允许只读工具。
+        task: 子任务描述（需自包含）
+        tools: 允许子智能体使用的工具列表，省略时仅允许只读工具
+        agents: 子 Agent 角色定义数组 [{role_name, goal, backstory, tools}]
+        collaboration: 协作模式 — "single"｜"sequential"｜"parallel"
+        template_id: 预设 Crew 模板 ID（与 agents 互斥）
         mcp_manager: MCP 客户端管理器（由 execute_tool 注入）
         skill_registry: 技能注册表（由 execute_tool 注入）
         llm_service: LLM 服务实例（由 execute_tool 注入）
         params: LLM 参数（由 execute_tool 注入）
+        trace_manager: 追踪管理器（由 execute_tool 注入，可选）
 
     Returns:
-        {"success": bool, "result": str, "tool_calls_count": int, "error": str}
+        {success, result, agents_results, collaboration, total_tool_calls}
     """
     if not llm_service:
-        return {"success": False, "error": "子智能体委派需要 LLM 服务实例，但未能获取。"}
-
+        return {"success": False, "error": "子智能体委派需要 LLM 服务实例。"}
     if not task or not task.strip():
         return {"success": False, "error": "task 参数不能为空。"}
 
-    # 确定允许的工具集
+    # 加载模板
+    if template_id is not None:
+        template = await _load_template(template_id)
+        if template:
+            agents = template.get("agents", [])
+            collaboration = template.get("mode", "sequential")
+
+    # 构建工具列表
+    from backend.services.tools import get_local_tools
+    local_tools = get_local_tools()
+
     if tools is not None:
         allowed = set(tools)
     else:
         allowed = set(DEFAULT_SUBAGENT_TOOLS)
-
-    # 禁止子智能体递归委派
     allowed.discard("system_delegate_task")
 
+    mcp_tools = []
+    if mcp_manager:
+        mcp_tools = await mcp_manager.get_all_tools()
+
+    all_base = list(local_tools) + list(mcp_tools)
+
+    from backend.services.crew import run_single_agent, run_sequential, run_parallel, merge_results
+
     try:
-        # 构建子智能体工具列表（延迟导入避免循环依赖）
-        from backend.services.tools import get_local_tools
-        local_tools = get_local_tools()
-        sub_tools = [t for t in local_tools if t["function"]["name"] in allowed]
+        if collaboration == "single" and (not agents or len(agents) <= 1):
+            role = agents[0] if agents else None
+            agent_tools = [t for t in all_base if t.get("function", {}).get("name") in allowed]
+            if role and role.get("tools"):
+                agent_tools = [t for t in all_base if t.get("function", {}).get("name") in set(role["tools"])]
+            result = await run_single_agent(
+                task, llm_service, agent_tools,
+                role=role, mcp_manager=mcp_manager,
+                skill_registry=skill_registry, params=params,
+                trace_manager=trace_manager,
+            )
+            return {
+                "success": result["success"],
+                "result": result.get("result", ""),
+                "error": result.get("error", ""),
+                "agents_results": [result],
+                "collaboration": "single",
+                "total_tool_calls": result.get("tool_calls_count", 0),
+            }
 
-        # 追加 MCP 工具（仅白名单内的）
-        if mcp_manager:
-            mcp_tools = await mcp_manager.get_all_tools()
-            sub_tools.extend([t for t in mcp_tools if t["function"]["name"] in allowed])
+        elif collaboration == "sequential" and agents:
+            results = await run_sequential(
+                task, agents, llm_service, all_base,
+                mcp_manager=mcp_manager, skill_registry=skill_registry,
+                params=params, trace_manager=trace_manager,
+                all_local_tools=local_tools,
+            )
+            merged = merge_results(results, "sequential")
+            total_tc = sum(r.get("tool_calls_count", 0) for r in results)
+            return {
+                "success": True,
+                "result": merged,
+                "agents_results": results,
+                "collaboration": "sequential",
+                "total_tool_calls": total_tc,
+            }
 
-        # 构建子智能体消息
-        system_prompt = (
-            "你是一个高效的子任务执行者。请仅使用给定的工具完成任务，"
-            "完成后直接返回结果，不要询问用户。保持输出简洁。"
-        )
-        sub_messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": task},
-        ]
+        elif collaboration == "parallel" and agents:
+            results = await run_parallel(
+                task, agents, llm_service, all_base,
+                mcp_manager=mcp_manager, skill_registry=skill_registry,
+                params=params, trace_manager=trace_manager,
+                all_local_tools=local_tools,
+            )
+            merged = merge_results(list(results), "parallel")
+            total_tc = sum(r.get("tool_calls_count", 0) for r in results)
+            return {
+                "success": True,
+                "result": merged,
+                "agents_results": list(results),
+                "collaboration": "parallel",
+                "total_tool_calls": total_tc,
+            }
 
-        # 收集子智能体响应
-        response_parts = []
-        tool_calls_count = 0
-        sub_params = (params or {}).copy()
-
-        async for chunk in llm_service.generate_response(
-            messages=sub_messages,
-            enable_tools=True,
-            tools=sub_tools,
-            request=None,  # 子智能体无客户端连接
-            mcp_manager=mcp_manager,
-            skill_registry=skill_registry,
-            params=sub_params,
-            message_id=None,  # 子智能体不记录到 DB
-            max_steps=3,
-            excluded_tools={"system_delegate_task"},
-        ):
-            # 过滤掉 SSE 标记，收集纯文本
-            if chunk.startswith("<!--"):
-                if chunk.startswith("<!--tool_status:") and ":success-->" in chunk:
-                    tool_calls_count += 1
-                continue
-            response_parts.append(chunk)
-
-        result_text = "".join(response_parts).strip()
-
-        return {
-            "success": True,
-            "result": result_text,
-            "tool_calls_count": tool_calls_count,
-        }
+        else:
+            return {"success": False, "error": f"不支持的协作模式: {collaboration}"}
 
     except Exception as e:
         return {
             "success": False,
             "error": f"子智能体执行异常：{str(e)}",
             "result": "",
-            "tool_calls_count": 0,
         }
+
+
+async def _load_template(template_id: int) -> Optional[Dict]:
+    """从数据库加载 Crew 模板。"""
+    try:
+        from backend.database import get_db
+        db = await get_db()
+        try:
+            cursor = await db.execute(
+                "SELECT name, title, mode, config FROM crew_templates WHERE id = ?",
+                (template_id,),
+            )
+            row = await cursor.fetchone()
+            if not row:
+                return None
+            config = json.loads(row[3]) if isinstance(row[3], str) else row[3]
+            return {
+                "name": row[0], "title": row[1], "mode": row[2],
+                "agents": config.get("agents", []) if isinstance(config, dict) else [],
+            }
+        finally:
+            await db.close()
+    except Exception:
+        return None

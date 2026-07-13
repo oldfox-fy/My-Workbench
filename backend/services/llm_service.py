@@ -79,6 +79,14 @@ class LLMService:
     ) -> AsyncGenerator[str, None]:
         params = params or {}
 
+        # ---------- Span 追踪 ----------
+        from backend.services.tracer import TraceManager, persist_trace
+        chat_id = ""
+        if request:
+            chat_id = request.path_params.get("chat_id", "") if hasattr(request, "path_params") else ""
+        trace = TraceManager(chat_id=chat_id, message_id=message_id or 0)
+        yield trace.emit_root_start()
+
         # ---------- 图像生成分支 ----------
         # 使用模型角色判断（而非名字里是否有 "image"），因为主流生图模型
         # 如 dall-e-3、stable-diffusion、FLUX、Kolors 名字里都不含 "image"。
@@ -166,9 +174,15 @@ class LLMService:
         consecutive_failures = 0
         force_final = False
 
+        _span_queue: list = []  # 从 _execute_one_tool 收集 span 标记
+
         for step in range(MAX_STEPS):
             if request and await request.is_disconnected():
                 break
+
+            # 开始 Step Span
+            step_span = trace.start_step(step + 1)
+            yield step_span.to_sse_start()
 
             tool_calls_by_index = {}
             reasoning_buffer = ""
@@ -287,11 +301,16 @@ class LLMService:
                 # ---------- 流式工具执行辅助函数 ----------
                 # 定义在此处以捕获 step 作用域变量（message_id, mcp_manager, skill_registry）
                 async def _execute_one_tool(idx, tc, preview_info):
-                    """执行单个工具调用，返回结果元组。不 yield SSE 标记。"""
+                    """执行单个工具调用，返回结果元组。不 yield SSE 标记。
+                    将 span 标记追加到 _span_queue 中，由外层循环统一 yield。"""
                     local_call_id = preview_info.get('call_id', '')
                     real_tool_call_id = tc.get("id")
                     func_name = tc["function"]["name"] or "未知工具"
                     raw_args = tc["function"]["arguments"]
+
+                    # 创建 tool_call Span，写入队列
+                    tool_span = trace.start_tool_call(func_name, raw_args[:300])
+                    _span_queue.append(tool_span.to_sse_start())
 
                     parse_error = None
                     try:
@@ -346,6 +365,11 @@ class LLMService:
                         tool_content = json.dumps(result, ensure_ascii=False)
                     else:
                         tool_content = str(result)
+
+                    # 结束 tool_call Span，写入队列
+                    trace.end_span(tool_span.id, "error" if failed else "success",
+                                   tool_content[:300], result if failed else None)
+                    _span_queue.append(tool_span.to_sse_end())
 
                     return {
                         "idx": idx,
@@ -671,12 +695,30 @@ class LLMService:
             for r in exec_results:
                 tool_preview_active.pop(r["idx"], None)
 
+            # 刷新计划事件（system_todo 工具产生的 plan 标记）
+            from backend.system_tools.todo import pop_plan_events
+            for plan_marker in pop_plan_events():
+                yield plan_marker
+
             yield "<!--tool_calls:end-->"
+
+            # 结束 Step Span
+            trace.end_span(step_span.id, "success")
+            yield step_span.to_sse_end()
+            # 刷新 span 队列
+            for sm in _span_queue:
+                yield sm
+            _span_queue.clear()
 
             if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
                 force_final = True
 
         # ---------- 最终 token 统计输出 ----------
+        # 结束根 Span 并持久化追踪数据
+        yield trace.emit_root_end()
+        yield "<!--trace_summary:" + json.dumps(trace.finalize(), ensure_ascii=False) + "-->"
+        asyncio.create_task(persist_trace(trace))
+
         if last_step_usage and last_step_usage["completion_tokens"] > 0:
             tokens = last_step_usage["completion_tokens"]
             gen_time = last_step_generation_time

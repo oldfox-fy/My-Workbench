@@ -201,6 +201,86 @@ async def init_db():
     await _ensure_column(db, "chats", "branched_at_message_id", "INTEGER DEFAULT NULL")
     # 模型角色（自动切换）
     await _ensure_column(db, "models", "role", "TEXT NOT NULL DEFAULT 'default'")
+    # RAG 增强：分块类型与页码
+    await _ensure_column(db, "kb_chunks", "chunk_type", "TEXT NOT NULL DEFAULT 'text'")
+    await _ensure_column(db, "kb_chunks", "page_number", "INTEGER DEFAULT NULL")
+    await _ensure_column(db, "kb_chunks", "citation_id", "TEXT DEFAULT ''")
+    # OCR 缓存
+    await _ensure_column(db, "kb_index_meta", "ocr_text", "TEXT DEFAULT ''")
+    await _ensure_column(db, "kb_index_meta", "image_description", "TEXT DEFAULT ''")
+
+    # Feature 3: Agent 追踪
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS agent_traces (
+            id TEXT PRIMARY KEY,
+            message_id INTEGER NOT NULL,
+            chat_id TEXT NOT NULL,
+            status TEXT DEFAULT 'running',
+            total_steps INTEGER DEFAULT 0,
+            total_tool_calls INTEGER DEFAULT 0,
+            total_time_ms INTEGER DEFAULT 0,
+            started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            completed_at TIMESTAMP,
+            FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE
+        )
+    """)
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS agent_spans (
+            id TEXT PRIMARY KEY,
+            trace_id TEXT NOT NULL,
+            parent_span_id TEXT,
+            span_type TEXT NOT NULL DEFAULT 'tool_call',
+            name TEXT NOT NULL,
+            status TEXT DEFAULT 'running',
+            start_time REAL NOT NULL,
+            end_time REAL,
+            duration_ms INTEGER,
+            input_preview TEXT DEFAULT '',
+            output_preview TEXT DEFAULT '',
+            error_message TEXT,
+            FOREIGN KEY (trace_id) REFERENCES agent_traces(id) ON DELETE CASCADE
+        )
+    """)
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_spans_trace ON agent_spans(trace_id)"
+    )
+    await _ensure_column(db, "tool_calls", "span_id", "TEXT DEFAULT NULL")
+
+    # Feature 4: Agent 计划持久化
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS agent_plans (
+            id TEXT PRIMARY KEY,
+            message_id INTEGER NOT NULL,
+            chat_id TEXT NOT NULL,
+            status TEXT DEFAULT 'active',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE
+        )
+    """)
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS agent_plan_steps (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            plan_id TEXT NOT NULL,
+            step_index INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            status TEXT DEFAULT 'pending',
+            tool_span_id TEXT DEFAULT NULL,
+            FOREIGN KEY (plan_id) REFERENCES agent_plans(id) ON DELETE CASCADE
+        )
+    """)
+
+    # Feature 5: Crew 模板
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS crew_templates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            title TEXT NOT NULL,
+            description TEXT DEFAULT '',
+            mode TEXT NOT NULL DEFAULT 'sequential',
+            config TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
 
     await db.commit()
     await db.close()

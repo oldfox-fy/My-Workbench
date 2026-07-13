@@ -74,3 +74,15 @@ tool_approval:
     - system_delegate_task
   # 是否支持"此会话始终允许"（同类工具一次批准后不再询问）
   session_whitelist: true
+
+# OCR 配置（可选，需手动安装 Tesseract OCR 系统包）
+ocr:
+  enabled: false
+  engine: "tesseract"
+  lang: "chi_sim+eng"
+
+# Skill 智能选择配置
+skill_selection:
+  enabled: true
+  top_k: 5
+  min_similarity: 0.3

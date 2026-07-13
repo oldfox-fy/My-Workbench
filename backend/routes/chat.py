@@ -260,7 +260,24 @@ async def chat(
                     # 展开角色勾选的技能：prompt 技能 → 注入指令 + 追加工具白名单；code 技能 → 可调用 function
                     allowed_code_tool_names = []
                     if skill_registry and profile_skills:
-                        expanded = skill_registry.expand_for_profile(profile_skills)
+                        # 智能选择：仅注入与用户查询最相关的技能（节省 token）
+                        se_cfg = getattr(app_config, 'skill_selection', None)
+                        smart_select = se_cfg and se_cfg.get('enabled', True) if se_cfg else True
+                        if smart_select and len(profile_skills) > 3:
+                            top_k = se_cfg.get('top_k', 5) if se_cfg else 5
+                            min_sim = se_cfg.get('min_similarity', 0.3) if se_cfg else 0.3
+                            last_user = ""
+                            for m in reversed(messages):
+                                if m.get("role") == "user":
+                                    last_user = m.get("content", "")
+                                    break
+                            relevant = await skill_registry.select_relevant_skills(
+                                last_user, profile_skills, top_k=top_k, min_similarity=min_sim
+                            )
+                            selected = relevant
+                        else:
+                            selected = profile_skills
+                        expanded = skill_registry.expand_for_profile(selected)
                         if expanded["instructions"]:
                             profile_skill_prompt = "\n\n".join(expanded["instructions"])
                         allowed_tools = list(set(allowed_tools) | expanded["allowed_tools"])

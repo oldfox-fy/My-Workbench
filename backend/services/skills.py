@@ -25,6 +25,19 @@ from backend.db import skills as skills_db
 # code 型技能的调用前缀（对齐 mcp_ / system_ 的命名习惯）
 SKILL_PREFIX = "skill_"
 
+
+def _cosine_similarity(a: List[float], b: List[float]) -> float:
+    """计算两个向量的余弦相似度。"""
+    try:
+        dot = sum(x * y for x, y in zip(a, b))
+        norm_a = sum(x * x for x in a) ** 0.5
+        norm_b = sum(x * x for x in b) ** 0.5
+        if norm_a == 0 or norm_b == 0:
+            return 0.0
+        return dot / (norm_a * norm_b)
+    except Exception:
+        return 0.0
+
 # 受限执行环境允许的内建函数（安全白名单）
 _SAFE_BUILTINS = {
     "abs", "all", "any", "bool", "dict", "enumerate", "filter", "float",
@@ -47,16 +60,93 @@ class SkillRegistry:
     def __init__(self):
         # name -> skill dict
         self._skills: Dict[str, Dict[str, Any]] = {}
+        # 技能描述 embedding 缓存（name → vector），用于智能选择
+        self._skill_embeddings: Dict[str, List[float]] = {}
+        self._embedder = None
 
     async def reload(self) -> None:
         """从数据库重新加载所有已启用技能。"""
         try:
             enabled = await skills_db.list_skills(only_enabled=True)
             self._skills = {s["name"]: s for s in enabled}
+            # 清空 embedding 缓存（下次智能选择时重建）
+            self._skill_embeddings = {}
             logger.info(f"Skill 注册表已加载，共 {len(self._skills)} 个启用技能。")
         except Exception as e:
             logger.error(f"加载 Skill 注册表失败: {e}", exc_info=True)
             self._skills = {}
+
+    def invalidate_embedding(self, name: str):
+        """使特定 skill 的 embedding 缓存失效。"""
+        self._skill_embeddings.pop(name, None)
+
+    async def _ensure_embeddings(self, skill_names: List[str]) -> None:
+        """确保指定技能名称的 embedding 已缓存。"""
+        to_embed = []
+        for name in skill_names:
+            if name not in self._skill_embeddings and name in self._skills:
+                to_embed.append(name)
+        if not to_embed:
+            return
+        try:
+            from backend.services.embedding import get_embedder
+            if self._embedder is None:
+                self._embedder = await get_embedder()
+            texts = []
+            for name in to_embed:
+                sk = self._skills[name]
+                desc = (sk.get("description") or sk.get("title") or name)
+                texts.append(desc)
+            vectors = await self._embedder.embed(texts)
+            for name, vec in zip(to_embed, vectors):
+                self._skill_embeddings[name] = vec
+        except Exception:
+            pass  # embedding 不可用时降级为全量注入
+
+    async def select_relevant_skills(
+        self,
+        user_query: str,
+        profile_skills: List[str],
+        top_k: int = 5,
+        min_similarity: float = 0.3,
+    ) -> List[str]:
+        """
+        从角色的技能列表中选出与用户查询最相关的 Top-K 个。
+        如果 embedding 不可用或技能数 ≤ top_k，返回全部。
+        """
+        available = [s for s in profile_skills if s in self._skills]
+        if len(available) <= top_k:
+            return available
+
+        await self._ensure_embeddings(available)
+        if not self._skill_embeddings:
+            return available  # embedding 不可用，全量注入
+
+        try:
+            from backend.services.embedding import get_embedder
+            if self._embedder is None:
+                self._embedder = await get_embedder()
+            qvec = await self._embedder.embed_one(user_query)
+            if not qvec:
+                return available
+
+            # 余弦相似度排序
+            scored = []
+            for name in available:
+                svec = self._skill_embeddings.get(name)
+                if svec and len(svec) == len(qvec):
+                    sim = _cosine_similarity(qvec, svec)
+                    scored.append((name, sim))
+                else:
+                    scored.append((name, 0.5))  # 无缓存时给中等分数
+
+            scored.sort(key=lambda x: x[1], reverse=True)
+            result = [name for name, sim in scored[:top_k] if sim >= min_similarity]
+            if not result:
+                result = [scored[0][0]]  # 至少选一个
+            return result
+        except Exception:
+            return available
 
     # ---------- 查询 ----------
 

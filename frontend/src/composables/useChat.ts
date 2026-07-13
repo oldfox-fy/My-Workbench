@@ -50,6 +50,7 @@ export function useChat() {
   const streamingContent = ref('')
   const abortController = ref<AbortController | null>(null)
   const regeneratingMsg = ref<Message | null>(null)
+  const planState = ref<{ tasks: any[]; summary: string } | null>(null)
 
   function stopGeneration() {
     if (abortController.value) {
@@ -82,6 +83,28 @@ export function useChat() {
       if (done) break
 
       fullText += decoder.decode(value, { stream: true })
+
+      // 检测计划事件标记
+      const planCreateRegex = /<!--plan:create:({[\s\S]*?})-->/g
+      let pm
+      while ((pm = planCreateRegex.exec(fullText)) !== null) {
+        try {
+          const planData = JSON.parse(pm[1])
+          planState.value = { tasks: planData.tasks || [], summary: planData.summary || '' }
+        } catch {}
+      }
+      const planUpdateRegex = /<!--plan:update:({[\s\S]*?})-->/g
+      while ((pm = planUpdateRegex.exec(fullText)) !== null) {
+        try {
+          const updateData = JSON.parse(pm[1])
+          if (planState.value) {
+            const task = planState.value.tasks.find((t: any) => t.id === updateData.task_id)
+            if (task) { task.status = updateData.status }
+            planState.value.summary = updateData.summary || planState.value.summary
+            planState.value = { ...planState.value }
+          }
+        } catch {}
+      }
 
       // 检测工具审批标记，弹出审批对话框
       if (onApprovalNeeded) {
@@ -481,6 +504,7 @@ export function useChat() {
         api_key: currentModel.apiKey,
       } : undefined,
       auto_switch: configStore.autoSwitch,  // 智能切换开关
+      message_id: Date.now() + 1,  // 用于工具调用 DB 记录
     }
 
     // 设置消息处理
@@ -548,6 +572,7 @@ export function useChat() {
     isLoading,
     streamingContent,
     regeneratingMsg,
+    planState,
     onStreamEnd,
     setApprovalHandler,
     sendMessage,

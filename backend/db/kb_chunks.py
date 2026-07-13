@@ -64,20 +64,29 @@ async def delete_file_chunks(file_path: str) -> List[int]:
 
 async def insert_chunks(
     file_path: str, file_hash: str, model_name: str,
-    chunks: List[Tuple[str, str]],
+    chunks: List[Tuple[str, str, str]],
 ) -> List[Tuple[int, str]]:
     """
-    插入分片。chunks: [(heading_path, content), ...]。
+    插入分片。chunks: [(heading_path, content, chunk_type), ...]。
+    chunk_type 可选：'text', 'table', 'code', 'image'
     返回 [(chunk_id, content), ...]，供上层向量化后写入向量表。
     """
+    # 生成 citation 前缀
+    import hashlib
+    doc_id = hashlib.md5(file_path.encode()).hexdigest()[:8]
     db = await get_db()
     try:
         result: List[Tuple[int, str]] = []
-        for idx, (heading_path, content) in enumerate(chunks):
+        for idx, item in enumerate(chunks):
+            heading_path = item[0] if len(item) > 0 else ""
+            content = item[1] if len(item) > 1 else ""
+            chunk_type = item[2] if len(item) > 2 else "text"
+            citation_id = f"{doc_id}::chunk_{idx + 1:03d}"
             cursor = await db.execute(
-                """INSERT INTO kb_chunks (file_path, chunk_index, heading_path, content, file_hash, model_name)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (file_path, idx, heading_path, content, file_hash, model_name),
+                """INSERT INTO kb_chunks (file_path, chunk_index, heading_path, content,
+                   file_hash, model_name, chunk_type, citation_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (file_path, idx, heading_path, content, file_hash, model_name, chunk_type, citation_id),
             )
             result.append((cursor.lastrowid, content))
         await db.commit()
@@ -110,12 +119,16 @@ async def get_chunks_by_ids(ids: List[int]) -> Dict[int, Dict[str, Any]]:
     try:
         placeholders = ",".join("?" * len(ids))
         cursor = await db.execute(
-            f"SELECT id, file_path, heading_path, content FROM kb_chunks WHERE id IN ({placeholders})",
+            f"SELECT id, file_path, heading_path, content, citation_id, chunk_type, page_number FROM kb_chunks WHERE id IN ({placeholders})",
             ids,
         )
         rows = await cursor.fetchall()
         return {
-            int(r[0]): {"file_path": r[1], "heading_path": r[2], "content": r[3]}
+            int(r[0]): {
+                "file_path": r[1], "heading_path": r[2], "content": r[3],
+                "citation_id": r[4] or "", "chunk_type": r[5] or "text",
+                "page_number": r[6],
+            }
             for r in rows
         }
     finally:

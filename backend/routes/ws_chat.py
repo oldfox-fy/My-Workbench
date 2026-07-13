@@ -100,6 +100,34 @@ async def _stream_to_ws(ws: WebSocket, generator, cancel_event: asyncio.Event):
                 await ws.send_json({"type": "done"})
             return
 
+        # 计划事件
+        if text.startswith("<!--plan:create:"):
+            try:
+                json_str = text.replace("<!--plan:create:", "").replace("-->", "")
+                await ws.send_json({"type": "plan_event", "action": "create", "data": json.loads(json_str)})
+            except Exception:
+                pass
+            continue
+        if text.startswith("<!--plan:update:"):
+            try:
+                json_str = text.replace("<!--plan:update:", "").replace("-->", "")
+                await ws.send_json({"type": "plan_event", "action": "update", "data": json.loads(json_str)})
+            except Exception:
+                pass
+            continue
+
+        # Span 追踪事件
+        if text.startswith("<!--span:start:"):
+            parts = text.replace("<!--span:start:", "").replace("-->", "").split(":", 2)
+            if len(parts) >= 3:
+                await ws.send_json({"type": "span_event", "action": "start", "span_id": parts[0], "span_type": parts[1], "name": parts[2]})
+            continue
+        if text.startswith("<!--span:end:"):
+            parts = text.replace("<!--span:end:", "").replace("-->", "").split(":", 2)
+            if len(parts) >= 3:
+                await ws.send_json({"type": "span_event", "action": "end", "span_id": parts[0], "status": parts[1], "duration_ms": parts[2]})
+            continue
+
         # 普通文本
         if text and not text.startswith("<!--"):
             await ws.send_json({"type": "chunk", "content": text})
@@ -285,11 +313,15 @@ async def _handle_chat(ws: WebSocket, data: dict, cancel_event: asyncio.Event,
         messages.insert(0, {"role": "system", "content": system_prompt})
 
         # 流式生成
+        ws_message_id = data.get("message_id")
         gen = service.generate_response(
             messages=messages,
             enable_tools=enable_tools,
             tools=tools,
             params=params,
+            message_id=ws_message_id,
+            skill_registry=skill_registry,
+            mcp_manager=mcp_manager,
         )
         await _stream_to_ws(ws, gen, cancel_event)
 

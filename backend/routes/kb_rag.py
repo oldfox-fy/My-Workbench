@@ -7,7 +7,11 @@
 所有接口挂在 /api/kb 前缀下，与 routes/knowledge.py（文件浏览/读写）互补。
 """
 import asyncio
+import os
+from pathlib import Path
 from typing import Optional
+
+from backend.database import get_db
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -213,3 +217,38 @@ async def note_names():
         return {"notes": await kb_graph.list_note_names()}
     except kb_graph.KbNotConfiguredError as e:
         raise HTTPException(400, str(e))
+
+
+@router.get("/ocr-status")
+async def ocr_status():
+    """返回 OCR 可用性状态。"""
+    from backend.services.kb_parser import check_ocr_available
+    return check_ocr_available()
+
+
+@router.get("/citation/{citation_id}")
+async def resolve_citation(citation_id: str):
+    """根据 citation_id 查找源文件信息。"""
+    db = await get_db()
+    try:
+        cursor = await db.execute(
+            "SELECT file_path, heading_path, content, chunk_type, page_number FROM kb_chunks WHERE citation_id = ?",
+            (citation_id,),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            raise HTTPException(404, f"引用 {citation_id} 未找到")
+        import backend
+        kb_root = getattr(backend, "kb_path", "")
+        full_path = str(Path(kb_root) / row[0]) if kb_root else row[0]
+        return {
+            "citation_id": citation_id,
+            "file_path": row[0],
+            "heading_path": row[1],
+            "content_preview": (row[2] or "")[:500],
+            "chunk_type": row[3],
+            "page_number": row[4],
+            "file_exists": os.path.isfile(full_path) if kb_root else False,
+        }
+    finally:
+        await db.close()

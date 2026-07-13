@@ -30,6 +30,8 @@ _INDEX_EXTS = {
     ".md", ".markdown", ".txt", ".rst",
     ".pdf", ".docx", ".doc", ".pptx", ".ppt",
     ".csv", ".tsv", ".xlsx", ".xls",
+    ".html", ".htm", ".epub", ".odt", ".rtf",
+    ".png", ".jpg", ".jpeg", ".bmp", ".tiff", ".webp",
 }
 _MD_EXTS = {".md", ".markdown"}
 
@@ -125,26 +127,10 @@ def _chunk_plain(text: str) -> List[Tuple[str, str]]:
 
 
 async def _read_text(abs_path: Path, root: Path) -> Optional[str]:
-    """读取文件文本内容。Markdown/文本直接读；其它格式复用 reader。"""
-    ext = abs_path.suffix.lower()
-    try:
-        if ext in {".md", ".markdown", ".txt", ".rst"}:
-            raw = abs_path.read_bytes()
-            for enc in ("utf-8-sig", "utf-8", "gbk", "gb18030"):
-                try:
-                    return raw.decode(enc)
-                except (UnicodeDecodeError, LookupError):
-                    continue
-            return raw.decode("utf-8", errors="replace")
-        # 其它格式走统一读取器（转 markdown 文本）
-        result = await file_read(str(abs_path), allowed_dirs=[str(root)])
-        return result.get("content", "")
-    except FileReadError as e:
-        logger.warning(f"[kb_indexer] 读取失败 {abs_path}: {e}")
-        return None
-    except Exception as e:
-        logger.warning(f"[kb_indexer] 读取异常 {abs_path}: {e}")
-        return None
+    """读取文件文本内容。优先使用增强解析器（OCR/表格），降级到原始 reader。"""
+    from backend.services.kb_parser import DocumentParser
+    parser = DocumentParser()
+    return await parser.parse_text_only(abs_path)
 
 
 def _scan_files(root: Path) -> List[Path]:
@@ -233,7 +219,17 @@ async def rebuild(full: bool = False) -> Dict[str, Any]:
             continue
 
         ext = abs_path.suffix.lower()
-        pieces = _chunk_markdown(text) if ext in _MD_EXTS else _chunk_plain(text)
+        # 使用增强的布局感知分块器
+        from backend.services.kb_parser import _parse_to_elements, chunk_elements, MD_EXTS as _PARSER_MD_EXTS
+        if ext in _PARSER_MD_EXTS:
+            elements = _parse_to_elements(text)
+            pieces = chunk_elements(elements)  # → [(heading, content, chunk_type), ...]
+        else:
+            # 非 MD：纯文本分块，标记为 text 类型
+            elements = _parse_to_elements(text)
+            pieces = chunk_elements(elements) if elements else [
+                ("", p.strip(), "text") for p in _split_long(text) if len(p.strip()) >= _MIN_CHARS
+            ]
         if not pieces:
             await kb_chunks.upsert_meta(rel, fhash, mtime, 0)
             continue
@@ -293,5 +289,9 @@ async def search(query: str, top_k: int = 8) -> List[Dict[str, Any]]:
             "heading_path": m["heading_path"],
             "content": m["content"],
             "distance": round(distance, 4),
+            "citation_id": m.get("citation_id", ""),
+            "citation_text": f"[来源: {m['file_path']}{' > ' + m['heading_path'] if m['heading_path'] else ''}](cite://{m.get('citation_id', '')})" if m.get("citation_id") else "",
+            "chunk_type": m.get("chunk_type", "text"),
+            "page_number": m.get("page_number"),
         })
     return results
