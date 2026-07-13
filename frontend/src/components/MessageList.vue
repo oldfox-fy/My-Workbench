@@ -86,6 +86,13 @@
                     >
                       <template #icon><n-icon><m-svg name="refresh" /></n-icon></template>
                     </n-button>
+                    <n-button
+                      v-if="msg.role === 'user'"
+                      text class="icon-btn" size="small" title="从此处分叉对话"
+                      @click="$emit('branch', msg)"
+                    >
+                      <template #icon><n-icon :size="18"><GitBranchOutline /></n-icon></template>
+                    </n-button>
                     <n-button text class="icon-btn" size="small" title="编辑" @click="$emit('edit', msg)">
                       <template #icon><n-icon :size="20"><m-svg name="edit" /></n-icon></template>
                     </n-button>
@@ -142,7 +149,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, type PropType, nextTick, watch } from 'vue'
 import { NButton, NIcon, NImage, NPopconfirm } from 'naive-ui'
-import { DocumentOutline } from '@vicons/ionicons5'
+import { DocumentOutline, GitBranchOutline } from '@vicons/ionicons5'
 import { MarkdownRender, setCustomComponents, removeCustomComponents, setInfographicLoader } from 'markstream-vue'
 import 'markstream-vue/index.css'
 import type { Message } from '@/stores/chat'
@@ -178,6 +185,7 @@ const emit = defineEmits<{
   regenerate: [msg: Message]
   edit: [msg: Message]
   delete: [id: number]
+  branch: [msg: Message]
 }>()
 
 const scrollContainerRef = ref<HTMLElement | null>(null)

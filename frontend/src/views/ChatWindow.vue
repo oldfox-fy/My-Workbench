@@ -44,6 +44,9 @@
                   placeholder="请输入标题"
                 />
                 <div class="chat-actions" v-if="renamingChatId !== chat.id">
+                  <n-button text size="tiny" @click.stop="exportChat(chat.id, chat.title)" title="导出">
+                    <template #icon><n-icon :size="16"><DownloadOutline /></n-icon></template>
+                  </n-button>
                   <n-button text size="tiny" @click.stop="startRename(chat)" title="重命名">
                     <template #icon><n-icon :size="16"><m-svg name="edit"/></n-icon></template>
                   </n-button>
@@ -72,6 +75,12 @@
               <n-icon><ConstructOutline /></n-icon>
             </template>
             工具列表
+          </n-button>
+          <n-button text @click="importChat">
+            <template #icon>
+              <n-icon><CloudUploadOutline /></n-icon>
+            </template>
+            导入对话
           </n-button>
           <n-button text @click="showSettings = true">
             <template #icon>
@@ -207,6 +216,7 @@
         @regenerate="handleRegenerateResponse"
         @edit="startEditMessage"
         @delete="chatStore.deleteMessage"
+        @branch="handleBranch"
       />
 
       <!-- 聊天输入框组件 -->
@@ -243,6 +253,15 @@
 
     <!-- 工具列表抽屉 -->
     <ToolsDrawer v-model:show="showTools" />
+
+    <!-- 工具审批弹窗 -->
+    <ToolApprovalDialog
+      ref="approvalDialogRef"
+      :call-id="approvalCallId"
+      :tool-name="approvalToolName"
+      :args-preview="approvalArgsPreview"
+      @resolved="onApprovalResolved"
+    />
 
     <!-- 编辑消息模态框 -->
     <n-modal
@@ -295,7 +314,7 @@ import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { NButton, NInput, NList, NListItem, NIcon, NScrollbar, NFlex, NSelect, NModal, NPopconfirm, NPopover, NQrCode } from 'naive-ui'
 import type { UploadFileInfo } from 'naive-ui'
-import { SettingsOutline, DocumentOutline, MenuOutline, QrCodeOutline, ConstructOutline, LibraryOutline } from '@vicons/ionicons5'
+import { SettingsOutline, DocumentOutline, MenuOutline, QrCodeOutline, ConstructOutline, LibraryOutline, DownloadOutline, CloudUploadOutline } from '@vicons/ionicons5'
 import { useChatStore, type Message } from '@/stores/chat'
 import { useConfigStore, fileConfig } from '@/stores/config'
 import { useProfileStore } from '@/stores/profiles'
@@ -309,6 +328,7 @@ import mSvg from '@/components/mSvg.vue'
 // import MessageList from '@/components/VirtualMessageList.vue'
 import MessageList from '@/components/MessageList.vue'
 import ChatInput from '@/components/ChatInput.vue'
+import ToolApprovalDialog from '@/components/ToolApprovalDialog.vue'
 
 import { useModel } from '@/composables/useModel'
 import { useFileUpload } from '@/composables/useFileUpload'
@@ -355,6 +375,22 @@ function checkMobile() {
 
 const selected = ref(localStorage.getItem('thinking') === 'true')
 
+// 工具审批
+const approvalCallId = ref('')
+const approvalToolName = ref('')
+const approvalArgsPreview = ref('')
+const approvalResolve = ref<((approved: boolean) => void) | null>(null)
+const sessionWhitelistTools = ref<Set<string>>(new Set())
+const approvalDialogRef = ref<InstanceType<typeof ToolApprovalDialog> | null>(null)
+
+function onApprovalResolved(callId: string, approved: boolean, sessionWhitelist: boolean) {
+  if (approved && sessionWhitelist) {
+    sessionWhitelistTools.value.add(approvalToolName.value)
+  }
+  approvalResolve.value?.(approved)
+  approvalResolve.value = null
+}
+
 // 语音功能
 const { autoRead, speak } = useTTS()
 autoRead.value = localStorage.getItem('autoRead') === 'true'
@@ -376,8 +412,22 @@ const { uploadFileList, uploadedFiles, isDragging, onDragEnter, onDragOver,
     onDragLeave, onDrop, onBeforeUpload, handleFileUpload, removeFile, clearFiles
 } = useFileUpload()
 const { currentInput, isLoading, streamingContent, regeneratingMsg,
-    sendMessage, regenerateResponse, regenerateFromCurrentHistory, stopGeneration
+    sendMessage, regenerateResponse, regenerateFromCurrentHistory, stopGeneration,
+    setApprovalHandler,
 } = useChat()
+
+  // 工具审批处理器（必须在 useChat 之后设置）
+  setApprovalHandler(async (callId, toolName, argsPreview) => {
+    if (sessionWhitelistTools.value.has(toolName)) return true
+    return new Promise((resolve) => {
+      approvalCallId.value = callId
+      approvalToolName.value = toolName
+      approvalArgsPreview.value = argsPreview
+      approvalResolve.value = resolve
+      nextTick(() => approvalDialogRef.value?.show())
+    })
+  })
+
 const { showEditModal, editContent, copySvgName, copyContent,
   startEditMessage, saveEdit, renamingChatId, renameText, startRename, confirmRename
 } = useMessageActions()
@@ -518,6 +568,53 @@ function setQRCodeUrl() {
 const createChat = async () => {
   const newChatId = await chatStore.addChat()
   openChat(newChatId)
+}
+
+// 导出对话
+async function exportChat(chatId: string, title: string) {
+  const url = `/api/chats/${chatId}/export?format=md`
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `${title || '对话'}.md`
+  a.click()
+}
+
+// 对话分叉
+async function handleBranch(msg: any) {
+  try {
+    const resp = await fetch(`/api/chats/${chatStore.activeChatId}/branch?message_id=${msg.id}`, { method: 'POST' })
+    if (!resp.ok) throw new Error('分叉失败')
+    const data = await resp.json()
+    await chatStore.loadChats()
+    openChat(data.chat_id)
+  } catch (e: any) {
+    console.error('分叉失败:', e.message)
+  }
+}
+
+// 导入对话
+async function importChat() {
+  const input = document.createElement('input')
+  input.type = 'file'
+  input.accept = '.json'
+  input.onchange = async () => {
+    const file = input.files?.[0]
+    if (!file) return
+    try {
+      const text = await file.text()
+      const data = JSON.parse(text)
+      const resp = await fetch('/api/chats/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ data }),
+      })
+      if (!resp.ok) throw new Error('导入失败')
+      await chatStore.loadChats()
+    } catch (e: any) {
+      console.error('导入失败:', e.message)
+    }
+  }
+  input.click()
 }
 
 const openKnowledge = async () => {

@@ -87,6 +87,15 @@ class AppConfig:
         self.voice_tts_base_url = vc.get("tts_base_url", "")
         self.voice_tts_api_key = vc.get("tts_api_key", "")
 
+        # 工具审批配置
+        ta = self.raw_config.get("tool_approval", {}) or {}
+        self.tool_approval_enabled = ta.get("enabled", True)
+        self.tool_approval_sensitive = set(ta.get("sensitive_tools", [
+            "system_write_file", "system_patch_file",
+            "system_run_command", "system_delegate_task",
+        ]))
+        self.tool_approval_session_whitelist = ta.get("session_whitelist", True)
+
     def _resolve_path(self, path_str: str, base: Path) -> Path:
         """将路径字符串解析为 Path 对象，支持绝对路径和相对路径"""
         p = Path(path_str)

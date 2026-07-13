@@ -117,3 +117,109 @@ async def delete_message(chat_id: str, message_id: int, cascade: bool = False):
     await db.commit()
     await db.close()
     return {"status": "ok"}
+
+
+# ──────────── 导入 / 导出 ────────────
+from fastapi.responses import PlainTextResponse, Response
+from backend.services.chat_export import get_chat_data, export_as_markdown, export_as_json, export_as_zip, import_from_json
+
+
+@router.get("/{chat_id}/export")
+async def export_chat(chat_id: str, format: str = "md"):
+    data = await get_chat_data(chat_id)
+    if not data:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    if format == "md":
+        content = export_as_markdown(data)
+        return PlainTextResponse(content, media_type="text/markdown",
+                                 headers={"Content-Disposition": f"attachment; filename=chat_{chat_id}.md"})
+    elif format == "json":
+        content = export_as_json(data)
+        return PlainTextResponse(content, media_type="application/json",
+                                 headers={"Content-Disposition": f"attachment; filename=chat_{chat_id}.json"})
+    elif format == "zip":
+        content = export_as_zip(data)
+        return Response(content, media_type="application/zip",
+                       headers={"Content-Disposition": f"attachment; filename=chat_{chat_id}.zip"})
+    else:
+        raise HTTPException(status_code=400, detail=f"Unsupported format: {format}")
+
+
+class ImportRequest(BaseModel):
+    data: Optional[dict] = None
+
+
+@router.post("/import")
+async def import_chat(body: ImportRequest):
+    if not body.data:
+        raise HTTPException(status_code=400, detail="缺少导入数据")
+    try:
+        chat_id = await import_from_json(body.data)
+        return {"status": "ok", "chat_id": chat_id}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# ──────────── 对话分叉 ────────────
+import uuid
+from datetime import datetime
+
+
+@router.post("/{chat_id}/branch")
+async def branch_chat(chat_id: str, message_id: int):
+    """从指定消息处创建对话分叉。复制该消息及之前的所有消息到新对话。"""
+    db = await get_db()
+    try:
+        # 获取父对话信息
+        cursor = await db.execute("SELECT title FROM chats WHERE id = ?", (chat_id,))
+        parent = await cursor.fetchone()
+        if not parent:
+            raise HTTPException(status_code=404, detail="Chat not found")
+
+        # 复制消息（截至 message_id）
+        cursor = await db.execute(
+            "SELECT role, content, file_ref FROM messages WHERE chat_id = ? AND id <= ? ORDER BY id",
+            (chat_id, message_id),
+        )
+        msgs = await cursor.fetchall()
+        if not msgs:
+            raise HTTPException(status_code=400, detail="No messages to branch from")
+
+        # 创建新对话
+        new_id = str(uuid.uuid4())
+        new_title = f"{parent[0]} (分叉)"
+        now = datetime.now().isoformat()
+        await db.execute(
+            "INSERT INTO chats (id, title, created_at, parent_chat_id, branched_at_message_id) VALUES (?, ?, ?, ?, ?)",
+            (new_id, new_title, now, chat_id, message_id),
+        )
+
+        # 复制消息
+        for msg in msgs:
+            await db.execute(
+                "INSERT INTO messages (chat_id, role, content, file_ref) VALUES (?, ?, ?, ?)",
+                (new_id, msg[0], msg[1], msg[2]),
+            )
+
+        await db.commit()
+        return {"status": "ok", "chat_id": new_id, "title": new_title}
+    finally:
+        await db.close()
+
+
+@router.get("/{chat_id}/branches")
+async def list_branches(chat_id: str):
+    """获取某对话的所有分叉子对话。"""
+    db = await get_db()
+    try:
+        cursor = await db.execute(
+            "SELECT id, title, parent_chat_id, branched_at_message_id, created_at FROM chats WHERE parent_chat_id = ? ORDER BY created_at",
+            (chat_id,),
+        )
+        rows = await cursor.fetchall()
+        return [
+            {"id": r[0], "title": r[1], "parent_chat_id": r[2], "branched_at_message_id": r[3], "created_at": r[4]}
+            for r in rows
+        ]
+    finally:
+        await db.close()

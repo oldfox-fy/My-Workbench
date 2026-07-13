@@ -52,3 +52,15 @@ voice:
   stt_api_key: ""
   tts_base_url: ""
   tts_api_key: ""
+
+# 工具审批配置（可选，默认启用）
+tool_approval:
+  enabled: true
+  # 需要用户审批的敏感工具列表
+  sensitive_tools:
+    - system_write_file
+    - system_patch_file
+    - system_run_command
+    - system_delegate_task
+  # 是否支持"此会话始终允许"（同类工具一次批准后不再询问）
+  session_whitelist: true

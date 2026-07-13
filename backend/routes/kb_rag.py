@@ -143,6 +143,31 @@ async def semantic_search(req: SearchIn):
     return {"query": req.query, "hits": hits}
 
 
+@router.get("/keyword-search")
+async def keyword_search(q: str = "", limit: int = 20):
+    """FTS5 关键词全文搜索。"""
+    if not q or not q.strip():
+        raise HTTPException(400, "检索内容不能为空。")
+    limit = max(1, min(limit, 50))
+    db = await get_db()
+    try:
+        cursor = await db.execute(
+            """SELECT kc.id, kc.file_path, kc.heading_path,
+                      snippet(kb_chunks_fts, 2, '<mark>', '</mark>', '...', 40) as snippet
+               FROM kb_chunks_fts JOIN kb_chunks kc ON kc.id = kb_chunks_fts.rowid
+               WHERE kb_chunks_fts MATCH ? ORDER BY rank LIMIT ?""",
+            (q.strip(), limit),
+        )
+        rows = await cursor.fetchall()
+        hits = [
+            {"id": r[0], "file_path": r[1], "heading_path": r[2], "snippet": r[3]}
+            for r in rows
+        ]
+        return {"query": q, "hits": hits, "method": "keyword"}
+    finally:
+        await db.close()
+
+
 # ──────────────────────── 双链与图谱（M3 / M4） ────────────────────────
 
 @router.get("/graph")

@@ -5,6 +5,8 @@ from backend.db.tool_calls import (
     get_tool_calls_by_message,
     delete_tool_calls_by_message,
 )
+from pydantic import BaseModel
+from backend.services.llm_service import set_approval_result
 
 router = APIRouter(prefix="/api/tool-calls", tags=["tool-calls"])
 
@@ -32,3 +34,17 @@ async def delete_message_tool_calls(message_id: int):
         "message": "Tool calls deleted successfully",
         "deleted_count": deleted_count
     }
+
+
+# ──────────── 工具审批 ────────────
+
+class ToolApprovalRequest(BaseModel):
+    call_id: str
+    approved: bool
+
+
+@router.post("/approval")
+async def approve_tool(body: ToolApprovalRequest):
+    """前端发送工具审批结果，唤醒等待中的工具执行协程。"""
+    set_approval_result(body.call_id, body.approved)
+    return {"status": "ok"}

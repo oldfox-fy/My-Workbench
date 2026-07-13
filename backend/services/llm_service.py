@@ -8,6 +8,18 @@ from openai import AsyncOpenAI, APIError
 from typing import List, Dict, AsyncGenerator, Optional
 from backend.services.tools import get_all_tools, execute_tool
 from backend.db.tool_calls import create_tool_call, update_tool_call, update_tool_call_arguments
+from config_loader import config as app_config
+
+# 工具审批：模块级状态（同一进程内共享）
+_pending_approvals: Dict[str, asyncio.Event] = {}
+_approval_results: Dict[str, bool] = {}
+
+def set_approval_result(call_id: str, approved: bool):
+    """由 POST /api/tool-approval 端点调用，设置审批结果并唤醒等待的协程。"""
+    _approval_results[call_id] = approved
+    event = _pending_approvals.pop(call_id, None)
+    if event:
+        event.set()
 
 
 # 可重试的 HTTP 状态码（限流 + 服务端临时故障）
@@ -516,13 +528,69 @@ class LLMService:
                         _execute_one_tool(last_active_idx, last_tc, preview_snapshot.get(last_active_idx, {}))
                     )
 
-            # 对未在流式阶段启动的工具，现在启动
+            # ---------- 工具审批流 ----------
+            sensitive_set = set(getattr(app_config, 'tool_approval_sensitive', set()))
+            approval_enabled = getattr(app_config, 'tool_approval_enabled', True)
+
+            # 收集需要审批的敏感工具
+            approval_needed = []
+            for idx, tc in valid_calls.items():
+                if idx in pending_executions:
+                    continue  # 已在流式阶段启动，不中断
+                func_name = tc["function"]["name"]
+                if approval_enabled and func_name in sensitive_set:
+                    local_call_id = preview_snapshot.get(idx, {}).get('call_id', '')
+                    raw_args = tc["function"]["arguments"]
+                    args_preview = raw_args[:120] if raw_args else "{}"
+                    approval_needed.append((idx, local_call_id, func_name, args_preview))
+
+            # 发出审批请求，等待前端响应
+            rejected_call_ids = set()
+            if approval_needed and request:
+                for idx, local_call_id, func_name, args_preview in approval_needed:
+                    event = asyncio.Event()
+                    _pending_approvals[local_call_id] = event
+                    yield f"<!--tool_approval:{local_call_id}:{func_name}:{args_preview}-->"
+
+                # 等待所有审批结果（最长 60s 超时，超时自动拒绝）
+                for idx, local_call_id, func_name, args_preview in approval_needed:
+                    event = _pending_approvals.get(local_call_id)
+                    if event:
+                        try:
+                            await asyncio.wait_for(event.wait(), timeout=60.0)
+                        except asyncio.TimeoutError:
+                            _approval_results[local_call_id] = False
+                    if not _approval_results.get(local_call_id, False):
+                        rejected_call_ids.add(local_call_id)
+                        yield f"<!--tool_status:{local_call_id}:rejected-->"
+
+            # 清理审批状态
+            for local_call_id in [a[1] for a in approval_needed]:
+                _pending_approvals.pop(local_call_id, None)
+                _approval_results.pop(local_call_id, None)
+
+            # 对未在流式阶段启动的工具，现在启动（跳过被拒绝的）
             fresh_coros = []
             fresh_indices = []
             for idx, tc in valid_calls.items():
                 if idx not in pending_executions:
-                    fresh_indices.append(idx)
-                    fresh_coros.append(_execute_one_tool(idx, tc, preview_snapshot.get(idx, {})))
+                    local_call_id = preview_snapshot.get(idx, {}).get('call_id', '')
+                    if local_call_id in rejected_call_ids:
+                        # 被拒绝的工具：构造一个跳过结果
+                        async def _rejected(idx=idx, tc=tc, pi=preview_snapshot.get(idx, {})):
+                            return {
+                                "idx": idx,
+                                "local_call_id": pi.get('call_id', ''),
+                                "real_tool_call_id": tc.get("id"),
+                                "func_name": tc["function"]["name"],
+                                "failed": True,
+                                "tool_content": "用户拒绝了此工具调用。",
+                                "parse_error": None,
+                            }
+                        fresh_coros.append(_rejected())
+                    else:
+                        fresh_indices.append(idx)
+                        fresh_coros.append(_execute_one_tool(idx, tc, preview_snapshot.get(idx, {})))
 
             # 等待后台任务 + 执行新工具，合并所有结果
             exec_results = [await task for task in pending_executions.values()]

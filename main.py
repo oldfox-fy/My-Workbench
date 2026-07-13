@@ -150,6 +150,10 @@ app = FastAPI(lifespan=lifespan)
 # 注册API路由（必须在mount静态文件之前）
 register_all_routers(app)
 
+# WebSocket 聊天端点（双向通信，即时取消）
+from backend.routes.ws_chat import ws_chat_endpoint
+app.websocket("/ws/chat")(ws_chat_endpoint)
+
 @app.get("/api/wait-ready")
 async def wait_ready(request: Request):
     """检测后台基础设施初始化是否完毕（或失败）"""

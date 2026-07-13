@@ -31,22 +31,47 @@ export function useChat() {
   }
 
   const onStreamEnd = ref<((fullText: string) => void) | null>(null)
+  // 工具审批回调：检测到审批标记时调用
+  let onApprovalNeeded: ((callId: string, toolName: string, argsPreview: string) => Promise<boolean>) | null = null
+  function setApprovalHandler(handler: (callId: string, toolName: string, argsPreview: string) => Promise<boolean>) {
+    onApprovalNeeded = handler
+  }
 
   async function readStream(response: Response): Promise<string> {
     if (!response.ok || !response.body) throw new Error('网络响应失败')
-    
+
     const reader = response.body.getReader()
     const decoder = new TextDecoder()
     let fullText = ''
+    const approvalRegex = /<!--tool_approval:([^:]+):([^:]+):([\s\S]*?)-->/g
 
     while (true) {
       const { done, value } = await reader.read()
       if (done) break
-      
+
       fullText += decoder.decode(value, { stream: true })
+
+      // 检测工具审批标记，弹出审批对话框
+      if (onApprovalNeeded) {
+        let m
+        while ((m = approvalRegex.exec(fullText)) !== null) {
+          const callId = m[1]; const toolName = m[2]; const argsPreview = m[3]
+          try {
+            const approved = await onApprovalNeeded(callId, toolName, argsPreview)
+            if (!approved) {
+              fullText = fullText.replace(m[0], `\n⛔ 工具 \`${toolName}\` 已被用户拒绝\n`)
+            } else {
+              fullText = fullText.replace(m[0], '')
+            }
+          } catch {
+            fullText = fullText.replace(m[0], '')
+          }
+        }
+      }
+
       streamingContent.value = fullText
     }
-    
+
     return fullText
   }
 
@@ -362,15 +387,132 @@ export function useChat() {
     }
   }
 
+  // ── WebSocket 聊天（双向通信，即时取消） ──
+  let ws: WebSocket | null = null
+  let wsCancelFlag = false
+
+  function ensureWs(): WebSocket {
+    if (!ws || ws.readyState >= WebSocket.CLOSING) {
+      const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
+      ws = new WebSocket(`${protocol}//${location.host}/ws/chat`)
+    }
+    return ws
+  }
+
+  async function sendMessageWs(
+    uploadedFiles: UploadedFile[],
+    scrollToBottom: () => void
+  ) {
+    if (!currentInput.value.trim() || isLoading.value || !chatStore.activeChatId) return
+
+    const currentModel = configStore.activeModel
+    if (!currentModel) return
+
+    isLoading.value = true
+    wsCancelFlag = false
+    ;(window as any).__stopGeneration = () => { wsCancelFlag = true; ensureWs().send(JSON.stringify({ type: 'cancel' })) }
+
+    // 添加用户消息
+    chatStore.addMessageToActive({
+      role: 'user',
+      content: currentInput.value,
+      file_ref: uploadedFiles.length ? uploadedFiles.map(f => ({ filename: f.filename, type: f.type })) : undefined,
+    })
+    currentInput.value = ''
+    await chatStore.loadMessages(chatStore.activeChatId)
+    scrollToBottom()
+
+    // 准备消息列表
+    const messages = chatStore.currentChatMessages.map(m => ({ role: m.role, content: m.content }))
+    streamingContent.value = ''
+
+    const socket = ensureWs()
+    const sendData = {
+      type: 'chat',
+      messages,
+      enable_tools: true,
+      profile_id: profileStore.activeProfileId || undefined,
+      llm_config: currentModel ? {
+        type: currentModel.type,
+        model_name: currentModel.modelName,
+        base_url: currentModel.baseUrl,
+        api_key: currentModel.apiKey,
+      } : undefined,
+    }
+
+    // 设置消息处理
+    socket.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data)
+        switch (data.type) {
+          case 'chunk':
+            streamingContent.value += data.content
+            break
+          case 'tool_preview':
+          case 'tool_status':
+          case 'tool_block':
+            // 工具调用在流式内容中显示
+            break
+          case 'tool_approval':
+            // 工具审批由 ChatWindow 的 approvalDialog 处理
+            if (onApprovalNeeded) {
+              // 发送到 WS 审批通道
+              onApprovalNeeded(data.call_id, data.tool_name, data.args_preview).then(approved => {
+                socket.send(JSON.stringify({ type: 'approval_reply', call_id: data.call_id, approved }))
+              })
+            }
+            break
+          case 'done':
+            isLoading.value = false
+            if (data.usage) {
+              streamingContent.value += `\n<!--token_usage:${JSON.stringify(data.usage)}-->`
+            }
+            // 保存 AI 回复
+            const finalText = streamingContent.value.replace(/<!--[\s\S]*?-->/g, '').trim()
+            if (finalText) {
+              chatStore.addMessageToActive({ role: 'assistant', content: finalText })
+            }
+            chatStore.loadMessages(chatStore.activeChatId)
+            break
+          case 'error':
+            streamingContent.value += `\n❌ ${data.message}\n`
+            isLoading.value = false
+            break
+        }
+      } catch { /* ignore parse errors */ }
+    }
+
+    socket.onerror = () => {
+      if (!wsCancelFlag) {
+        streamingContent.value += '\n❌ WebSocket 连接错误\n'
+      }
+      isLoading.value = false
+    }
+
+    socket.send(JSON.stringify(sendData))
+  }
+
+  function stopGenerationWs() {
+    wsCancelFlag = true
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'cancel' }))
+    }
+    isLoading.value = false
+  }
+
   return {
     currentInput,
     isLoading,
     streamingContent,
     regeneratingMsg,
     onStreamEnd,
+    setApprovalHandler,
     sendMessage,
+    sendMessageWs,
     regenerateResponse,
     regenerateFromCurrentHistory,
     stopGeneration,
+    stopGenerationWs,
+    ensureWs,
   }
 }

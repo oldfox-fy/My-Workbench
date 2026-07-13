@@ -102,6 +102,36 @@ async def init_db():
         "CREATE INDEX IF NOT EXISTS idx_kb_chunks_file ON kb_chunks(file_path)"
     )
 
+    # FTS5 全文搜索（知识库关键词检索）
+    await db.execute("""
+        CREATE VIRTUAL TABLE IF NOT EXISTS kb_chunks_fts USING fts5(
+            content, heading_path, content='kb_chunks', content_rowid='id'
+        )
+    """)
+    # 触发器：INSERT 时自动同步 FTS 索引
+    await db.execute("""
+        CREATE TRIGGER IF NOT EXISTS kb_chunks_fts_ai AFTER INSERT ON kb_chunks BEGIN
+            INSERT INTO kb_chunks_fts(rowid, content, heading_path)
+            VALUES (new.id, new.content, new.heading_path);
+        END
+    """)
+    # 触发器：DELETE 时自动移除 FTS 条目
+    await db.execute("""
+        CREATE TRIGGER IF NOT EXISTS kb_chunks_fts_ad AFTER DELETE ON kb_chunks BEGIN
+            INSERT INTO kb_chunks_fts(kb_chunks_fts, rowid, content, heading_path)
+            VALUES ('delete', old.id, old.content, old.heading_path);
+        END
+    """)
+    # 触发器：UPDATE 时自动同步
+    await db.execute("""
+        CREATE TRIGGER IF NOT EXISTS kb_chunks_fts_au AFTER UPDATE ON kb_chunks BEGIN
+            INSERT INTO kb_chunks_fts(kb_chunks_fts, rowid, content, heading_path)
+            VALUES ('delete', old.id, old.content, old.heading_path);
+            INSERT INTO kb_chunks_fts(rowid, content, heading_path)
+            VALUES (new.id, new.content, new.heading_path);
+        END
+    """)
+
     # 知识库 RAG：索引状态（增量索引依据 file_hash / mtime）
     await db.execute("""
         CREATE TABLE IF NOT EXISTS kb_index_meta (
@@ -148,6 +178,9 @@ async def init_db():
 
     # ---- 轻量迁移：为旧版数据库补齐新增列 ----
     await _ensure_column(db, "profiles", "skills", "TEXT NOT NULL DEFAULT '[]'")
+    # 对话分叉
+    await _ensure_column(db, "chats", "parent_chat_id", "TEXT DEFAULT NULL")
+    await _ensure_column(db, "chats", "branched_at_message_id", "INTEGER DEFAULT NULL")
 
     await db.commit()
     await db.close()

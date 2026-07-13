@@ -195,11 +195,14 @@ tools:
   - name: system_kb_search
     title: 检索知识库
     description: >
-      对「我的知识库」做语义检索（向量检索），返回与问题最相关的笔记片段
-      （含来源文件路径、标题路径、内容）。当用户的问题可能与其个人笔记相关时，
-      应优先使用本工具快速定位相关内容，再按需用 system_kb_read 读取完整笔记。
-      相比 system_kb_list 按目录名猜测，本工具按语义命中，更精准。
-      若知识库尚未建立索引，会返回提示，请引导用户在「知识库设置」中重建索引。
+      对「我的知识库」做检索。支持三种模式：
+      - semantic：语义向量检索（默认），按意思相近度排序
+      - keyword：关键词全文检索，精确匹配文字内容
+      - hybrid：混合检索，语义+关键词合并去重，按语义分数排序
+
+      返回与问题最相关的笔记片段（含来源文件路径、标题路径、内容）。
+      当用户的问题可能与其个人笔记相关时应优先使用本工具。
+      若知识库尚未建立索引，会返回提示。
     parameters:
       type: object
       properties:
@@ -209,6 +212,10 @@ tools:
         top_k:
           type: integer
           description: 返回最相关的片段数量，默认 5，最大 20。
+        method:
+          type: string
+          enum: ["semantic", "keyword", "hybrid"]
+          description: 检索方式。semantic=语义向量（默认），keyword=关键词全文，hybrid=混合。
       required: ["query"]
     module: backend.system_tools.kb_search
     function_name: kb_search
