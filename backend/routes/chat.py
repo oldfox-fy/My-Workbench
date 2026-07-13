@@ -216,46 +216,67 @@ async def chat(
 
         # 如果携带了 profile_id，获取角色信息
         if request.enable_tools and request.profile_id is not None:
-            db = await get_db()
-            cursor = await db.execute(
-                "SELECT tools, profile_prompt, temperature, top_p, top_k, frequency_penalty, presence_penalty, skills FROM profiles WHERE id = ?",
-                (request.profile_id,)
-            )
-            row = await cursor.fetchone()
-            await db.close()
-
-            if row:
-                allowed_tools = json.loads(row[0] or "[]")
-                profile_prompt = row[1] or ""
-                params = {
-                    "temperature": row[2] if row[2] is not None else 1.0,
-                    "top_p": row[3] if row[3] is not None else 1.0,
-                    "top_k": row[4] if row[4] is not None else 40,
-                    "frequency_penalty": row[5] if row[5] is not None else 0.0,
-                    "presence_penalty": row[6] if row[6] is not None else 0.0,
-                }
-                profile_skills = json.loads(row[7] or "[]") if len(row) > 7 and row[7] else []
-
-                # 展开角色勾选的技能：prompt 技能 → 注入指令 + 追加工具白名单；code 技能 → 可调用 function
-                allowed_code_tool_names = []
-                if skill_registry and profile_skills:
-                    expanded = skill_registry.expand_for_profile(profile_skills)
-                    if expanded["instructions"]:
-                        profile_skill_prompt = "\n\n".join(expanded["instructions"])
-                    allowed_tools = list(set(allowed_tools) | expanded["allowed_tools"])
-                    allowed_code_tool_names = expanded["code_tool_names"]
-
-                # 筛选工具
-                mcp_tools = await get_mcp_tools(mcp_manager) if request.enable_tools else []
-                enable_tools = [t for t in local_tools if t["function"]["name"] in disabled_tools]
-                enable_tools.extend(mcp_tools)
-                use_tools = [t for t in enable_tools if t["function"]["name"] in allowed_tools]
-                tools.extend(use_tools)
-
-                # 追加角色可用的 code 型技能定义
-                if skill_registry and allowed_code_tool_names:
+            # ── 全能助手 (profile_id=0)：全部工具 + 全部 MCP + 全部技能，不过滤 ──
+            if request.profile_id == 0:
+                # 所有本地工具（包含 disabled 白名单中的高级工具）
+                tools = local_tools.copy()
+                # 所有 MCP 工具
+                mcp_tools = await get_mcp_tools(mcp_manager)
+                for t in mcp_tools:
+                    if t["function"]["name"] not in {x["function"]["name"] for x in tools}:
+                        tools.append(t)
+                # 所有 code 型技能定义
+                if skill_registry:
                     code_defs = skill_registry.code_tool_definitions()
-                    tools.extend([d for d in code_defs if d["function"]["name"] in allowed_code_tool_names])
+                    for d in code_defs:
+                        if d["function"]["name"] not in {x["function"]["name"] for x in tools}:
+                            tools.append(d)
+                # 注入所有 prompt 型技能指令
+                if skill_registry:
+                    expanded = skill_registry.expand_for_all_prompt_skills()
+                    if expanded.get("instructions"):
+                        profile_skill_prompt = "\n\n".join(expanded["instructions"])
+            else:
+                db = await get_db()
+                cursor = await db.execute(
+                    "SELECT tools, profile_prompt, temperature, top_p, top_k, frequency_penalty, presence_penalty, skills FROM profiles WHERE id = ?",
+                    (request.profile_id,)
+                )
+                row = await cursor.fetchone()
+                await db.close()
+
+                if row:
+                    allowed_tools = json.loads(row[0] or "[]")
+                    profile_prompt = row[1] or ""
+                    params = {
+                        "temperature": row[2] if row[2] is not None else 1.0,
+                        "top_p": row[3] if row[3] is not None else 1.0,
+                        "top_k": row[4] if row[4] is not None else 40,
+                        "frequency_penalty": row[5] if row[5] is not None else 0.0,
+                        "presence_penalty": row[6] if row[6] is not None else 0.0,
+                    }
+                    profile_skills = json.loads(row[7] or "[]") if len(row) > 7 and row[7] else []
+
+                    # 展开角色勾选的技能：prompt 技能 → 注入指令 + 追加工具白名单；code 技能 → 可调用 function
+                    allowed_code_tool_names = []
+                    if skill_registry and profile_skills:
+                        expanded = skill_registry.expand_for_profile(profile_skills)
+                        if expanded["instructions"]:
+                            profile_skill_prompt = "\n\n".join(expanded["instructions"])
+                        allowed_tools = list(set(allowed_tools) | expanded["allowed_tools"])
+                        allowed_code_tool_names = expanded["code_tool_names"]
+
+                    # 筛选工具
+                    mcp_tools = await get_mcp_tools(mcp_manager) if request.enable_tools else []
+                    enable_tools = [t for t in local_tools if t["function"]["name"] in disabled_tools]
+                    enable_tools.extend(mcp_tools)
+                    use_tools = [t for t in enable_tools if t["function"]["name"] in allowed_tools]
+                    tools.extend(use_tools)
+
+                    # 追加角色可用的 code 型技能定义
+                    if skill_registry and allowed_code_tool_names:
+                        code_defs = skill_registry.code_tool_definitions()
+                        tools.extend([d for d in code_defs if d["function"]["name"] in allowed_code_tool_names])
 
         # 工具列表按名称排序，确保每次请求的工具定义顺序一致（Prompt Cache 友好）
         tools.sort(key=lambda t: t.get("function", {}).get("name", ""))
@@ -399,13 +420,19 @@ async def get_tools(mcp_manager=Depends(get_mcp_manager)):
     return {"tools": enable_tools}
 
 @router.get("/tools-info")
-async def get_tools_info(mcp_manager=Depends(get_mcp_manager)):
-    all_tools = await get_all_tools(mcp_manager)
+async def get_tools_info(
+    mcp_manager=Depends(get_mcp_manager),
+    skill_registry=Depends(get_skill_registry),
+):
+    all_tools = await get_all_tools(mcp_manager, skill_registry)
     tool_json = {}
     for tool in all_tools:
+        meta = tool.get("function", {}).get("meta", {})
         tool_json[tool["function"]["name"]] = {
             'title': tool["function"]["title"],
             'description': tool["function"]["description"],
+            'is_skill': bool(meta.get("skill", False)),
+            'isolated': bool(meta.get("isolated", False)),
         }
     return tool_json
 

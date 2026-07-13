@@ -1,7 +1,8 @@
 import { ref } from 'vue'
 import { useChatStore, type Message } from '@/stores/chat'
 import { useConfigStore } from '@/stores/config'
-import { useProfileStore } from '@/stores/profiles'
+import { useProfileStore, VIRTUAL_PROFILE_ID } from '@/stores/profiles'
+import { useSkillStore } from '@/stores/skills'
 import { useMessage } from 'naive-ui'
 import { cleanMessages } from '@/utils/message'
 import type { UploadedFile } from '@/composables/useFileUpload'
@@ -22,7 +23,27 @@ export function useChat() {
   const chatStore = useChatStore()
   const configStore = useConfigStore()
   const profileStore = useProfileStore()
+  const skillStore = useSkillStore()
   const message = useMessage()
+
+  /** 计算实际发送的 enable_tools 和 profile_id，考虑用户身份 */
+  function getProfileSendParams() {
+    const isAdmin = skillStore.isAdmin()
+    let enableTools = chatStore.enableProfile
+    let profileId: number | null = chatStore.enableProfile ? profileStore.activeProfileId : null
+
+    // 普通用户必须开启角色模式，且不能使用全能助手
+    if (!isAdmin) {
+      enableTools = true
+      if (profileId === VIRTUAL_PROFILE_ID || profileId == null) {
+        // 回退到第一个非虚拟角色
+        const firstReal = profileStore.profiles.find(p => p.id !== VIRTUAL_PROFILE_ID)
+        profileId = firstReal?.id ?? null
+      }
+    }
+
+    return { enable_tools: enableTools, profile_id: profileId }
+  }
 
   const currentInput = ref('')
   const isLoading = ref(false)
@@ -160,11 +181,12 @@ export function useChat() {
       const allMessages = chatStore.getActiveMessages()
       const apiMessages = await cleanMessages(allMessages)
 
+      const sendParams = getProfileSendParams()
       const requestBody: any = {
         messages: apiMessages,
-        enable_tools: chatStore.enableProfile,
+        enable_tools: sendParams.enable_tools,
         llm_config: buildLlmConfig(),
-        profile_id: chatStore.enableProfile ? profileStore.activeProfileId : null,
+        profile_id: sendParams.profile_id,
         message_id: assistantMessageId,
         auto_switch: configStore.autoSwitch,  // 智能切换开关
       }
@@ -257,11 +279,12 @@ export function useChat() {
     const messageId = assistantMsg.id
 
     try {
+      const sendParams = getProfileSendParams()
       const requestBody: any = {
         messages: await cleanMessages(chatStore.getActiveMessages()),
-        enable_tools: chatStore.enableProfile,
+        enable_tools: sendParams.enable_tools,
         llm_config: buildLlmConfig(),
-        profile_id: chatStore.enableProfile ? profileStore.activeProfileId : null,
+        profile_id: sendParams.profile_id,
         message_id: messageId,
         auto_switch: configStore.autoSwitch,
       }
@@ -339,11 +362,12 @@ export function useChat() {
     streamingContent.value = ''
 
     try {
+      const sendParams3 = getProfileSendParams()
       const requestBody: any = {
         messages: await cleanMessages(history),
-        enable_tools: chatStore.enableProfile,
+        enable_tools: sendParams3.enable_tools,
         llm_config: buildLlmConfig(),
-        profile_id: chatStore.enableProfile ? profileStore.activeProfileId : null,
+        profile_id: sendParams3.profile_id,
         message_id: messageId,
         auto_switch: configStore.autoSwitch,
       }
@@ -444,11 +468,12 @@ export function useChat() {
     streamingContent.value = ''
 
     const socket = ensureWs()
+    const wsParams = getProfileSendParams()
     const sendData = {
       type: 'chat',
       messages,
-      enable_tools: true,
-      profile_id: profileStore.activeProfileId || undefined,
+      enable_tools: wsParams.enable_tools,
+      profile_id: wsParams.profile_id || undefined,
       llm_config: currentModel ? {
         type: currentModel.type,
         model_name: currentModel.modelName,

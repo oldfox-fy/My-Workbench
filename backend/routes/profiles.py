@@ -4,6 +4,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from typing import List, Optional
 from backend.database import get_db
+from backend.db.user_settings import get_user_role
 
 router = APIRouter(prefix="/api/profiles", tags=["profiles"])
 
@@ -63,6 +64,8 @@ async def create_profile(profile: ProfileCreate):
 # 更新角色
 @router.put("/{profile_id}", response_model=ProfileResponse)
 async def update_profile(profile_id: int, profile: ProfileCreate):
+    if profile_id == 0:
+        raise HTTPException(status_code=400, detail="内置角色不可编辑")
     db = await get_db()
     tools_json = json.dumps(profile.tools)
     skills_json = json.dumps(profile.skills)
@@ -118,10 +121,29 @@ async def list_profiles():
             "presence_penalty": row[8] if row[8] is not None else 0.0,
             "skills": __parse_tools(row[9]) if len(row) > 9 else []
         })
+
+    # 管理员插入内置虚拟角色"全能助手"（id=0，全放行）
+    role = await get_user_role()
+    if role == "admin":
+        results.insert(0, {
+            "id": 0,
+            "name": "全能助手",
+            "tools": [],
+            "profile_prompt": "",
+            "temperature": 1.0,
+            "top_p": 1.0,
+            "top_k": 40,
+            "frequency_penalty": 0.0,
+            "presence_penalty": 0.0,
+            "skills": [],
+        })
+
     return results
 
 @router.delete("/{profile_id}")
 async def delete_profile(profile_id: int):
+    if profile_id == 0:
+        raise HTTPException(status_code=400, detail="内置角色不可删除")
     db = await get_db()
     await db.execute("DELETE FROM profiles WHERE id = ?", (profile_id,))
     await db.commit()

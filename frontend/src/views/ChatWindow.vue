@@ -332,7 +332,8 @@ import type { UploadFileInfo } from 'naive-ui'
 import { SettingsOutline, DocumentOutline, MenuOutline, QrCodeOutline, ConstructOutline, LibraryOutline, DownloadOutline, CloudUploadOutline, BarChartOutline, CloudDownloadOutline } from '@vicons/ionicons5'
 import { useChatStore, type Message } from '@/stores/chat'
 import { useConfigStore, fileConfig } from '@/stores/config'
-import { useProfileStore } from '@/stores/profiles'
+import { useProfileStore, VIRTUAL_PROFILE_ID } from '@/stores/profiles'
+import { useSkillStore } from '@/stores/skills'
 import { useToolStore } from '@/stores/tools'
 import { useKnowledgeStore } from '@/stores/knowledge'
 import SettingsDrawer from '@/components/SettingsDrawer.vue'
@@ -589,13 +590,34 @@ function openUpdateUrl() {
   window.open(updateUrl.value, '_blank')
 }
 
+const skillStore = useSkillStore()
+
 const profileOptions = computed(() =>
-  profileStore.profiles.map((p) => ({ label: p.name, value: p.id }))
+  profileStore.profiles
+    .filter((p) => skillStore.isAdmin() || p.id !== VIRTUAL_PROFILE_ID)
+    .map((p) => ({ label: p.name, value: p.id }))
 )
 
-const switchActiveProfile = (profileId: string) => {
-  localStorage.setItem('activeProfileId', profileId)
+const switchActiveProfile = (profileId: number | null) => {
+  if (profileId != null) {
+    localStorage.setItem('activeProfileId', String(profileId))
+  } else {
+    localStorage.removeItem('activeProfileId')
+  }
 }
+
+// 当切换身份时，若管理员→用户且当前选中全能助手，回退到第一个非虚拟角色
+watch(() => skillStore.userRole, (newRole) => {
+  if (newRole === 'user' && profileStore.activeProfileId === VIRTUAL_PROFILE_ID) {
+    const firstReal = profileStore.profiles.find(p => p.id !== VIRTUAL_PROFILE_ID)
+    profileStore.activeProfileId = firstReal?.id ?? null
+    if (profileStore.activeProfileId != null) {
+      localStorage.setItem('activeProfileId', String(profileStore.activeProfileId))
+    } else {
+      localStorage.removeItem('activeProfileId')
+    }
+  }
+})
 
 function setQRCodeUrl() {
   qrCodeUrl.value = window.location.href.replace(/\b(?:localhost|\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b/g, localIP.value)

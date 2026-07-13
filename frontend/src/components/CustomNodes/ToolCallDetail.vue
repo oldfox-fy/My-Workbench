@@ -11,7 +11,10 @@
         <!-- 工具名称 -->
         <div class="detail-section">
           <div class="section-label">工具名称</div>
-          <div class="tool-name-display">{{ data.tool_name }}</div>
+          <div class="tool-name-display">
+            {{ data.tool_name }}
+            <span v-if="toolStore.toolsInfo[data.tool_name]?.is_skill" class="skill-badge">技能</span>
+          </div>
         </div>
 
         <!-- 工具描述 -->
@@ -206,6 +209,18 @@ function handleCopy(content: string) {
   font-size: 16px;
   font-weight: 600;
   color: var(--primary-color, #3b82f6);
+}
+
+.skill-badge {
+  display: inline-block;
+  font-size: 11px;
+  padding: 1px 6px;
+  margin-left: 6px;
+  border-radius: 4px;
+  background: linear-gradient(135deg, #8b5cf6, #6366f1);
+  color: #fff;
+  vertical-align: middle;
+  font-weight: 500;
 }
 
 .exec-time {

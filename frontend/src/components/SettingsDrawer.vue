@@ -222,7 +222,7 @@
         <!-- 其他设置 -->
         <n-tab-pane name="function" tab="功能设置">
           <n-form label-placement="left" label-width="80">
-            <n-form-item label="启用角色">
+            <n-form-item label="启用角色" v-if="skillStore.userRole === 'admin'">
               <n-switch v-model:value="chatStore.enableProfile" @update-value="handleProfile"/>
             </n-form-item>
             <n-form-item label="主题">
@@ -267,12 +267,12 @@
             />
             <n-space>
               <n-button @click="openCreateProfile" size="small" secondary type="primary">新建角色</n-button>
-              <n-button @click="openEditProfile" size="small" secondary :disabled="!profileStore.activeProfile">编辑</n-button>
+              <n-button @click="openEditProfile" size="small" secondary :disabled="!profileStore.activeProfile || profileStore.activeProfileId === VIRTUAL_PROFILE_ID">编辑</n-button>
               <n-popconfirm
                 @positive-click="deleteCurrentProfile"
               >
                 <template #trigger>
-                  <n-button size="small" secondary type="error" :disabled="!profileStore.activeProfile">删除</n-button>
+                  <n-button size="small" secondary type="error" :disabled="!profileStore.activeProfile || profileStore.activeProfileId === VIRTUAL_PROFILE_ID">删除</n-button>
                 </template>
                 确定删除当前角色吗？
               </n-popconfirm>
@@ -671,7 +671,7 @@ import {
 } from 'naive-ui'
 import { useChatStore } from '@/stores/chat'
 import { useConfigStore, MODEL_ROLES, type ModelConfig } from '@/stores/config'
-import { useProfileStore, type Profile } from '@/stores/profiles'
+import { useProfileStore, VIRTUAL_PROFILE_ID, type Profile } from '@/stores/profiles'
 import { useMcpStore, type MCPServer } from '@/stores/mcp'
 import { useSkillStore, type Skill, type SkillType } from '@/stores/skills'
 import mSvg from '@/components/mSvg.vue'
@@ -1063,7 +1063,9 @@ const profileForm = reactive({
 })
 
 const profileOptions = computed(() =>
-  profileStore.profiles.map(p => ({ label: p.name, value: p.id }))
+  profileStore.profiles
+    .filter(p => skillStore.isAdmin() || p.id !== VIRTUAL_PROFILE_ID)
+    .map(p => ({ label: p.name, value: p.id }))
 )
 
 function openCreateProfile() {
@@ -1087,6 +1089,10 @@ function openCreateProfile() {
 
 function openEditProfile() {
   if (!profileStore.activeProfile) return
+  if (profileStore.activeProfile.id === VIRTUAL_PROFILE_ID) {
+    message.warning('内置角色不可编辑')
+    return
+  }
   if(allTools.value.length === 0) {
     loadTools()
   }
@@ -1139,6 +1145,10 @@ async function saveProfile() {
 
 async function deleteCurrentProfile() {
   if (profileStore.activeProfile) {
+    if (profileStore.activeProfile.id === VIRTUAL_PROFILE_ID) {
+      message.warning('内置角色不可删除')
+      return
+    }
     await profileStore.deleteProfile(profileStore.activeProfile.id)
   }
 }
@@ -1147,6 +1157,25 @@ async function deleteCurrentProfile() {
 async function onChangeUserRole(role: 'admin' | 'user') {
   try {
     await skillStore.setUserRole(role)
+    // 切换到普通用户时，若当前选中全能助手 → 回退到第一个真实角色
+    if (role === 'user' && profileStore.activeProfileId === VIRTUAL_PROFILE_ID) {
+      const firstReal = profileStore.profiles.find(p => p.id !== VIRTUAL_PROFILE_ID)
+      profileStore.activeProfileId = firstReal?.id ?? null
+      if (profileStore.activeProfileId != null) {
+        localStorage.setItem('activeProfileId', String(profileStore.activeProfileId))
+      } else {
+        localStorage.removeItem('activeProfileId')
+      }
+    }
+    // 切换到管理员时，若无选中角色 → 默认选全能助手
+    if (role === 'admin' && (!profileStore.activeProfileId || !profileStore.profiles.find(p => p.id === profileStore.activeProfileId))) {
+      profileStore.activeProfileId = profileStore.profiles[0]?.id ?? null
+      if (profileStore.activeProfileId != null) {
+        localStorage.setItem('activeProfileId', String(profileStore.activeProfileId))
+      }
+    }
+    // 重新加载角色列表以同步全能助手的可见性
+    await profileStore.loadProfiles()
     message.success(role === 'admin' ? '已切换为管理员' : '已切换为普通用户')
   } catch (e: any) {
     message.error(e.message || '切换失败')

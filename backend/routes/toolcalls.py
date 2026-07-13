@@ -1,5 +1,6 @@
 # backend/routes/tool_calls.py
 from fastapi import APIRouter, HTTPException
+from backend.database import get_db
 from backend.db.tool_calls import (
     get_tool_call_by_id,
     get_tool_calls_by_message,
@@ -12,47 +13,8 @@ from backend.services.llm_service import set_approval_result
 router = APIRouter(prefix="/api/tool-calls", tags=["tool-calls"])
 
 
-@router.get("/{call_id}")
-async def get_tool_call(call_id: str):
-    """获取单个工具调用详情"""
-    record = await get_tool_call_by_id(call_id)
-    if not record:
-        raise HTTPException(status_code=404, detail="Tool call not found")
-    return record.to_dict()
-
-
-@router.get("/message/{message_id}")
-async def get_message_tool_calls(message_id: int):
-    """获取消息关联的所有工具调用"""
-    records = await get_tool_calls_by_message(message_id)
-    return [r.to_dict() for r in records]
-
-@router.delete("/message/{message_id}")
-async def delete_message_tool_calls(message_id: int):
-    """根据 message_id 删除关联的所有工具调用记录"""
-    deleted_count = await delete_tool_calls_by_message(message_id)
-    return {
-        "message": "Tool calls deleted successfully",
-        "deleted_count": deleted_count
-    }
-
-
-# ──────────── 工具审批 ────────────
-
-class ToolApprovalRequest(BaseModel):
-    call_id: str
-    approved: bool
-    answer: Optional[str] = None  # system_ask_user 的用户文本回复
-
-
-@router.post("/approval")
-async def approve_tool(body: ToolApprovalRequest):
-    """前端发送工具审批结果，唤醒等待中的工具执行协程。"""
-    set_approval_result(body.call_id, body.approved, body.answer)
-    return {"status": "ok"}
-
-
 # ──────────── 使用统计 ────────────
+# 注意：/stats 必须在 /{call_id} 之前注册，否则 "stats" 会被当作 call_id 参数匹配
 
 @router.get("/stats")
 async def get_stats():
@@ -95,3 +57,46 @@ async def get_stats():
         }
     finally:
         await db.close()
+
+
+@router.get("/message/{message_id}")
+async def get_message_tool_calls(message_id: int):
+    """获取消息关联的所有工具调用"""
+    records = await get_tool_calls_by_message(message_id)
+    return [r.to_dict() for r in records]
+
+
+@router.delete("/message/{message_id}")
+async def delete_message_tool_calls(message_id: int):
+    """根据 message_id 删除关联的所有工具调用记录"""
+    deleted_count = await delete_tool_calls_by_message(message_id)
+    return {
+        "message": "Tool calls deleted successfully",
+        "deleted_count": deleted_count
+    }
+
+
+# ──────────── 工具审批 ────────────
+
+class ToolApprovalRequest(BaseModel):
+    call_id: str
+    approved: bool
+    answer: Optional[str] = None  # system_ask_user 的用户文本回复
+
+
+@router.post("/approval")
+async def approve_tool(body: ToolApprovalRequest):
+    """前端发送工具审批结果，唤醒等待中的工具执行协程。"""
+    set_approval_result(body.call_id, body.approved, body.answer)
+    return {"status": "ok"}
+
+
+# ──────────── 参数化路由（必须放在最后，避免拦截 /stats 等具体路径） ────────────
+
+@router.get("/{call_id}")
+async def get_tool_call(call_id: str):
+    """获取单个工具调用详情"""
+    record = await get_tool_call_by_id(call_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Tool call not found")
+    return record.to_dict()

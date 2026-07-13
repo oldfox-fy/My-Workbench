@@ -14,6 +14,8 @@ export interface Profile {
   skills: string[]
 }
 
+export const VIRTUAL_PROFILE_ID = 0
+
 export const useProfileStore = defineStore('profile', () => {
   const profiles = ref<Profile[]>([])
   const activeProfileId = ref<number | null>(null)
@@ -32,11 +34,25 @@ export const useProfileStore = defineStore('profile', () => {
       skills: p.skills ?? [],
     }))
     profiles.value = data
-    if (!activeProfileId.value || !profiles.value.find(p => p.id === activeProfileId.value)) {
-      if (profiles.value.length > 0) {
-        const pid = localStorage.getItem('activeProfileId')
-        activeProfileId.value = pid ? Number(pid) : profiles.value[0].id
-      }
+
+    // 校验/恢复 activeProfileId
+    const pid = localStorage.getItem('activeProfileId')
+    const savedId = pid ? Number(pid) : null
+
+    if (savedId && profiles.value.find(p => p.id === savedId)) {
+      activeProfileId.value = savedId
+    } else if (profiles.value.length > 0) {
+      // 默认选中第一个角色（管理员看到全能助手在首位）
+      activeProfileId.value = profiles.value[0].id
+    } else {
+      activeProfileId.value = null
+    }
+
+    // 持久化
+    if (activeProfileId.value != null) {
+      localStorage.setItem('activeProfileId', String(activeProfileId.value))
+    } else {
+      localStorage.removeItem('activeProfileId')
     }
   }
 
@@ -84,6 +100,10 @@ export const useProfileStore = defineStore('profile', () => {
     presence_penalty?: number,
     skills?: string[]
   ) {
+    if (id === VIRTUAL_PROFILE_ID) {
+      console.warn('内置角色不可编辑')
+      return
+    }
     await fetch(`/api/profiles/${id}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -104,6 +124,10 @@ export const useProfileStore = defineStore('profile', () => {
   }
 
   async function deleteProfile(id: number) {
+    if (id === VIRTUAL_PROFILE_ID) {
+      console.warn('内置角色不可删除')
+      return
+    }
     await fetch(`/api/profiles/${id}`, { method: 'DELETE' })
     profiles.value = profiles.value.filter(p => p.id !== id)
     if (activeProfileId.value === id) {

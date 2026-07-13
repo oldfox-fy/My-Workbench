@@ -5,6 +5,8 @@ import { ref } from 'vue'
 export interface toolConfig {
   title: string        // 名称
   description: string  // 描述
+  is_skill?: boolean   // 是否为技能（code 型 skill）
+  isolated?: boolean   // 是否隔离执行
 }
 
 export const useToolStore = defineStore('tools', () => {

@@ -26,7 +26,11 @@
               <span class="item-status" :class="getStatusClass(tool)">
                 <m-svg :name="getStatusIcon(tool)" :size="tool.status === 'error' ? 20 : 16"/>
               </span>
-              <span class="item-name">{{ toolStore.toolsInfo[tool.name]?.title || tool.name }} #{{ (index as number)+1 }}</span>
+              <span class="item-name">
+                {{ toolStore.toolsInfo[tool.name]?.title || tool.name }}
+                <span v-if="toolStore.toolsInfo[tool.name]?.is_skill" class="skill-badge">技能</span>
+                #{{ (index as number)+1 }}
+              </span>
               <span class="item-arrow">
                 <m-svg name="chevron-right" />
               </span>
@@ -286,6 +290,18 @@ function getStatusIcon(tool: { call_id: string; name: string; streaming: boolean
   flex: 1;
   font-size: 14px;
   color: var(--text-primary);
+}
+
+.skill-badge {
+  display: inline-block;
+  font-size: 11px;
+  padding: 1px 6px;
+  margin: 0 2px;
+  border-radius: 4px;
+  background: linear-gradient(135deg, #8b5cf6, #6366f1);
+  color: #fff;
+  vertical-align: middle;
+  font-weight: 500;
 }
 
 .item-arrow {

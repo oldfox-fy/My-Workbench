@@ -115,6 +115,21 @@ class SkillRegistry:
             "code_tool_names": code_tool_names,
         }
 
+    def expand_for_all_prompt_skills(self) -> Dict[str, Any]:
+        """
+        展开所有已启用 prompt 型技能的指令和工具白名单。
+        用于"全能助手"角色 —— 不按白名单过滤，注入全部 prompt 技能指令。
+        """
+        instructions: List[str] = []
+        for s in self._skills.values():
+            if s.get("skill_type") != "prompt":
+                continue
+            if s.get("instruction"):
+                instructions.append(
+                    f"【技能：{s.get('title', s['name'])}】\n{s['instruction']}"
+                )
+        return {"instructions": instructions}
+
     def is_skill_call(self, func_name: str) -> bool:
         return func_name.startswith(SKILL_PREFIX)
 

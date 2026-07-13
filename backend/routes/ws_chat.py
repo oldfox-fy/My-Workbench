@@ -108,7 +108,8 @@ async def _stream_to_ws(ws: WebSocket, generator, cancel_event: asyncio.Event):
     await ws.send_json({"type": "done"})
 
 
-async def _handle_chat(ws: WebSocket, data: dict, cancel_event: asyncio.Event):
+async def _handle_chat(ws: WebSocket, data: dict, cancel_event: asyncio.Event,
+                   skill_registry=None, mcp_manager=None):
     """处理 chat 消息：构建 LLMService → 流式返回结果。"""
     try:
         llm_cfg = data.get("llm_config", {})
@@ -176,12 +177,88 @@ async def _handle_chat(ws: WebSocket, data: dict, cancel_event: asyncio.Event):
 
         profile_id = data.get("profile_id")
         params = data.get("params", {})
+        profile_prompt_value = ""
+        profile_skill_prompt = ""
 
-        # 构建工具（简化版，与 SSE 端点保持一致的核心逻辑）
+        # 构建工具（对齐 SSE 端点的 profile 过滤逻辑）
         tools = None
         if enable_tools:
-            from backend.services.tools import get_all_tools
-            tools = await get_all_tools()
+            from backend.services.tools import get_all_tools, get_local_tools as _get_ws_local, get_mcp_tools as _get_ws_mcp
+            from backend.routes.chat import default_tools, disabled_tools, _detect_command_intent
+
+            if profile_id == 0:
+                # 全能助手：所有工具 + 所有 MCP + 所有技能
+                tools = await get_all_tools()
+                if skill_registry:
+                    expanded = skill_registry.expand_for_all_prompt_skills()
+                    if expanded.get("instructions"):
+                        profile_skill_prompt = "\n\n".join(expanded["instructions"])
+            elif profile_id is not None:
+                # 普通角色：按白名单过滤
+                db = await get_db()
+                cursor = await db.execute(
+                    "SELECT tools, profile_prompt, temperature, top_p, top_k, frequency_penalty, presence_penalty, skills FROM profiles WHERE id = ?",
+                    (profile_id,)
+                )
+                row = await cursor.fetchone()
+                await db.close()
+
+                if row:
+                    allowed_tools = json.loads(row[0] or "[]")
+                    profile_prompt_value = row[1] or ""
+                    params = {
+                        "temperature": row[2] if row[2] is not None else 1.0,
+                        "top_p": row[3] if row[3] is not None else 1.0,
+                        "top_k": row[4] if row[4] is not None else 40,
+                        "frequency_penalty": row[5] if row[5] is not None else 0.0,
+                        "presence_penalty": row[6] if row[6] is not None else 0.0,
+                    }
+                    profile_skills = json.loads(row[7] or "[]") if len(row) > 7 and row[7] else []
+
+                    local_tools = _get_ws_local()
+                    tools = [t for t in local_tools if t["function"]["name"] in default_tools]
+
+                    # 智能注入 system_run_command
+                    if _detect_command_intent(messages):
+                        runner_tool = [t for t in local_tools if t["function"]["name"] == "system_run_command"]
+                        existing_names = {t["function"]["name"] for t in tools}
+                        for t in runner_tool:
+                            if t["function"]["name"] not in existing_names:
+                                tools.append(t)
+
+                    # 展开技能
+                    allowed_code_tool_names = []
+                    if skill_registry and profile_skills:
+                        expanded = skill_registry.expand_for_profile(profile_skills)
+                        if expanded["instructions"]:
+                            profile_skill_prompt = "\n\n".join(expanded["instructions"])
+                        allowed_tools = list(set(allowed_tools) | expanded["allowed_tools"])
+                        allowed_code_tool_names = expanded["code_tool_names"]
+
+                    # 筛选 disabled + MCP 工具
+                    mcp_tools = await _get_ws_mcp(mcp_manager)
+                    enable_tools_list = [t for t in local_tools if t["function"]["name"] in disabled_tools]
+                    enable_tools_list.extend(mcp_tools)
+                    use_tools = [t for t in enable_tools_list if t["function"]["name"] in allowed_tools]
+                    tools.extend(use_tools)
+
+                    # 追加 code 型技能定义
+                    if skill_registry and allowed_code_tool_names:
+                        code_defs = skill_registry.code_tool_definitions()
+                        tools.extend([d for d in code_defs if d["function"]["name"] in allowed_code_tool_names])
+                else:
+                    tools = await get_all_tools()
+            else:
+                # 无 profile_id：仅 default_tools
+                local_tools = _get_ws_local()
+                tools = [t for t in local_tools if t["function"]["name"] in default_tools]
+                if _detect_command_intent(messages):
+                    runner_tool = [t for t in local_tools if t["function"]["name"] == "system_run_command"]
+                    existing_names = {t["function"]["name"] for t in tools}
+                    for t in runner_tool:
+                        if t["function"]["name"] not in existing_names:
+                            tools.append(t)
+
             if tools:
                 tools.sort(key=lambda t: t.get("function", {}).get("name", ""))
 
@@ -197,6 +274,12 @@ async def _handle_chat(ws: WebSocket, data: dict, cancel_event: asyncio.Event):
         system_prompt = system_prompt.replace("{{workspace_path}}", backend.workspace_path)
         system_prompt = system_prompt.replace("{{kb_path}}", getattr(backend, "kb_path", "") or backend.workspace_path)
         system_prompt = system_prompt.replace("{{time_now}}", get_current_time())
+
+        # 注入角色提示词
+        if profile_prompt_value:
+            system_prompt = system_prompt + "\n\n### 角色扮演\n\n" + profile_prompt_value
+        if profile_skill_prompt:
+            system_prompt = system_prompt + "\n\n### 已启用技能\n\n" + profile_skill_prompt
 
         messages = [m for m in messages if m.get("role") != "system"]
         messages.insert(0, {"role": "system", "content": system_prompt})
@@ -243,7 +326,10 @@ async def ws_chat_endpoint(websocket: WebSocket):
                     except asyncio.CancelledError:
                         pass
                 cancel_event.clear()
-                chat_task = asyncio.create_task(_handle_chat(websocket, data, cancel_event))
+                chat_task = asyncio.create_task(
+                    _handle_chat(websocket, data, cancel_event,
+                                 skill_registry=getattr(websocket.app.state, "skill_registry", None),
+                                 mcp_manager=getattr(websocket.app.state, "mcp_manager", None)))
 
             elif msg_type == "cancel":
                 cancel_event.set()
