@@ -41,24 +41,27 @@ def get_local_tools():
     return TOOLS_DEFINITION.copy()
 
 async def get_all_tools(mcp_manager=None, skill_registry=None):
-    """获取所有工具（本地 + MCP + code 型技能）"""
+    """获取所有工具（本地 + MCP + code 型技能），按名称排序以利 prompt cache"""
     tools = TOOLS_DEFINITION.copy()
     if mcp_manager:
         mcp_tools = await mcp_manager.get_all_tools()
         tools.extend(mcp_tools)
     if skill_registry:
         tools.extend(skill_registry.code_tool_definitions())
-     # 过滤掉非字典项（防止意外混入对象）
+    # 过滤掉非字典项，按名称排序保证缓存一致性
     clean_tools = [t for t in tools if isinstance(t, dict)]
+    clean_tools.sort(key=lambda t: t.get("function", {}).get("name", ""))
 
     return clean_tools
 
 async def get_mcp_tools(mcp_manager=None):
-    """获取MCP工具"""
+    """获取MCP工具，按名称排序"""
     if mcp_manager:
         mcp_tools = await mcp_manager.get_all_tools()
-     # 过滤掉非字典项（防止意外混入对象）
-    clean_tools = [t for t in mcp_tools if isinstance(t, dict)]
+        clean_tools = [t for t in mcp_tools if isinstance(t, dict)]
+        clean_tools.sort(key=lambda t: t.get("function", {}).get("name", ""))
+        return clean_tools
+    return []
 
     return clean_tools
 

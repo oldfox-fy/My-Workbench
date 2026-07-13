@@ -151,19 +151,26 @@ async def chat(
                     code_defs = skill_registry.code_tool_definitions()
                     tools.extend([d for d in code_defs if d["function"]["name"] in allowed_code_tool_names])
 
+        # 工具列表按名称排序，确保每次请求的工具定义顺序一致（Prompt Cache 友好）
+        tools.sort(key=lambda t: t.get("function", {}).get("name", ""))
+
         messages = [m for m in messages if m["role"] != "system"]
 
+        # ── 系统提示词组装（静态前缀 → 动态后缀，最大化 Prompt Cache 命中） ──
         system_prompt = BASE_SYSTEM_PROMPT.replace("{{workspace_path}}", backend.workspace_path)
         system_prompt = system_prompt.replace("{{kb_path}}", getattr(backend, "kb_path", "") or backend.workspace_path)
-        system_prompt = system_prompt.replace("{{time_now}}", get_current_time())
-        # profile_prompt 加入到 system_prompt 中
+        # profile_prompt（固定角色 → 静态内容，放在时间前面以利缓存）
         if profile_prompt:
-            system_prompt = f"{system_prompt}\n\n ### 角色扮演 \n\n{profile_prompt}"
-        # 技能指令（prompt 型技能）加入到 system_prompt 中
+            system_prompt = f"{system_prompt}\n\n### 角色扮演\n\n{profile_prompt}"
+        # 技能指令（同上，同角色固定）
         if profile_skill_prompt:
-            system_prompt = f"{system_prompt}\n\n ### 已启用技能 \n\n{profile_skill_prompt}"
+            system_prompt = f"{system_prompt}\n\n### 已启用技能\n\n{profile_skill_prompt}"
 
-        # 注入相关历史记忆（跨对话语义检索）
+        # ── 动态后缀（放在 system prompt 最末尾，不影响前面的静态缓存前缀） ──
+        dynamic_suffix_parts = [f"当前时间：{get_current_time()}"]
+        dynamic_suffix_parts.append(f"工作区路径：{backend.workspace_path}")
+
+        # 注入相关历史记忆（跨对话语义检索，随查询变化）
         if request.enable_tools:
             last_user_msg = ""
             for m in reversed(messages):
@@ -179,13 +186,16 @@ async def chat(
                         snippet = mem["content"][:120].replace("\n", " ")
                         memory_lines.append(f"- [{time_str}] {snippet}...")
                     memory_section = (
-                        "\n\n ### 相关历史记忆 \n"
+                        "\n\n### 相关历史记忆\n"
                         "以下是你在其他对话中曾讨论过的相关内容，可在回复时结合这些信息理解用户背景：\n"
                         + "\n".join(memory_lines)
                     )
-                    system_prompt += memory_section
+                    dynamic_suffix_parts.append(memory_section)
 
-        messages.insert(0, {"role": "system", "content": f"{system_prompt}\n\n{backend.workspace_path}"})
+        # 将动态部分追加到 system prompt 末尾
+        system_prompt = system_prompt + "\n\n---\n" + "\n".join(dynamic_suffix_parts)
+
+        messages.insert(0, {"role": "system", "content": system_prompt})
 
         REASONING_BLOCK = re.compile(
             r'<!--reasoning:start-->.*?<!--reasoning:end:\d+\.?\d*-->',
