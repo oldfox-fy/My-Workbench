@@ -36,9 +36,9 @@ fallback:
   api_key: ""
 
 # 语音服务配置（STT 语音转文字 + TTS 文字转语音）
-# 注意：语音 API 与聊天 LLM 使用独立的端点配置。
-# 如果留空，则自动复用聊天模型的 API Key 和 Base URL（适用于 OpenAI 用户）。
-# 如果你用 DeepSeek 等不含语音 API 的模型，需单独填写语音服务的 base_url 和 api_key。
+# 注意：前端已使用浏览器原生 SpeechRecognition / speechSynthesis，无需后端 API。
+# 以下配置为可选增强（例如需要更高精度的 whisper 或更自然的 TTS 音色时启用）。
+# 如果留空，则自动复用聊天模型的 API Key 和 Base URL。
 voice:
   enabled: true
   # STT（语音转文字）模型，如 whisper-1
