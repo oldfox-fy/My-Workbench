@@ -56,6 +56,8 @@ class LLMService:
         params: Dict = None,
         message_id: Optional[int] = None,
         skill_registry=None,
+        max_steps: int = 10,
+        excluded_tools: Optional[set] = None,
     ) -> AsyncGenerator[str, None]:
         params = params or {}
 
@@ -112,6 +114,10 @@ class LLMService:
         if tools is None and enable_tools:
             tools = await get_all_tools(mcp_manager, skill_registry)
 
+        # 过滤掉排除的工具（子智能体防递归委派等场景）
+        if tools and excluded_tools:
+            tools = [t for t in tools if t.get("function", {}).get("name") not in excluded_tools]
+
         reasoning_start_time = None
 
         # 全步骤累计 token（计费总量）
@@ -126,7 +132,7 @@ class LLMService:
         last_step_usage = None
         last_step_generation_time = 0.0
 
-        MAX_STEPS = 10
+        MAX_STEPS = max_steps
         MAX_CONSECUTIVE_FAILURES = 3
         consecutive_failures = 0
         force_final = False
@@ -241,8 +247,86 @@ class LLMService:
             first_token_time = None
             tool_preview_active = {}
             tool_calls_started = False
+            # 流式工具调用：追踪已启动后台执行的工具
+            pending_executions: dict = {}   # idx → asyncio.Task
+            last_active_idx = None
 
             async for chunk in response:
+                if request and await request.is_disconnected():
+                    break
+
+                # ---------- 流式工具执行辅助函数 ----------
+                # 定义在此处以捕获 step 作用域变量（message_id, mcp_manager, skill_registry）
+                async def _execute_one_tool(idx, tc, preview_info):
+                    """执行单个工具调用，返回结果元组。不 yield SSE 标记。"""
+                    local_call_id = preview_info.get('call_id', '')
+                    real_tool_call_id = tc.get("id")
+                    func_name = tc["function"]["name"] or "未知工具"
+                    raw_args = tc["function"]["arguments"]
+
+                    parse_error = None
+                    try:
+                        args = json.loads(raw_args) if raw_args else {}
+                    except json.JSONDecodeError as e:
+                        parse_error = f"JSON 解析失败: {e}\n原始参数: {raw_args[:200]}"
+                        args = {"raw": raw_args, "parse_error": str(e)}
+
+                    if message_id:
+                        try:
+                            await update_tool_call_arguments(local_call_id, args)
+                        except Exception as e:
+                            print(f"[DB] Failed to update arguments: {e}")
+
+                    start_time = time.time()
+                    failed = False
+                    try:
+                        result = await execute_tool(func_name, args, mcp_manager, skill_registry, llm_service=self, params=params)
+                        if isinstance(result, str):
+                            try:
+                                result_obj = json.loads(result)
+                                if isinstance(result_obj, dict) and result_obj.get("success") is False:
+                                    failed = True
+                            except json.JSONDecodeError:
+                                if result.startswith("工具执行出错:"):
+                                    failed = True
+                        elif isinstance(result, dict) and result.get("success") is False:
+                            failed = True
+                    except Exception as e:
+                        error_msg = str(e)
+                        if len(error_msg) > 1000:
+                            error_msg = error_msg[:1000] + "...(错误信息过长已截断)"
+                        result = f"工具执行出错: {error_msg}"
+                        failed = True
+
+                    exec_time_ms = int((time.time() - start_time) * 1000)
+
+                    if message_id:
+                        try:
+                            result_str = str(result)[:20000]
+                            await update_tool_call(
+                                call_id=local_call_id,
+                                result=result_str,
+                                status="error" if failed else "success",
+                                execution_time=exec_time_ms,
+                                error_message=result if failed else None
+                            )
+                        except Exception as e:
+                            print(f"[DB] Failed to update result: {e}")
+
+                    if isinstance(result, dict):
+                        tool_content = json.dumps(result, ensure_ascii=False)
+                    else:
+                        tool_content = str(result)
+
+                    return {
+                        "idx": idx,
+                        "local_call_id": local_call_id,
+                        "real_tool_call_id": real_tool_call_id,
+                        "func_name": func_name,
+                        "failed": failed,
+                        "tool_content": tool_content,
+                        "parse_error": parse_error,
+                    }
                 if request and await request.is_disconnected():
                     break
 
@@ -356,6 +440,15 @@ class LLMService:
                             arg_delta = tc_delta.function.arguments or ""
                             target["function"]["arguments"] += arg_delta
 
+                        # 流式工具执行：检测到新 idx → 前一个 idx 参数已完整 → 后台启动
+                        if idx != last_active_idx:
+                            if last_active_idx is not None and last_active_idx not in pending_executions:
+                                prev_tc = tool_calls_by_index.get(last_active_idx)
+                                if prev_tc and prev_tc["function"]["arguments"].strip():
+                                    pending_executions[last_active_idx] = asyncio.create_task(
+                                        _execute_one_tool(last_active_idx, prev_tc, tool_preview_active.get(last_active_idx, {})))
+                            last_active_idx = idx
+
                 elif delta_content:
                     yield delta_content
 
@@ -407,97 +500,34 @@ class LLMService:
             }
             current_messages.append(assistant_msg)
 
-            # ---------- 并行执行工具 ----------
-            # 快照 tool_preview_active（在并行执行前完成读取，避免协程间竞态）
+            # ---------- 并行执行工具（结合流式后台任务） ----------
+            # 快照 tool_preview_active
             preview_snapshot = {
                 idx: dict(info)
                 for idx, info in tool_preview_active.items()
                 if idx in valid_calls
             }
 
-            async def _execute_one_tool(idx, tc, preview_info):
-                """执行单个工具调用，返回结果元组 (idx, exec_result)。
-                此函数在 asyncio.gather 中并行运行，不 yield SSE 标记。"""
-                local_call_id = preview_info['call_id']
-                real_tool_call_id = tc.get("id")
-                func_name = tc["function"]["name"] or "未知工具"
-                raw_args = tc["function"]["arguments"]
+            # 流结束后：最后一个 tool_call 的参数也已完成 → 后台启动
+            if last_active_idx is not None and last_active_idx not in pending_executions:
+                last_tc = tool_calls_by_index.get(last_active_idx)
+                if last_tc and last_tc["function"]["arguments"].strip():
+                    pending_executions[last_active_idx] = asyncio.create_task(
+                        _execute_one_tool(last_active_idx, last_tc, preview_snapshot.get(last_active_idx, {}))
+                    )
 
-                # 解析参数
-                parse_error = None
-                try:
-                    args = json.loads(raw_args) if raw_args else {}
-                except json.JSONDecodeError as e:
-                    parse_error = f"JSON 解析失败: {e}\n原始参数: {raw_args[:200]}"
-                    args = {"raw": raw_args, "parse_error": str(e)}
+            # 对未在流式阶段启动的工具，现在启动
+            fresh_coros = []
+            fresh_indices = []
+            for idx, tc in valid_calls.items():
+                if idx not in pending_executions:
+                    fresh_indices.append(idx)
+                    fresh_coros.append(_execute_one_tool(idx, tc, preview_snapshot.get(idx, {})))
 
-                # 更新数据库中的参数
-                if message_id:
-                    try:
-                        await update_tool_call_arguments(local_call_id, args)
-                    except Exception as e:
-                        print(f"[DB] Failed to update arguments: {e}")
-
-                # 执行工具
-                start_time = time.time()
-                failed = False
-                try:
-                    result = await execute_tool(func_name, args, mcp_manager, skill_registry)
-                    if isinstance(result, str):
-                        try:
-                            result_obj = json.loads(result)
-                            if isinstance(result_obj, dict) and result_obj.get("success") is False:
-                                failed = True
-                        except json.JSONDecodeError:
-                            if result.startswith("工具执行出错:"):
-                                failed = True
-                    elif isinstance(result, dict) and result.get("success") is False:
-                        failed = True
-                except Exception as e:
-                    error_msg = str(e)
-                    if len(error_msg) > 1000:
-                        error_msg = error_msg[:1000] + "...(错误信息过长已截断)"
-                    result = f"工具执行出错: {error_msg}"
-                    failed = True
-
-                exec_time_ms = int((time.time() - start_time) * 1000)
-
-                # 更新结果和状态 (存入数据库)
-                if message_id:
-                    try:
-                        result_str = str(result)[:20000]
-                        await update_tool_call(
-                            call_id=local_call_id,
-                            result=result_str,
-                            status="error" if failed else "success",
-                            execution_time=exec_time_ms,
-                            error_message=result if failed else None
-                        )
-                    except Exception as e:
-                        print(f"[DB] Failed to update result: {e}")
-
-                # 构建工具内容
-                if isinstance(result, dict):
-                    tool_content = json.dumps(result, ensure_ascii=False)
-                else:
-                    tool_content = str(result)
-
-                return {
-                    "idx": idx,
-                    "local_call_id": local_call_id,
-                    "real_tool_call_id": real_tool_call_id,
-                    "func_name": func_name,
-                    "failed": failed,
-                    "tool_content": tool_content,
-                    "parse_error": parse_error,
-                }
-
-            # 并行执行所有工具调用
-            coros = [
-                _execute_one_tool(idx, tc, preview_snapshot.get(idx, {}))
-                for idx, tc in valid_calls.items()
-            ]
-            exec_results = await asyncio.gather(*coros)
+            # 等待后台任务 + 执行新工具，合并所有结果
+            exec_results = [await task for task in pending_executions.values()]
+            if fresh_coros:
+                exec_results += await asyncio.gather(*fresh_coros)
 
             # 按 idx 排序后顺序处理结果（保持 tool_call_id 顺序一致性）
             exec_results.sort(key=lambda r: r["idx"])

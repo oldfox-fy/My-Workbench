@@ -133,6 +133,19 @@ async def init_db():
         )
     """)
 
+    # 会话记忆：存储 AI 助手的重要回复，用于跨对话语义检索
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS session_memories (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id TEXT NOT NULL,
+            message_id INTEGER NOT NULL,
+            content TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE,
+            FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE
+        )
+    """)
+
     # ---- 轻量迁移：为旧版数据库补齐新增列 ----
     await _ensure_column(db, "profiles", "skills", "TEXT NOT NULL DEFAULT '[]'")
 

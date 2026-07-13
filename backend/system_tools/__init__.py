@@ -8,3 +8,4 @@ from . import reader
 from . import runner
 from . import weather
 from . import writer
+from . import delegate

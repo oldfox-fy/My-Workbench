@@ -9,10 +9,12 @@ from typing import List, Dict, Optional, Any
 from backend.services.llm_service import LLMService
 from backend.services.tools import get_local_tools, get_mcp_tools, get_all_tools
 from backend.services.context_compressor import compress_messages
+from backend.services.session_memory import search_relevant_memories, index_assistant_message
 from backend.database import get_db
 from backend.utils.base import resource_path, get_current_time, get_local_ip
 from config_loader import config
 import backend
+import asyncio
 
 
 router = APIRouter(prefix="/api", tags=["chat"])
@@ -161,6 +163,28 @@ async def chat(
         if profile_skill_prompt:
             system_prompt = f"{system_prompt}\n\n ### 已启用技能 \n\n{profile_skill_prompt}"
 
+        # 注入相关历史记忆（跨对话语义检索）
+        if request.enable_tools:
+            last_user_msg = ""
+            for m in reversed(messages):
+                if m.get("role") == "user":
+                    last_user_msg = m.get("content", "")
+                    break
+            if last_user_msg:
+                memories = await search_relevant_memories(last_user_msg, k=3)
+                if memories:
+                    memory_lines = []
+                    for mem in memories:
+                        time_str = mem.get("created_at", "")[:10] if mem.get("created_at") else "未知时间"
+                        snippet = mem["content"][:120].replace("\n", " ")
+                        memory_lines.append(f"- [{time_str}] {snippet}...")
+                    memory_section = (
+                        "\n\n ### 相关历史记忆 \n"
+                        "以下是你在其他对话中曾讨论过的相关内容，可在回复时结合这些信息理解用户背景：\n"
+                        + "\n".join(memory_lines)
+                    )
+                    system_prompt += memory_section
+
         messages.insert(0, {"role": "system", "content": f"{system_prompt}\n\n{backend.workspace_path}"})
 
         REASONING_BLOCK = re.compile(
@@ -189,9 +213,11 @@ async def chat(
         if request.enable_tools and len(messages) > 12:
             messages = compress_messages(messages, max_tokens=8000, keep_recent=10)
 
-        # 4. 流式响应
-        return StreamingResponse(
-            service.generate_response(
+        # 4. 流式响应（含自动会话记忆索引）
+        async def stream_with_memory():
+            """流式响应的同时收集纯文本，结束后自动索引到会话记忆。"""
+            collected_text = []
+            async for chunk in service.generate_response(
                 messages=messages,
                 enable_tools=request.enable_tools,
                 tools=tools,
@@ -200,7 +226,41 @@ async def chat(
                 params=params,
                 message_id=request.message_id,
                 skill_registry=skill_registry,
-            ),
+            ):
+                yield chunk
+                # 收集非标记文本用于索引
+                if chunk and not chunk.startswith("<!--"):
+                    collected_text.append(chunk)
+
+            # 流结束后：后台索引当前 AI 回复
+            if request.enable_tools and collected_text:
+                full_text = "".join(collected_text).strip()
+                # 查找当前对话的 chat_id（从消息中推断）
+                chat_id = None
+                for m in messages:
+                    # chat_id 不在消息中，我们用 message_id 查找
+                    pass
+                if request.message_id and full_text:
+                    # 通过 message_id 查找 chat_id
+                    try:
+                        db = await get_db()
+                        cursor = await db.execute(
+                            "SELECT chat_id FROM messages WHERE id = ?",
+                            (request.message_id,)
+                        )
+                        row = await cursor.fetchone()
+                        await db.close()
+                        if row:
+                            asyncio.create_task(index_assistant_message(
+                                chat_id=row[0],
+                                message_id=request.message_id,
+                                content=full_text,
+                            ))
+                    except Exception:
+                        pass  # 索引失败不影响主流程
+
+        return StreamingResponse(
+            stream_with_memory(),
             media_type="text/event-stream"
         )
     except Exception as e:

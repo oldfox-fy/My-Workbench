@@ -187,3 +187,84 @@ async def search(query: List[float], k: int) -> List[Tuple[int, float]]:
 
 async def count() -> int:
     return await asyncio.to_thread(_count)
+
+
+# ──────────────────── 会话记忆向量表 ────────────────────
+
+_SESSION_MEM_TABLE = "vec_session_memories"
+
+
+def _ensure_session_table(dim: int):
+    """创建或重建会话记忆向量表。"""
+    conn = _open_vec_conn()
+    try:
+        existing_dim = None
+        row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+            (_SESSION_MEM_TABLE,)
+        ).fetchone()
+        if row and row[0]:
+            import re
+            m = re.search(r"float\[(\d+)\]", row[0])
+            existing_dim = int(m.group(1)) if m else None
+
+        if existing_dim == dim:
+            return
+        if existing_dim is not None:
+            conn.execute(f"DROP TABLE IF EXISTS {_SESSION_MEM_TABLE}")
+        conn.execute(
+            f"CREATE VIRTUAL TABLE IF NOT EXISTS {_SESSION_MEM_TABLE} "
+            f"USING vec0(embedding float[{dim}])"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _upsert_session(rows: "List[Tuple[int, List[float]]]"):
+    """rows: [(session_memory_id, embedding), ...]"""
+    conn = _open_vec_conn()
+    try:
+        for mem_id, emb in rows:
+            conn.execute(f"DELETE FROM {_SESSION_MEM_TABLE} WHERE rowid = ?", (mem_id,))
+            conn.execute(
+                f"INSERT INTO {_SESSION_MEM_TABLE}(rowid, embedding) VALUES (?, ?)",
+                (mem_id, serialize_float32(emb)),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _search_sessions(query: List[float], k: int) -> "List[Tuple[int, float]]":
+    """返回 [(session_memory_id, distance), ...]"""
+    conn = _open_vec_conn()
+    try:
+        row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+            (_SESSION_MEM_TABLE,)
+        ).fetchone()
+        if not row or not row[0]:
+            return []
+        rows = conn.execute(
+            f"SELECT rowid, distance FROM {_SESSION_MEM_TABLE} "
+            f"WHERE embedding MATCH ? ORDER BY distance LIMIT ?",
+            (serialize_float32(query), k),
+        ).fetchall()
+        return [(int(r[0]), float(r[1])) for r in rows]
+    finally:
+        conn.close()
+
+
+# ──────────── 会话记忆异步接口 ────────────
+
+async def ensure_session_table(dim: int):
+    await asyncio.to_thread(_ensure_session_table, dim)
+
+
+async def upsert_session(rows: "List[Tuple[int, List[float]]]"):
+    await asyncio.to_thread(_upsert_session, rows)
+
+
+async def search_sessions(query: List[float], k: int) -> "List[Tuple[int, float]]":
+    return await asyncio.to_thread(_search_sessions, query, k)

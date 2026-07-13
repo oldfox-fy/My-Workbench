@@ -62,10 +62,11 @@ async def get_mcp_tools(mcp_manager=None):
 
     return clean_tools
 
-async def execute_tool(func_name: str, arguments: Dict, mcp_manager=None, skill_registry=None) -> str:
-    """执行工具，优先本地工具，其次 code 型技能，最后 MCP 工具"""
+async def execute_tool(func_name: str, arguments: Dict, mcp_manager=None, skill_registry=None, **extra_kwargs) -> str:
+    """执行工具，优先本地工具，其次 code 型技能，最后 MCP 工具。
+    extra_kwargs 会传递给需要额外上下文的本地工具（如 delegate_task 需要 llm_service）。"""
     if func_name in AVAILABLE_TOOLS:
-        result = await AVAILABLE_TOOLS[func_name](**arguments)
+        result = await AVAILABLE_TOOLS[func_name](**arguments, mcp_manager=mcp_manager, skill_registry=skill_registry, **extra_kwargs)
         return _stringify(result)
     elif skill_registry and skill_registry.is_skill_call(func_name):
         result = await skill_registry.execute(func_name, arguments)
