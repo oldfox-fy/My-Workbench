@@ -34,3 +34,14 @@ fallback:
   model_name: ""
   base_url: ""
   api_key: ""
+
+# 语音服务配置（STT 语音转文字 + TTS 文字转语音）
+# 使用与聊天模型相同的 API Key 和 Base URL（OpenAI 兼容协议）
+voice:
+  enabled: true
+  # STT（语音转文字）模型，如 whisper-1
+  stt_model: "whisper-1"
+  # TTS（文字转语音）模型，如 tts-1 或 tts-1-hd
+  tts_model: "tts-1"
+  # TTS 语音音色：alloy / echo / fable / onyx / nova / shimmer
+  tts_voice: "nova"

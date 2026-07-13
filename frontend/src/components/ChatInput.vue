@@ -81,6 +81,33 @@
         </n-button>
       </n-upload>
 
+      <!-- 语音输入按钮 -->
+      <n-button
+        text
+        class="mic-btn"
+        :class="{ recording: isRecording }"
+        :title="isRecording ? '点击停止录音' : '语音输入'"
+        @click="toggleRecording"
+        :disabled="disabled"
+      >
+        <template #icon>
+          <n-icon v-if="isRecording"><m-svg name="stop" /></n-icon>
+          <n-icon v-else><MicOutline /></n-icon>
+        </template>
+      </n-button>
+      <span v-if="isProcessing" class="mic-processing">识别中…</span>
+
+      <!-- 自动朗读开关 -->
+      <n-button
+        text
+        class="auto-read-btn"
+        :type="autoRead ? 'primary' : 'default'"
+        :title="autoRead ? '关闭自动朗读' : '开启自动朗读AI回复'"
+        @click="emit('toggleAutoRead')"
+      >
+        <template #icon><n-icon><VolumeHighOutline /></n-icon></template>
+      </n-button>
+
       <n-button v-if="!isLoading" class="send-btn" @click="handleSend"
         strong secondary type="primary"
         :disabled="!modelValue.trim().length"
@@ -99,8 +126,9 @@
 <script setup lang="ts">
 import { ref, PropType } from 'vue'
 import { NButton, NInput, NUpload, NIcon, type UploadFileInfo } from 'naive-ui'
-import { ArrowDownOutline, DocumentOutline } from '@vicons/ionicons5'
+import { ArrowDownOutline, DocumentOutline, MicOutline, VolumeHighOutline } from '@vicons/ionicons5'
 import mSvg from '@/components/mSvg.vue'
+import { useVoiceRecorder } from '@/composables/useVoice'
 
 
 const props = defineProps({
@@ -112,6 +140,7 @@ const props = defineProps({
   showScrollBtn: { type: Boolean, default: false },
   showRegenerateHint: { type: Boolean, default: false },
   showDeepThink: { type: Boolean, default: false },
+  autoRead: { type: Boolean, default: false },
   maxFiles: { type: Number, default: 10 },
   fileAccept: { type: String, default: '' },
   fileList: {
@@ -132,7 +161,27 @@ const emit = defineEmits<{
   'filesPaste': [files: File[]]
   'uploadChange': [options: { file: UploadFileInfo; fileList: UploadFileInfo[] }]
   'update:fileList': [files: UploadFileInfo[]]
+  'toggleAutoRead': []
+  'voiceText': [text: string]
 }>()
+
+// 语音录音器
+const { isRecording, isProcessing, errorMsg, startRecording, stopRecording, cancelRecording } = useVoiceRecorder()
+
+async function toggleRecording() {
+  if (isRecording.value) {
+    try {
+      const text = await stopRecording()
+      if (text) {
+        emit('voiceText', text)
+      }
+    } catch {
+      // 错误已由 useVoiceRecorder 处理
+    }
+  } else {
+    await startRecording()
+  }
+}
 
 // 内部 n-upload 文件列表（不暴露给父组件）
 const internalFileList = ref<UploadFileInfo[]>([])
@@ -393,6 +442,31 @@ function triggerJelly() {
     font-size: 12px;
     color: var(--text-secondary);
 }
+
+/* 语音按钮 */
+.mic-btn {
+  width: 40px;
+  height: 40px;
+  transition: all 0.2s;
+}
+.mic-btn.recording {
+  color: #ef4444;
+  animation: pulse-mic 1.2s ease-in-out infinite;
+}
+@keyframes pulse-mic {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.2); }
+}
+.mic-processing {
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.auto-read-btn {
+  width: 40px;
+  height: 40px;
+}
+
 .fade-enter-active,
 .fade-leave-active {
   transition: opacity 0.3s ease, transform 0.3s ease;

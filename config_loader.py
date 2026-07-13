@@ -76,6 +76,13 @@ class AppConfig:
                 "api_key": fb.get("api_key", ""),
             }
 
+        # 语音服务配置
+        vc = self.raw_config.get("voice", {}) or {}
+        self.voice_enabled = vc.get("enabled", True)
+        self.voice_stt_model = vc.get("stt_model", "whisper-1")
+        self.voice_tts_model = vc.get("tts_model", "tts-1")
+        self.voice_tts_voice = vc.get("tts_voice", "nova")
+
     def _resolve_path(self, path_str: str, base: Path) -> Path:
         """将路径字符串解析为 Path 对象，支持绝对路径和相对路径"""
         p = Path(path_str)

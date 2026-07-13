@@ -221,6 +221,7 @@
         :show-scroll-btn="messageListRef?.showScrollBtn && currentMessages.length > 0"
         :show-regenerate-hint="!isLoading && currentMessages.length >= 1 && currentMessages[currentMessages.length - 1]?.role === 'user'"
         :show-deep-think="configStore.activeModel?.type === 'online'"
+        :auto-read="autoRead"
         :max-files="fileConfig.max"
         :file-accept="fileConfig.accept"
         :before-upload="onBeforeUpload"
@@ -231,6 +232,8 @@
         @regenerate-current="onRegenerateFromCurrentHistory"
         @files-paste="handlePasteFiles"
         @upload-change="handleFileUpload"
+        @toggle-auto-read="toggleAutoRead"
+        @voice-text="onVoiceText"
       />
     </main>
     </div>
@@ -312,6 +315,7 @@ import { useFileUpload } from '@/composables/useFileUpload'
 import { useChat } from '@/composables/useChat'
 import { useMessageActions } from '@/composables/useMessageActions'
 import { useResizeHandle } from '@/composables/useResizeHandle'
+import { useTTS } from '@/composables/useVoice'
 import { localIP, uploadDir } from '@/utils/message'
 
 const route = useRoute()
@@ -350,6 +354,22 @@ function checkMobile() {
 }
 
 const selected = ref(localStorage.getItem('thinking') === 'true')
+
+// 语音功能
+const { autoRead, speak } = useTTS()
+autoRead.value = localStorage.getItem('autoRead') === 'true'
+
+function toggleAutoRead() {
+  autoRead.value = !autoRead.value
+  localStorage.setItem('autoRead', String(autoRead.value))
+}
+
+function onVoiceText(text: string) {
+  // 将语音识别的文字追加到输入框
+  currentInput.value = currentInput.value
+    ? currentInput.value + ' ' + text
+    : text
+}
 
 const { activeModelId, modelOptions, switchActiveModel } = useModel()
 const { uploadFileList, uploadedFiles, isDragging, onDragEnter, onDragOver,
@@ -536,6 +556,16 @@ const openChat = (chatId: string) => {
 
 watch(() => selected.value, (newVal) => {
   localStorage.setItem('thinking', newVal ? 'true' : 'false')
+})
+
+// 自动朗读：AI 回复完成后，若开启自动朗读则播放
+watch(() => isLoading.value, (newVal, oldVal) => {
+  if (oldVal && !newVal && autoRead.value && currentMessages.value.length > 0) {
+    const last = currentMessages.value[currentMessages.value.length - 1]
+    if (last?.role === 'assistant' && last?.content) {
+      speak(last.content)
+    }
+  }
 })
 
 async function waitForBackend() {

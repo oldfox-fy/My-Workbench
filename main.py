@@ -27,6 +27,7 @@ from backend.routes import register_all_routers
 from backend.database import init_db
 from backend.mcp_client import MCPClientManager
 from backend.services.skills import SkillRegistry
+from backend.services.kb_watcher import KbFileWatcher
 from config_loader import config
 
 
@@ -85,6 +86,7 @@ async def lifespan(app: FastAPI):
     app.state.ready_event = ready_event
     app.state.mcp_manager = None
     app.state.skill_registry = None
+    app.state.kb_watcher = None
     app.state.init_success = False
     app.state.init_error = None
 
@@ -99,6 +101,11 @@ async def lifespan(app: FastAPI):
             skill_registry = SkillRegistry()
             await skill_registry.reload()
             app.state.skill_registry = skill_registry
+            # 启动知识库文件监听器（自动增量索引）
+            import backend as _be
+            kb_watcher = KbFileWatcher(lambda: getattr(_be, "kb_path", ""))
+            await kb_watcher.start()
+            app.state.kb_watcher = kb_watcher
             app.state.init_success = True
             ready_event.set()
             logger.info("✅ 后台基础设施全部初始化完毕！")
@@ -130,6 +137,11 @@ async def lifespan(app: FastAPI):
             await app.state.mcp_manager.close_all()
     except Exception as e:
         logger.warning(f"关闭MCP管理器出错: {e}")
+    try:
+        if app.state.kb_watcher:
+            await app.state.kb_watcher.stop()
+    except Exception as e:
+        logger.warning(f"停止KB监听器出错: {e}")
 
 
 # ============ FastAPI App 构建 ============
