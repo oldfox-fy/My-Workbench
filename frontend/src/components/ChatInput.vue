@@ -95,7 +95,7 @@
           <n-icon v-else><MicOutline /></n-icon>
         </template>
       </n-button>
-      <span v-if="isProcessing" class="mic-processing">识别中…</span>
+      <span v-if="isRecording && interimText" class="mic-interim">{{ interimText }}</span>
 
       <!-- 自动朗读开关 -->
       <n-button
@@ -166,7 +166,7 @@ const emit = defineEmits<{
 }>()
 
 // 语音录音器
-const { isRecording, isProcessing, errorMsg, startRecording, stopRecording, cancelRecording } = useVoiceRecorder()
+const { isRecording, interimText, errorMsg, startRecording, stopRecording, cancelRecording } = useVoiceRecorder()
 
 async function toggleRecording() {
   if (isRecording.value) {
@@ -457,10 +457,13 @@ function triggerJelly() {
   0%, 100% { transform: scale(1); }
   50% { transform: scale(1.2); }
 }
-.mic-processing {
+.mic-interim {
   font-size: 12px;
   color: var(--text-secondary);
   white-space: nowrap;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .auto-read-btn {
   width: 40px;

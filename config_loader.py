@@ -82,6 +82,10 @@ class AppConfig:
         self.voice_stt_model = vc.get("stt_model", "whisper-1")
         self.voice_tts_model = vc.get("tts_model", "tts-1")
         self.voice_tts_voice = vc.get("tts_voice", "nova")
+        self.voice_stt_base_url = vc.get("stt_base_url", "")
+        self.voice_stt_api_key = vc.get("stt_api_key", "")
+        self.voice_tts_base_url = vc.get("tts_base_url", "")
+        self.voice_tts_api_key = vc.get("tts_api_key", "")
 
     def _resolve_path(self, path_str: str, base: Path) -> Path:
         """将路径字符串解析为 Path 对象，支持绝对路径和相对路径"""

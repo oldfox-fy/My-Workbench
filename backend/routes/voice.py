@@ -11,7 +11,7 @@
   - TTS: 发送文本 → POST /api/tts → 返回 audio/mpeg 流 → <audio> 播放
 """
 import io
-from fastapi import APIRouter, HTTPException, Request, UploadFile, File, Form
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Optional
@@ -26,7 +26,6 @@ router = APIRouter(prefix="/api", tags=["voice"])
 
 @router.post("/stt")
 async def speech_to_text(
-    request: Request,
     file: UploadFile = File(...),
     language: Optional[str] = Form("zh"),
 ):
@@ -43,19 +42,10 @@ async def speech_to_text(
     if not config.voice_enabled:
         raise HTTPException(status_code=503, detail="语音服务未启用")
 
-    # 使用当前聊天模型的 API 配置（与 LLM 共用 key/base_url）
-    model_config = _get_current_model_config(request)
-    if not model_config:
-        raise HTTPException(status_code=400, detail="请先在设置中配置模型")
-
-    client = AsyncOpenAI(
-        api_key=model_config["api_key"] or None,
-        base_url=model_config["base_url"],
-    )
+    client = _get_voice_client(stt=True)
 
     try:
         audio_bytes = await file.read()
-        # OpenAI 的 transcriptions API 需要类文件对象
         audio_file = io.BytesIO(audio_bytes)
         audio_file.name = file.filename or "audio.webm"
 
@@ -80,7 +70,6 @@ class TTSRequest(BaseModel):
 
 @router.post("/tts")
 async def text_to_speech(
-    request: Request,
     body: TTSRequest,
 ):
     """
@@ -100,14 +89,7 @@ async def text_to_speech(
     if not body.text or not body.text.strip():
         raise HTTPException(status_code=400, detail="text 不能为空")
 
-    model_config = _get_current_model_config(request)
-    if not model_config:
-        raise HTTPException(status_code=400, detail="请先在设置中配置模型")
-
-    client = AsyncOpenAI(
-        api_key=model_config["api_key"] or None,
-        base_url=model_config["base_url"],
-    )
+    client = _get_voice_client(stt=False)
 
     try:
         voice = body.voice or config.voice_tts_voice
@@ -134,19 +116,42 @@ async def text_to_speech(
 
 # ──────────────────── 辅助 ────────────────────
 
-def _get_current_model_config(request: Request) -> Optional[dict]:
-    """尝试从 LLMService.instance 获取当前模型配置。"""
+def _get_voice_client(stt: bool = True):
+    """
+    获取语音 API 客户端。
+
+    优先使用 app_config.yaml 中 voice 节配置的独立 API（stt_* / tts_*），
+    若未配置则回退到当前聊天 LLM 的 API 配置。
+    这解决了 DeepSeek 等不含语音 API 的模型需要单独配置语音端点的问题。
+    """
+    # 1. 先尝试 voice 独立配置
+    if stt:
+        base = config.voice_stt_base_url
+        key = config.voice_stt_api_key
+    else:
+        base = config.voice_tts_base_url
+        key = config.voice_tts_api_key
+
+    if base and key:
+        return AsyncOpenAI(api_key=key, base_url=base)
+
+    # 2. 回退到聊天 LLM 的配置（适用于 OpenAI 等同时支持语音的提供商）
     try:
         from backend.services.llm_service import LLMService
-        svc = getattr(request.app.state, "llm_service", None) or LLMService.instance
+        svc = LLMService.instance
         if svc:
-            return {
-                "api_key": getattr(svc.client, "api_key", ""),
-                "base_url": str(getattr(svc.client, "base_url", "")),
-            }
+            llm_base = str(getattr(svc.client, "base_url", ""))
+            llm_key = getattr(svc.client, "api_key", "")
+            if llm_key:
+                return AsyncOpenAI(api_key=llm_key, base_url=llm_base)
     except Exception:
         pass
-    return None
+
+    raise HTTPException(
+        status_code=400,
+        detail="语音服务未配置 API。请在 app_config.yaml 的 voice 节中设置 stt_base_url/stt_api_key，"
+               "或确保当前聊天模型支持语音 API（如 OpenAI）。"
+    )
 
 
 @router.get("/voice-config")

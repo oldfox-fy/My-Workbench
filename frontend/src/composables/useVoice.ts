@@ -1,174 +1,237 @@
 // frontend/src/composables/useVoice.ts
-// 语音输入（STT）+ 语音输出（TTS）组合式函数
+// 语音输入（STT）+ 语音输出（TTS）—— 全部使用浏览器原生 API，零后端依赖
+//
+// STT:  SpeechRecognition / webkitSpeechRecognition（Chrome/Edge/PyWebView 内置）
+// TTS:  speechSynthesis（所有浏览器内置）
+//
+// 不需要任何 API Key 或后端语音服务，纯浏览器端完成。
 
 import { ref, onUnmounted } from 'vue'
 
-/** 录音状态 */
+// SpeechRecognition 类型声明（TS 标准库可能缺失）
+declare class SpeechRecognition {
+  lang: string
+  interimResults: boolean
+  continuous: boolean
+  maxAlternatives: number
+  onresult: ((event: SpeechRecognitionEvent) => void) | null
+  onerror: ((event: SpeechRecognitionErrorEvent) => void) | null
+  onend: (() => void) | null
+  start(): void
+  stop(): void
+  abort(): void
+}
+declare interface SpeechRecognitionEvent {
+  results: SpeechRecognitionResultList
+  resultIndex: number
+}
+declare interface SpeechRecognitionResultList {
+  length: number
+  [index: number]: SpeechRecognitionResult
+}
+declare interface SpeechRecognitionResult {
+  isFinal: boolean
+  length: number
+  [index: number]: SpeechRecognitionAlternative
+}
+declare interface SpeechRecognitionAlternative {
+  transcript: string
+  confidence: number
+}
+declare interface SpeechRecognitionErrorEvent {
+  error: string
+  message: string
+}
+
+// ──────────────────── STT 语音转文字 ────────────────────
+
 export function useVoiceRecorder() {
   const isRecording = ref(false)
-  const isProcessing = ref(false)
+  const interimText = ref('')   // 实时识别中间结果
   const errorMsg = ref('')
-  let mediaRecorder: MediaRecorder | null = null
-  let audioChunks: Blob[] = []
+  let recognition: SpeechRecognition | null = null
+
+  function _getRecognition(): SpeechRecognition {
+    const Ctor =
+      (window as any).SpeechRecognition ||
+      (window as any).webkitSpeechRecognition
+    if (!Ctor) {
+      throw new Error('当前浏览器不支持语音识别。请使用 Chrome 或 Edge。')
+    }
+    const rec = new Ctor() as SpeechRecognition
+    rec.lang = 'zh-CN'
+    rec.interimResults = true
+    rec.continuous = true
+    rec.maxAlternatives = 1
+    return rec
+  }
 
   const startRecording = async (): Promise<void> => {
     errorMsg.value = ''
-    audioChunks = []
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      // 优先 webm（Chrome/Edge），其次 mp4
-      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-        ? 'audio/webm;codecs=opus'
-        : MediaRecorder.isTypeSupported('audio/webm')
-          ? 'audio/webm'
-          : 'audio/mp4'
+    interimText.value = ''
 
-      mediaRecorder = new MediaRecorder(stream, { mimeType })
-      mediaRecorder.ondataavailable = (e) => {
-        if (e.data.size > 0) audioChunks.push(e.data)
-      }
-      mediaRecorder.onerror = () => {
-        errorMsg.value = '录音设备出错'
-        stopRecording()
-      }
-      mediaRecorder.start()
-      isRecording.value = true
+    try {
+      recognition = _getRecognition()
     } catch (e: any) {
-      if (e.name === 'NotAllowedError') {
-        errorMsg.value = '麦克风权限被拒绝，请在浏览器设置中允许访问麦克风'
-      } else {
-        errorMsg.value = `无法启动录音：${e.message}`
+      errorMsg.value = e.message
+      return
+    }
+
+    recognition.onresult = (event: SpeechRecognitionEvent) => {
+      // 拼接所有 interim 片段用于实时显示
+      let interim = ''
+      let final = ''
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const result = event.results[i]
+        if (result.isFinal) {
+          final += result[0]?.transcript || ''
+        } else {
+          interim += result[0]?.transcript || ''
+        }
       }
+      interimText.value = final + interim
+    }
+
+    recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
+      if (event.error === 'no-speech') {
+        // 静默不算错误，继续监听
+        return
+      }
+      if (event.error === 'aborted') {
+        return
+      }
+      errorMsg.value = `语音识别出错：${event.message || event.error}`
+      isRecording.value = false
+    }
+
+    recognition.onend = () => {
+      // 如果还在录音状态（非手动停止），自动重启以支持连续识别
+      if (isRecording.value && recognition) {
+        try { recognition.start() } catch { /* ignore */ }
+      } else {
+        isRecording.value = false
+      }
+    }
+
+    try {
+      recognition.start()
+      isRecording.value = true
+    } catch {
+      errorMsg.value = '启动语音识别失败'
     }
   }
 
-  const stopRecording = (): Promise<string> => {
-    return new Promise((resolve, reject) => {
-      if (!mediaRecorder || mediaRecorder.state === 'inactive') {
-        isRecording.value = false
-        reject(new Error('录音未启动'))
-        return
-      }
-      mediaRecorder.onstop = async () => {
-        // 释放麦克风
-        mediaRecorder!.stream.getTracks().forEach(t => t.stop())
-        isRecording.value = false
-        isProcessing.value = true
+  const stopRecording = async (): Promise<string> => {
+    if (!recognition) {
+      isRecording.value = false
+      return interimText.value || ''
+    }
 
-        try {
-          const blob = new Blob(audioChunks, { type: mediaRecorder!.mimeType })
-          const text = await sendToSTT(blob)
-          isProcessing.value = false
-          resolve(text)
-        } catch (e: any) {
-          isProcessing.value = false
-          errorMsg.value = e.message || '语音识别失败'
-          reject(e)
-        }
+    return new Promise((resolve) => {
+      recognition!.onend = () => {
+        isRecording.value = false
+        const text = interimText.value.trim()
+        interimText.value = ''
+        resolve(text)
       }
-      mediaRecorder.stop()
+      recognition!.stop()
     })
   }
 
   const cancelRecording = () => {
-    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-      mediaRecorder.onstop = null // 阻止 stopRecording 的 Promise
-      mediaRecorder.stream.getTracks().forEach(t => t.stop())
-      mediaRecorder.stop()
+    if (recognition) {
+      recognition.onend = null
+      recognition.abort()
+      recognition = null
     }
     isRecording.value = false
-    audioChunks = []
+    interimText.value = ''
   }
 
   onUnmounted(() => {
     cancelRecording()
   })
 
-  return { isRecording, isProcessing, errorMsg, startRecording, stopRecording, cancelRecording }
-}
-
-/** 发送音频到后端 STT */
-async function sendToSTT(audioBlob: Blob): Promise<string> {
-  const formData = new FormData()
-  formData.append('file', audioBlob, 'recording.webm')
-  formData.append('language', 'zh')
-
-  const resp = await fetch('/api/stt', {
-    method: 'POST',
-    body: formData,
-  })
-  if (!resp.ok) {
-    const err = await resp.json().catch(() => ({ detail: `HTTP ${resp.status}` }))
-    throw new Error(err.detail || `语音识别失败 (${resp.status})`)
+  return {
+    isRecording,
+    interimText,
+    errorMsg,
+    startRecording,
+    stopRecording,
+    cancelRecording,
   }
-  const data = await resp.json()
-  return data.text || ''
 }
 
-/** TTS 播放 */
+// ──────────────────── TTS 文字转语音 ────────────────────
+
 export function useTTS() {
   const isSpeaking = ref(false)
   const autoRead = ref(false)
-  let currentAudio: HTMLAudioElement | null = null
+  let currentUtterance: SpeechSynthesisUtterance | null = null
 
-  const speak = async (text: string, voice?: string): Promise<void> => {
-    // 先清理旧音频
+  /** 获取最佳中文语音 */
+  function _pickVoice(): SpeechSynthesisVoice | null {
+    const voices = speechSynthesis.getVoices()
+    // 优先级：中文普通话 > 任何中文 > 默认
+    const mandarin = voices.find(v => v.lang.startsWith('zh-CN'))
+    if (mandarin) return mandarin
+    const anyChinese = voices.find(v => v.lang.startsWith('zh'))
+    if (anyChinese) return anyChinese
+    return voices[0] || null
+  }
+
+  const speak = (text: string): void => {
     stop()
 
     if (!text.trim()) return
-    isSpeaking.value = true
-
-    try {
-      const resp = await fetch('/api/tts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: text.slice(0, 2000), voice }),
-      })
-      if (!resp.ok) {
-        const err = await resp.json().catch(() => ({ detail: `HTTP ${resp.status}` }))
-        throw new Error(err.detail || `语音合成失败 (${resp.status})`)
-      }
-      const blob = await resp.blob()
-      const url = URL.createObjectURL(blob)
-      currentAudio = new Audio(url)
-      currentAudio.onended = () => {
-        isSpeaking.value = false
-        URL.revokeObjectURL(url)
-        currentAudio = null
-      }
-      currentAudio.onerror = () => {
-        isSpeaking.value = false
-        currentAudio = null
-      }
-      await currentAudio.play()
-    } catch (e: any) {
-      isSpeaking.value = false
-      console.warn('[TTS] 播放失败:', e.message)
+    if (!('speechSynthesis' in window)) {
+      console.warn('[TTS] 浏览器不支持 speechSynthesis')
+      return
     }
+
+    // 清除 HTML 标记只留纯文本
+    const plain = text
+      .replace(/<!--[\s\S]*?-->/g, '')
+      .replace(/<[^>]*>/g, '')
+      .replace(/[*_~`#>#]/g, '')
+      .replace(/\n+/g, '。')
+      .trim()
+
+    if (!plain) return
+
+    currentUtterance = new SpeechSynthesisUtterance(plain.slice(0, 2000))
+    currentUtterance.rate = 1.0
+    currentUtterance.pitch = 1.0
+
+    const voice = _pickVoice()
+    if (voice) currentUtterance.voice = voice
+
+    currentUtterance.onstart = () => { isSpeaking.value = true }
+    currentUtterance.onend = () => {
+      isSpeaking.value = false
+      currentUtterance = null
+    }
+    currentUtterance.onerror = (e) => {
+      // "interrupted" 是 stop() 触发的，不算错误
+      if (e.error !== 'interrupted') {
+        console.warn('[TTS] 朗读出错:', e.error)
+      }
+      isSpeaking.value = false
+      currentUtterance = null
+    }
+
+    speechSynthesis.speak(currentUtterance)
   }
 
   const stop = () => {
-    if (currentAudio) {
-      currentAudio.pause()
-      currentAudio.currentTime = 0
-      currentAudio = null
-    }
+    speechSynthesis.cancel()
     isSpeaking.value = false
-  }
-
-  const speakLastAssistantMsg = async (messages: any[]) => {
-    // 找最后一条 assistant 消息
-    for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i]?.role === 'assistant' && messages[i]?.content) {
-        await speak(messages[i].content)
-        return
-      }
-    }
+    currentUtterance = null
   }
 
   onUnmounted(() => {
     stop()
   })
 
-  return { isSpeaking, autoRead, speak, stop, speakLastAssistantMsg }
+  return { isSpeaking, autoRead, speak, stop }
 }
