@@ -16,15 +16,20 @@ from backend.database import get_db
 
 
 # 图像生成触发关键词（中英文）
+# 注意：关键词必须明确指向"图片/图像/画"——不能仅凭"生成"就切换，
+# 否则"生成一段代码""生成一个总结"等纯文本请求也会被误路由到生图模型。
 IMAGE_GEN_KEYWORDS = [
-    # 中文
-    "生成一张", "生成一幅", "生成图片", "生成图像", "画一张", "画一幅",
-    "画个", "画图", "生成一张图", "来张图", "做一张图", "生成个",
-    "帮我画", "帮我生成", "给我画", "给我生成", "画一个", "生成一个",
-    "创建一张", "创建图片", "生成一张图片", "画一张图片",
-    # 英文
-    "generate an image", "create an image", "draw a", "generate a picture",
-    "make an image", "generate image", "create picture", "make a picture",
+    # 中文 — 明确包含"图""图片""图像""一张""一幅"等图像产物的词
+    "生成一张", "生成一幅", "生成图片", "生成图像",
+    "画一张", "画一幅", "画一张图", "画一幅图",
+    "生成一张图", "生成一张图片", "画一张图片",
+    "来张图", "做一张图", "做张图",
+    "创建一张", "创建图片", "创建一张图片",
+    # 英文 — 明确包含 image/picture/photo 等图像产物
+    "generate an image", "generate a picture", "generate a photo",
+    "create an image", "create a picture", "create a photo",
+    "make an image", "make a picture", "make a photo",
+    "draw an image", "draw a picture", "draw a photo",
 ]
 
 # 深度推理触发关键词（中英文）
@@ -166,8 +171,9 @@ def detect_input_role(messages: List[Dict[str, Any]], enable_tools: bool = False
 
     优先级: image_gen > vision > audio > reasoning > default
 
-    注意: image_gen 优先级最高，因为用户上传图片也可能是"按这张图生成类似的"，
-    此时应优先交给生图模型处理。
+    注意: image_gen 优先级最高，因为用户可能在对话中上传了参考图片后
+    再说"生成一张类似的"，此时关键词检测命中 → 应优先走生图模型；
+    而仅上传图片但未触发生图关键词时仍走 vision。
     """
     if _needs_image_gen(messages):
         return "image_gen"

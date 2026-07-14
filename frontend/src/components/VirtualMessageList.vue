@@ -208,8 +208,9 @@ import ToolCallsNode from '@/components/CustomNodes/ToolCallsNode.vue'
 import TokenUsageNode from '@/components/CustomNodes/TokenUsageNode.vue'
 import ImageNode from '@/components/CustomNodes/ImageNode.vue'
 import LinkNode from '@/components/CustomNodes/LinkNode.vue'
+import PPTPreviewNode from '@/components/CustomNodes/PPTPreviewNode.vue'
 import MessageToc from '@/components/MessageToc.vue'
-const customHtmlTags = ['reasoning', 'toolcalls', 'tokenusage']
+const customHtmlTags = ['reasoning', 'toolcalls', 'tokenusage', 'pptpreview']
 const props = defineProps({
   chatId: { type: String, default: 'nochat' },
   messages: { type: Array as PropType<Message[]>, required: true },
@@ -412,7 +413,8 @@ onMounted(() => {
     toolcalls: ToolCallsNode,
     tokenusage: TokenUsageNode,
     image: ImageNode,
-    link: LinkNode
+    link: LinkNode,
+    pptpreview: PPTPreviewNode,
   })
   setTimeout(() => {
     measureAll()

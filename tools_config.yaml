@@ -360,3 +360,45 @@ tools:
       required: ["url"]
     module: backend.system_tools.web_fetch
     function_name: web_fetch
+
+  - name: system_generate_pptx
+    title: 生成PPT
+    description: >
+      根据结构化幻灯片数据直接生成 .pptx 演示文稿文件，无需手动编写 python-pptx 脚本。
+
+      调用前应先用 system_todo 规划大纲（确定页数和每页主题），
+      然后调用本工具传入完整的幻灯片数据即可一键生成。
+
+      支持 4 种页面类型（type 字段）：
+      - cover：封面页（居中大标题 + 副标题 + 演讲者信息）
+      - toc：目录页（编号列表展示章节）
+      - content：内容页（标题 + 要点/正文，默认类型）
+      - ending：结尾页（居中致谢 + Q&A）
+
+      支持 3 套主题（theme 字段）：blue（简约蓝）、warm（活力橙）、clean（极简白）。
+
+      生成产物通过 /files/generate/ 链接下载，同时自动渲染为可视化幻灯片卡片预览。
+    parameters:
+      type: object
+      properties:
+        slides:
+          type: array
+          description: >
+            幻灯片数组，每项为一个页面的描述对象 JSON。
+            格式：{"title":"标题","type":"cover|toc|content|ending","content":"正文","subtitle":"副标题","bullets":["要点1","要点2"],"items":["目录项1"],"speaker":"演讲者"}
+            必填字段：title（每页标题）
+          items:
+            type: object
+        theme:
+          type: string
+          enum: ["blue", "warm", "clean"]
+          description: 主题配色方案，默认为 blue（简约蓝）。
+        filename:
+          type: string
+          description: 输出文件名（不含扩展名），省略则自动生成。例如 "AI发展报告"。
+        title:
+          type: string
+          description: 演示文稿总标题，显示在封面页。省略则取 filename 或自动命名。
+      required: ["slides"]
+    module: backend.system_tools.ppt_generator
+    function_name: generate_pptx

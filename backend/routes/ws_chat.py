@@ -116,18 +116,6 @@ async def _stream_to_ws(ws: WebSocket, generator, cancel_event: asyncio.Event):
                 pass
             continue
 
-        # Span 追踪事件
-        if text.startswith("<!--span:start:"):
-            parts = text.replace("<!--span:start:", "").replace("-->", "").split(":", 2)
-            if len(parts) >= 3:
-                await ws.send_json({"type": "span_event", "action": "start", "span_id": parts[0], "span_type": parts[1], "name": parts[2]})
-            continue
-        if text.startswith("<!--span:end:"):
-            parts = text.replace("<!--span:end:", "").replace("-->", "").split(":", 2)
-            if len(parts) >= 3:
-                await ws.send_json({"type": "span_event", "action": "end", "span_id": parts[0], "status": parts[1], "duration_ms": parts[2]})
-            continue
-
         # 普通文本
         if text and not text.startswith("<!--"):
             await ws.send_json({"type": "chunk", "content": text})

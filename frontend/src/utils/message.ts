@@ -120,7 +120,21 @@ export function processMessageContent(text: string, isStreaming = false): string
   // 保底清理：清理可能残留在外面的 tool_preview 和 tool_call 标记
   processedText = processedText.replace(/<!--tool_preview:(start|end):[^>]+-->/g, '')
   processedText = processedText.replace(/<!--tool_call:[^>]+-->/g, '')
-  // 3. 处理 Token 用量
+  // 3. 处理 PPT 预览标记（base64 编码的 JSON）
+  processedText = processedText.replace(
+    /<!--ppt_preview:([A-Za-z0-9+/=]+)-->/g,
+    (_, b64Str) => {
+      try {
+        const jsonStr = decodeURIComponent(escape(atob(b64Str)))
+        const data = JSON.parse(jsonStr)
+        const tagContent = JSON.stringify(data)
+        return `\n\n<pptpreview>${tagContent}</pptpreview>\n\n`
+      } catch {
+        return ''
+      }
+    }
+  )
+  // 4. 处理 Token 用量
   processedText = processedText.replace(
     /<!--token_usage:(.*?)-->/g,
     (_, jsonStr) => {

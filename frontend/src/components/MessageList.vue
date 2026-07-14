@@ -163,10 +163,11 @@ import ToolCallsNode from '@/components/CustomNodes/ToolCallsNode.vue'
 import TokenUsageNode from '@/components/CustomNodes/TokenUsageNode.vue'
 import ImageNode from '@/components/CustomNodes/ImageNode.vue'
 import LinkNode from '@/components/CustomNodes/LinkNode.vue'
+import PPTPreviewNode from '@/components/CustomNodes/PPTPreviewNode.vue'
 // 引入目录组件 (请根据实际路径调整)
 import MessageToc from '@/components/MessageToc.vue'
 
-const customHtmlTags = ['reasoning', 'toolcalls', 'tokenusage']
+const customHtmlTags = ['reasoning', 'toolcalls', 'tokenusage', 'pptpreview']
 
 const props = defineProps({
   chatId: { type: String, default: 'nochat' },
@@ -367,7 +368,8 @@ onMounted(() => {
     toolcalls: ToolCallsNode,
     tokenusage: TokenUsageNode,
     image: ImageNode,
-    link: LinkNode
+    link: LinkNode,
+    pptpreview: PPTPreviewNode,
   })
   // 初始化时滚动到底部
   nextTick(() => scrollToLatest())
