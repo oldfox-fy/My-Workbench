@@ -67,13 +67,40 @@ class Embedder:
                 resp = await self.client.embeddings.create(
                     model=self.cfg.model,
                     input=texts,
+                    encoding_format="float",  # 显式指定 float，兼容不支持 base64 的提供商
                 )
                 # 保持与输入顺序一致
                 data = sorted(resp.data, key=lambda d: d.index)
                 return [d.embedding for d in data]
             except APIError as e:
                 last_err = e
-                logger.warning(f"[embedding] 第 {attempt + 1} 次调用失败：{getattr(e, 'message', e)}")
+                status = getattr(e, 'status_code', 0)
+                err_body = {}
+                try:
+                    err_body = e.body if isinstance(e.body, dict) else {}
+                except Exception:
+                    pass
+                err_code = err_body.get("code", "")
+                err_msg = err_body.get("message", str(e))
+
+                # 硅基流动 20015：参数无效 → 通常是模型名不支持或 encoding_format 问题
+                if err_code == 20015:
+                    logger.warning(
+                        f"[embedding] API 参数错误（code=20015）。"
+                        f"请检查知识库设置中的 embedding 模型名是否正确。"
+                        f"硅基流动支持的模型如 BAAI/bge-m3、BAAI/bge-large-zh-v1.5 等。"
+                        f"当前模型: {self.cfg.model}"
+                    )
+                    # 不重试——参数错误重试也没用
+                    raise EmbeddingError(
+                        f"embedding API 参数无效（code=20015）。"
+                        f"请检查模型名「{self.cfg.model}」是否在当前服务商支持。"
+                    ) from e
+
+                logger.warning(
+                    f"[embedding] 第 {attempt + 1} 次调用失败"
+                    f"（HTTP {status}）: {err_msg[:200]}"
+                )
                 await asyncio.sleep(0.5 * (attempt + 1))
             except Exception as e:
                 last_err = e

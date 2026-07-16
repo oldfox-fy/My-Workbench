@@ -338,24 +338,35 @@ async def _check_and_repair(db):
         logger.warning(f"[DB] 主库完整性检测失败: {e}")
         # 不 return——继续尝试修复 FTS/vec
 
-    # ── 第二步：FTS5 虚表写操作探活（← 这是真正的"损坏"检测）──
+    # ── 第二步：kb_chunks 主表探活（先于 FTS，因为 FTS 依赖它）──
+    kb_broken = await _probe_kb_chunks(db)
+    if kb_broken:
+        logger.warning("[DB] kb_chunks 主表访问/写入探测失败，触发自动重建...")
+    else:
+        logger.info("[DB] kb_chunks 主表探测通过")
+
+    # ── 第三步：FTS5 虚表写操作探活 ──
     # integrity_check 不检查 FTS5 的影子表（_content/_idx/_docsize/_config），
     # 必须用 INSERT + DELETE 来验证虚表是否真的能正常工作。
-    fts_broken = await _probe_fts_write(db)
+    fts_broken = False if kb_broken else await _probe_fts_write(db)
     if fts_broken:
         logger.warning("[DB] FTS5 虚表写入探测失败，触发自动修复...")
-    else:
+    elif not kb_broken:
         logger.info("[DB] FTS5 虚表写入探测通过")
 
-    # ── 第三步：vec_chunks 表探活 ──
+    # ── 第四步：vec_chunks 表探活 ──
     vec_broken = await _probe_vec_access(db)
     if vec_broken:
         logger.warning("[DB] 向量表访问探测失败，触发自动清理...")
     else:
         logger.info("[DB] 向量表访问探测通过（或表不存在，跳过）")
 
-    # ── 第四步：执行修复 ──
+    # ── 第五步：执行修复 ──
     repaired = []
+
+    if kb_broken and await _try_repair_kb_tables(db):
+        repaired.append("kb_chunks + kb_index_meta + kb_chunks_fts")
+        fts_broken = False  # kb_chunks 重建时已一并重建了 FTS
 
     if fts_broken and await _try_repair_fts(db):
         repaired.append("kb_chunks_fts")
@@ -422,6 +433,134 @@ async def _probe_vec_access(db) -> bool:
         return False
     except Exception:
         return True  # 损坏
+
+
+async def _probe_kb_chunks(db) -> bool:
+    """
+    kb_chunks 主表探活：先 SELECT 再尝试临时表写入。
+    如果连 SELECT 都失败，说明主 B-tree 已损坏，需要 DROP + 重建。
+    返回 True 表示损坏，False 表示正常。
+    """
+    try:
+        # 检查表是否存在
+        row = await db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='kb_chunks'"
+        )
+        if not await row.fetchone():
+            return False  # 全新数据库
+
+        # SELECT 探活
+        await db.execute("SELECT count(*) FROM kb_chunks")
+
+        # 更进一步：尝试创建一个临时表然后立即删除，
+        # 验证 SQLite 的写入路径没有损坏
+        await db.execute(
+            "CREATE TEMP TABLE IF NOT EXISTS _db_probe (x INTEGER)"
+        )
+        await db.execute("INSERT INTO _db_probe VALUES (1)")
+        await db.execute("DROP TABLE _db_probe")
+        return False
+    except Exception:
+        return True
+
+
+async def _try_repair_kb_tables(db) -> bool:
+    """
+    重建 KB 相关表：kb_chunks + kb_index_meta + kb_chunks_fts。
+    这是最彻底的修复——DROP 所有知识库表 → 重新 CREATE。
+    数据会丢失，但全量重建索引可以恢复。
+
+    返回 True 表示已修复，False 表示修复失败。
+    """
+    logger.warning("[DB] kb_chunks 主表损坏，重建 KB 表结构...")
+    try:
+        # 先尝试 DROP（可能失败，用 try 逐个处理）
+        for tbl in ("kb_chunks_fts", "kb_chunks", "kb_index_meta"):
+            try:
+                # FTS5 用 DROP TABLE；普通表也可以用
+                await db.execute(f"DROP TABLE IF EXISTS {tbl}")
+            except Exception:
+                # 极端损坏：DROP 也失败 → 尝试直接删 sqlite_master 记录
+                try:
+                    await db.execute(
+                        "DELETE FROM sqlite_master WHERE type='table' AND name=?",
+                        (tbl,),
+                    )
+                except Exception:
+                    pass
+
+        # 重建触发器（先删后建，避免残留）
+        for trig in ("kb_chunks_fts_ai", "kb_chunks_fts_ad", "kb_chunks_fts_au"):
+            try:
+                await db.execute(f"DROP TRIGGER IF EXISTS {trig}")
+            except Exception:
+                pass
+
+        # 重建 kb_chunks
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS kb_chunks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                file_path TEXT NOT NULL,
+                chunk_index INTEGER NOT NULL,
+                heading_path TEXT DEFAULT '',
+                content TEXT NOT NULL,
+                file_hash TEXT NOT NULL,
+                model_name TEXT NOT NULL,
+                chunk_type TEXT NOT NULL DEFAULT 'text',
+                page_number INTEGER DEFAULT NULL,
+                citation_id TEXT DEFAULT '',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_kb_chunks_file ON kb_chunks(file_path)"
+        )
+
+        # 重建 kb_index_meta
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS kb_index_meta (
+                file_path TEXT PRIMARY KEY,
+                file_hash TEXT NOT NULL,
+                mtime REAL NOT NULL,
+                chunk_count INTEGER NOT NULL DEFAULT 0,
+                ocr_text TEXT DEFAULT '',
+                image_description TEXT DEFAULT '',
+                indexed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # 重建 kb_chunks_fts
+        await db.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS kb_chunks_fts USING fts5(
+                content, heading_path, content='kb_chunks', content_rowid='id'
+            )
+        """)
+        await db.execute("""
+            CREATE TRIGGER IF NOT EXISTS kb_chunks_fts_ai AFTER INSERT ON kb_chunks BEGIN
+                INSERT INTO kb_chunks_fts(rowid, content, heading_path)
+                VALUES (new.id, new.content, new.heading_path);
+            END
+        """)
+        await db.execute("""
+            CREATE TRIGGER IF NOT EXISTS kb_chunks_fts_ad AFTER DELETE ON kb_chunks BEGIN
+                INSERT INTO kb_chunks_fts(kb_chunks_fts, rowid, content, heading_path)
+                VALUES ('delete', old.id, old.content, old.heading_path);
+            END
+        """)
+        await db.execute("""
+            CREATE TRIGGER IF NOT EXISTS kb_chunks_fts_au AFTER UPDATE ON kb_chunks BEGIN
+                INSERT INTO kb_chunks_fts(kb_chunks_fts, rowid, content, heading_path)
+                VALUES ('delete', old.id, old.content, old.heading_path);
+                INSERT INTO kb_chunks_fts(rowid, content, heading_path)
+                VALUES (new.id, new.content, new.heading_path);
+            END
+        """)
+
+        logger.info("[DB] KB 表结构重建完成（kb_chunks + kb_index_meta + kb_chunks_fts）")
+        return True
+    except Exception as e:
+        logger.error(f"[DB] KB 表结构重建失败: {e}")
+        return False
 
 
 async def _try_repair_fts(db) -> bool:
