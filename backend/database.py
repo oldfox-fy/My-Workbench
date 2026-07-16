@@ -9,8 +9,9 @@ async def get_db():
     db = await aiosqlite.connect(f"{config.data_dir}/data/lumneo.db")
     db.row_factory = aiosqlite.Row
     # WAL 模式是数据库级设置，只要任一连接打开过就会持久化。
-    # 这里做一层保险：哪怕 init_db 没跑过，每次 get_db 也确保 WAL 开启。
     await db.execute("PRAGMA journal_mode=WAL")
+    # busy_timeout：写锁冲突时等待最多 5 秒而非立即报 SQLITE_BUSY
+    await db.execute("PRAGMA busy_timeout=5000")
     return db
 
 async def init_db():

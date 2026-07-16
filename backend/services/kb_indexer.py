@@ -151,23 +151,39 @@ def _scan_files(root: Path) -> List[Path]:
     return files
 
 
+# 自动标签待处理队列：[(file_path, text), ...]
+# rebuild 期间收集，rebuild 结束后批量处理，避免与主索引流程的写锁冲突
+_pending_auto_tags: list = []
+
+
 def _schedule_auto_tag(file_path: str, text: str):
-    """对新索引的文件自动打标签（后台运行，不阻塞索引流程）。"""
+    """收集待自动标签的文件（不立即执行，等 rebuild 结束批量处理）。"""
     if not _AUTO_TAG_ENABLED:
         return
-    try:
-        asyncio.create_task(_auto_tag_task(file_path, text))
-    except Exception:
-        pass  # 静默失败，不影响索引
+    _pending_auto_tags.append((file_path, text))
 
 
-async def _auto_tag_task(file_path: str, text: str):
-    """后台任务：自动提取标签并持久化。"""
+async def _flush_auto_tags():
+    """批量执行所有待处理的自动标签。"""
+    global _pending_auto_tags
+    if not _pending_auto_tags:
+        return
+    pending = _pending_auto_tags
+    _pending_auto_tags = []
+    tagged = 0
     try:
         from backend.services.auto_tagger import auto_tag_and_persist
-        await auto_tag_and_persist(file_path, text)
+        for file_path, text in pending:
+            try:
+                written = await auto_tag_and_persist(file_path, text)
+                if written > 0:
+                    tagged += 1
+            except Exception as e:
+                logger.warning(f"[kb_indexer] 自动标签失败 {file_path}: {e}")
     except Exception as e:
-        logger.warning(f"[kb_indexer] 自动标签后台任务失败 {file_path}: {e}")
+        logger.warning(f"[kb_indexer] 自动标签批量处理异常: {e}")
+    if tagged:
+        logger.info(f"[kb_indexer] 自动标签完成：{tagged}/{len(pending)} 个文件已打标")
 
 
 async def rebuild(full: bool = False) -> Dict[str, Any]:
@@ -288,8 +304,11 @@ async def rebuild(full: bool = False) -> Dict[str, Any]:
         total_chunks += len(inserted)
         logger.info(f"[kb_indexer] 已索引 {rel}（{len(inserted)} 块）")
 
-        # ── 自动标签：新文件/变更文件索引后自动打标（后台不阻塞） ──
+        # ── 自动标签：新文件/变更文件索引后收集（rebuild 结束批量处理）──
         _schedule_auto_tag(rel, text)
+
+    # ── 批量自动标签（索引进阶结束，统一打标，避免写锁冲突）──
+    await _flush_auto_tags()
 
     files, chunks_total, _ = await kb_chunks.stats()
     return {
