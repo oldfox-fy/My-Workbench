@@ -643,6 +643,10 @@ async def file_read(
     # 1. 路径与权限校验
     if allowed_dirs is None:
         allowed_dirs = [config.uploads_dir, backend.workspace_path]
+        # 知识库目录也在白名单内（Agent 调用 kb_search/kb_read 时需要）
+        kb = getattr(backend, "kb_path", "")
+        if kb:
+            allowed_dirs.append(kb)
     allowed_paths = [Path(p).resolve() for p in allowed_dirs]
 
     max_bytes = max_size_mb * 1024 * 1024
