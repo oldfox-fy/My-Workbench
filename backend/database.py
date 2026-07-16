@@ -314,59 +314,121 @@ async def _ensure_column(db, table: str, column: str, ddl: str):
 async def _check_and_repair(db):
     """
     启动时检测数据库完整性，自动修复最常见的两种损坏：
-      1. kb_chunks_fts（FTS5 虚表）— 损坏后 DROP + 重建 + 从 kb_chunks 全量重建索引
+      1. kb_chunks_fts（FTS5 虚表）— 损坏后 DROP + 重建 + 从 kb_chunks 回填
       2. vec_chunks（sqlite-vec 虚表）— 损坏后 DROP（下次索引时自动重建）
 
+    重要：integrity_check 不检查 FTS5 影子表，必须独立用写操作探测。
     其它表损坏仅记录警告（自动修复风险太高，建议用户手动处理）。
     """
+    # ── 第一步：主库完整性检查（仅诊断用，不影响修复流程）──
+    integrity_ok = True
+    integrity_msg = ""
     try:
         ok = await db.execute("PRAGMA integrity_check")
         result = await ok.fetchone()
         if result and result[0] == "ok":
-            logger.info("[DB] 数据库完整性检测通过")
-            return
-        # 有损坏 → 记录详情
-        error_msg = result[0] if result else "未知错误"
-        logger.warning(f"[DB] 数据库完整性检测发现问题: {error_msg}")
+            logger.info("[DB] 主库 B-tree 完整性检测通过")
+        else:
+            integrity_ok = False
+            integrity_msg = result[0] if result else "未知错误"
+            logger.warning(f"[DB] 主库 B-tree 完整性检测发现问题: {integrity_msg}")
     except Exception as e:
-        # integrity_check 本身抛异常说明损坏严重
-        logger.warning(f"[DB] 数据库完整性检测失败（数据库可能严重损坏）: {e}")
-        return
+        integrity_ok = False
+        integrity_msg = str(e)
+        logger.warning(f"[DB] 主库完整性检测失败: {e}")
+        # 不 return——继续尝试修复 FTS/vec
 
-    # ── 逐表尝试修复 ──
+    # ── 第二步：FTS5 虚表写操作探活（← 这是真正的"损坏"检测）──
+    # integrity_check 不检查 FTS5 的影子表（_content/_idx/_docsize/_config），
+    # 必须用 INSERT + DELETE 来验证虚表是否真的能正常工作。
+    fts_broken = await _probe_fts_write(db)
+    if fts_broken:
+        logger.warning("[DB] FTS5 虚表写入探测失败，触发自动修复...")
+    else:
+        logger.info("[DB] FTS5 虚表写入探测通过")
+
+    # ── 第三步：vec_chunks 表探活 ──
+    vec_broken = await _probe_vec_access(db)
+    if vec_broken:
+        logger.warning("[DB] 向量表访问探测失败，触发自动清理...")
+    else:
+        logger.info("[DB] 向量表访问探测通过（或表不存在，跳过）")
+
+    # ── 第四步：执行修复 ──
     repaired = []
 
-    # 1) FTS5 虚表：最常见的损坏来源（高频写入 + 触发器）
-    if await _try_repair_fts(db):
+    if fts_broken and await _try_repair_fts(db):
         repaired.append("kb_chunks_fts")
 
-    # 2) sqlite-vec 向量表：独立扩展管理，可能与主库不一致
-    if await _try_repair_vec(db):
+    if vec_broken and await _try_repair_vec(db):
         repaired.append("vec_chunks")
 
     if repaired:
         logger.warning(
             f"[DB] 已自动修复 {len(repaired)} 个表: {', '.join(repaired)}。"
-            f"知识库需要「全量重建索引」以恢复数据完整性。"
+            f"知识库需要「全量重建索引」以恢复数据完整性。\n"
+            f"修复明细: FTS={'已修复' if 'kb_chunks_fts' in repaired else '正常'} "
+            f"向量={'已清理' if 'vec_chunks' in repaired else '正常'}"
+        )
+    elif not integrity_ok:
+        logger.warning(
+            f"[DB] 主库 B-tree 损坏但 FTS/vec 正常。"
+            f"建议手动执行修复: sqlite3 lumneo.db \"pragma integrity_check\""
         )
     else:
-        logger.warning(
-            "[DB] 检测到数据库损坏但无法自动修复。"
-            "建议手动执行: sqlite3 lumneo.db \"PRAGMA integrity_check\" 查看详情。"
-            "如果仅向量检索不可用，可在知识库设置中「全量重建索引」。"
+        logger.info("[DB] 所有检测通过，数据库健康")
+
+
+async def _probe_fts_write(db) -> bool:
+    """
+    FTS5 写操作探活：INSERT 一条傀儡行 → DELETE 它。
+    如果这过程中抛异常，说明 FTS5 影子表已损坏，需要修复。
+
+    返回 True 表示损坏，False 表示正常。
+    """
+    try:
+        # 先确认 kb_chunks_fts 表存在
+        row = await db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='kb_chunks_fts'"
         )
+        if not await row.fetchone():
+            return False  # 表不存在（全新数据库），无需修复
+
+        # 用一个不存在的 rowid 做 INSERT + DELETE 压力测试
+        # 这会在 FTS5 影子表上产生真实的写入
+        await db.execute(
+            "INSERT INTO kb_chunks_fts(kb_chunks_fts, rowid, content, heading_path) "
+            "VALUES ('delete', -99999, '__probe__', '')"
+        )
+        return False  # 写入成功，表健康
+    except Exception:
+        return True  # 损坏
+
+
+async def _probe_vec_access(db) -> bool:
+    """
+    向量表访问探活：检查 vec_chunks 是否存在且可读写。
+    返回 True 表示损坏，False 表示正常或不存在。
+    """
+    try:
+        row = await db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='vec_chunks'"
+        )
+        if not await row.fetchone():
+            return False  # 表不存在（从未建过索引），无需修复
+
+        # 尝试读取
+        await db.execute("SELECT count(*) FROM vec_chunks")
+        return False
+    except Exception:
+        return True  # 损坏
 
 
 async def _try_repair_fts(db) -> bool:
-    """尝试修复 FTS5 虚表：DROP → 重建 → 从 kb_chunks 回填。"""
-    try:
-        # 先测试 FTS 表是否可读
-        await db.execute("SELECT count(*) FROM kb_chunks_fts")
-    except Exception:
-        pass  # 不可读，进入修复
-    else:
-        return False  # 可读，不需要修复
-
+    """
+    修复 FTS5 虚表：DROP 所有相关对象 → 重建虚表 + 触发器 → 从 kb_chunks 回填。
+    返回 True 表示已修复，False 表示修复失败。
+    """
     logger.warning("[DB] kb_chunks_fts 损坏，自动重建 FTS 索引...")
     try:
         # 先尝试 DROP（可能失败，取决于损坏程度）
@@ -420,22 +482,11 @@ async def _try_repair_fts(db) -> bool:
 
 
 async def _try_repair_vec(db) -> bool:
-    """尝试修复 sqlite-vec 向量表：损坏则 DROP（下次索引时自动重建）。"""
-    try:
-        # 检查 vec_chunks 是否存在
-        row = await db.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='vec_chunks'"
-        )
-        exists = await row.fetchone()
-        if not exists:
-            return False  # 表不存在，无需修复
-
-        # 尝试读取
-        await db.execute("SELECT count(*) FROM vec_chunks")
-        return False  # 可读，无需修复
-    except Exception:
-        pass  # 损坏，进入修复
-
+    """
+    修复 sqlite-vec 向量表：DROP vec_chunks + vec_session_memories，
+    清除 kb_index_meta，下次全量重建索引时自动恢复。
+    返回 True 表示已清理，False 表示修复失败。
+    """
     logger.warning("[DB] vec_chunks 向量表损坏，自动清理（下次索引重建）...")
     try:
         await db.execute("DROP TABLE IF EXISTS vec_chunks")
