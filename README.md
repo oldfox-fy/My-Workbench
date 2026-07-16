@@ -1,4 +1,4 @@
-#  My Workbench — 点亮灵感的 AI 桌面伙伴
+#  My Workbench — 私人订制的 AI 工作台
 
 ![Vue 3](https://img.shields.io/badge/vue%203-%2335495e.svg?style=flat&logo=vuedotjs&logoColor=%234FC08D)
 ![Vite](https://img.shields.io/badge/vite-%23646CFF.svg?style=flat&logo=vite&logoColor=white)
@@ -10,9 +10,9 @@
 ![GitHub](https://img.shields.io/github/license/lumneo/LumNeo)
 ![Stars](https://img.shields.io/github/stars/lumneo/LumNeo?style=social)
 
-> 不是冰冷的工具，是悄悄懂你的那束光 (◕ᴗ◕✿)
+> 独家订制，全方位享受，最懂你的私人性感秘书 (◕ᴗ◕✿)
 
-My Workbench 是一款跨平台 AI 桌面应用，将**本地隐私**与**云端算力**融为一体。它不只是对话框，更是可自由塑造的**智能体工作台**——支持多角色切换、文件读写解析、MCP 工具扩展、可编程技能系统与本地知识库 RAG，让每个想法都有专属的执行者。界面现代优雅，桌面与移动端均完美适配，让 AI 协作如呼吸般自然。
+My Workbench 是My Workbench 是目前唯一将 "Obsidian 笔记 + AI RAG + Skills 技能系统 + MCP 生态 + 桌面隐私" 融合的产品。
 
 <p align="center">
   <img src="screenshots/dark.png"  width="45%" alt="深色模式">
@@ -108,17 +108,6 @@ My Workbench 是一款跨平台 AI 桌面应用，将**本地隐私**与**云端
 
 ---
 
-##  项目愿景与路线图
-
-My Workbench 不仅仅是一个生产力工具，还准备打造一个不断进化的**数字生命体**。
-
-| 阶段 | 版本 | 核心目标 | 状态 |
-| :--- | :--- | :--- | :--- |
-| **Phase 1** | **v1.0** | **极致生产力底座**<br>实现多模态交互基础，开放 MCP 接口生态，打造轻量级本地 AI 助手。 |  ✅ |
-| **Phase 2** | **v2.0** | **进化为”数字生命体”**<br>赋予 AI 长期记忆、个性化性格与主动服务能力，让它从工具变为真正的伙伴。<br>*（已落地：RAG+引用溯源+OCR、Span追踪+计划可视化、多Agent协作、Skill智能选择）* | ✅ |
-| **Phase 3** | **Future** | **打破虚实边界**<br>接入多模态感知（视觉、语音）与 IoT 硬件控制，实现真正的 AIoT 智能交互（现实版贾维斯）。 |  规划中 |
-
----
 
 ##  技术栈
 
@@ -450,6 +439,5 @@ My Workbench 因你而更温暖，每一行代码都是点亮灵感的光
 
 ---
 
-*My Workbench — 点亮每个想要被看见的瞬间。*  
-*让我，做你桌面上那盏不灭的灵感之灯。*
+*My Workbench — 让我，做你独家私人秘书*
 
