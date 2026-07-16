@@ -17,6 +17,9 @@ import asyncio
 from pathlib import Path
 from typing import List, Tuple, Dict, Any, Optional
 
+# 自动标签开关（由 app_config 控制，延迟导入避免循环引用）
+_AUTO_TAG_ENABLED = True
+
 import backend
 from backend.bootstrap import logger
 from backend.db import kb_chunks, vec_store
@@ -148,6 +151,25 @@ def _scan_files(root: Path) -> List[Path]:
     return files
 
 
+def _schedule_auto_tag(file_path: str, text: str):
+    """对新索引的文件自动打标签（后台运行，不阻塞索引流程）。"""
+    if not _AUTO_TAG_ENABLED:
+        return
+    try:
+        asyncio.create_task(_auto_tag_task(file_path, text))
+    except Exception:
+        pass  # 静默失败，不影响索引
+
+
+async def _auto_tag_task(file_path: str, text: str):
+    """后台任务：自动提取标签并持久化。"""
+    try:
+        from backend.services.auto_tagger import auto_tag_and_persist
+        await auto_tag_and_persist(file_path, text)
+    except Exception as e:
+        logger.warning(f"[kb_indexer] 自动标签后台任务失败 {file_path}: {e}")
+
+
 async def rebuild(full: bool = False) -> Dict[str, Any]:
     """
     重建知识库索引。
@@ -245,6 +267,9 @@ async def rebuild(full: bool = False) -> Dict[str, Any]:
         indexed_count += 1
         total_chunks += len(inserted)
         logger.info(f"[kb_indexer] 已索引 {rel}（{len(inserted)} 块）")
+
+        # ── 自动标签：新文件/变更文件索引后自动打标（后台不阻塞） ──
+        _schedule_auto_tag(rel, text)
 
     files, chunks_total, _ = await kb_chunks.stats()
     return {

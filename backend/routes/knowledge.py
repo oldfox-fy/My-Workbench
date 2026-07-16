@@ -574,3 +574,84 @@ async def tree_by_tag(tag: str = ""):
         return {"tag": tag, "files": [r[0] for r in rows]}
     finally:
         await db.close()
+
+
+# ──────────── 自动标签 ────────────
+
+class AutoTagRequest(BaseModel):
+    file_path: str = ""  # 为空则对全部文件执行
+
+
+@router.post("/tags/auto/suggest")
+async def auto_tag_suggest(data: AutoTagRequest):
+    """
+    对指定文件提取建议标签（不自动存储）。
+    返回标签名称列表，用户可在前端确认后手动应用。
+    """
+    from pathlib import Path
+    import backend
+
+    if not data.file_path:
+        raise HTTPException(400, "file_path 不能为空")
+
+    kb_root = getattr(backend, "kb_path", "")
+    if not kb_root:
+        raise HTTPException(400, "知识库尚未配置")
+
+    abs_path = Path(kb_root) / data.file_path
+    if not abs_path.exists():
+        raise HTTPException(404, f"文件不存在：{data.file_path}")
+
+    # 读取文件文本（使用 system_tools reader）
+    from backend.system_tools.reader import file_read
+    from backend.services.auto_tagger import auto_tag_file
+
+    try:
+        result = await file_read(str(abs_path))
+        text = result.get("content", "") if isinstance(result, dict) else str(result)
+        if isinstance(text, list):
+            text = "\n".join(str(t) for t in text)
+        tags = await auto_tag_file(data.file_path, text)
+        return {"file_path": data.file_path, "suggested_tags": tags}
+    except Exception as e:
+        raise HTTPException(500, f"自动标签失败：{e}")
+
+
+@router.post("/tags/auto/apply")
+async def auto_tag_apply(data: AutoTagRequest):
+    """
+    对指定文件自动提取标签并直接写入数据库。
+    如果 file_path 为空，则对知识库全部文件执行。
+    """
+    from pathlib import Path
+    import backend
+
+    kb_root = getattr(backend, "kb_path", "")
+    if not kb_root:
+        raise HTTPException(400, "知识库尚未配置")
+
+    if data.file_path:
+        abs_path = Path(kb_root) / data.file_path
+        if not abs_path.exists():
+            raise HTTPException(404, f"文件不存在：{data.file_path}")
+
+        from backend.system_tools.reader import file_read
+        from backend.services.auto_tagger import auto_tag_and_persist
+
+        try:
+            result = await file_read(str(abs_path))
+            text = result.get("content", "") if isinstance(result, dict) else str(result)
+            if isinstance(text, list):
+                text = "\n".join(str(t) for t in text)
+            written = await auto_tag_and_persist(data.file_path, text)
+            return {"file_path": data.file_path, "tags_written": written}
+        except Exception as e:
+            raise HTTPException(500, f"自动标签失败：{e}")
+    else:
+        # 全部文件（后台异步执行）
+        from backend.services.auto_tagger import auto_tag_all_files
+        result = await auto_tag_all_files()
+        if not result.get("success"):
+            raise HTTPException(400, result.get("error", "自动标签失败"))
+        return result
+

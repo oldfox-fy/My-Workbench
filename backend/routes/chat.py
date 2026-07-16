@@ -14,6 +14,7 @@ from backend.services.model_router import (
     detect_input_role, get_model_by_role, get_default_model,
     should_switch_for_images, _looks_vision_capable,
 )
+from backend.services.intent_router import detect_intent, get_prompt_suffix, IntentResult
 from backend.database import get_db
 from backend.utils.base import resource_path, get_current_time, get_local_ip
 from config_loader import config as app_config
@@ -362,6 +363,56 @@ async def chat(
             tools = [t for t in tools
                      if t.get("function", {}).get("name", "") not in suppressed_tool_names]
 
+        # ── 意图识别路由（方案 A+B 混合） ──
+        # 在工具列表最终确定后，根据用户意图自动调整：
+        #   - max_steps（步数上限）
+        #   - 按需注入专属工具（如 kb_query → system_kb_search）
+        #   - 系统提示词风格（简洁/知识检索/代码/标准）
+        intent_max_steps = app_config.max_tool_steps  # 默认值，可能被意图路由覆盖
+        intent_notice = None
+        intent_router_enabled = getattr(app_config, "intent_router_enabled", True)
+        intent_llm_classify = getattr(app_config, "intent_router_llm_classify", True)
+        intent_llm_threshold = getattr(app_config, "intent_router_llm_threshold", 0.7)
+        if intent_router_enabled:
+            intent_llm = service if (request.enable_tools and intent_llm_classify) else None
+            detected = await detect_intent(
+                messages, llm_service=intent_llm, llm_threshold=intent_llm_threshold,
+            )
+        else:
+            detected = IntentResult(
+                intent="standard", confidence="fallback",
+                max_steps=25, max_tokens=16384,
+                auto_inject_tools=[], prompt_style="standard",
+                reasoning="意图路由已关闭",
+            )
+        if detected.intent != "standard":
+            # 按意图自动注入工具
+            existing_names = {t["function"]["name"] for t in tools}
+            for tool_name in detected.auto_inject_tools:
+                if tool_name not in existing_names:
+                    inject_tool = [t for t in local_tools if t["function"]["name"] == tool_name]
+                    for t in inject_tool:
+                        tools.append(t)
+
+            # 覆盖步数上限
+            intent_max_steps = detected.max_steps
+
+            # 意图路由通知
+            intent_labels = {
+                "simple_qa": "💬 快捷问答", "kb_query": "📚 知识库检索",
+                "deep_research": "🔬 深度研究", "code_task": "💻 代码任务",
+                "content_create": "📝 内容创作",
+            }
+            label = intent_labels.get(detected.intent, detected.intent)
+            intent_notice = (f"\n🧠 意图识别：{label}（{detected.reasoning}）"
+                           f"— 步数上限 {detected.max_steps}\n")
+
+            # 在工具列表重新排序前追加（保持 Prompt Cache 友好）
+            tools.sort(key=lambda t: t.get("function", {}).get("name", ""))
+
+        # 意图特定的系统提示词后缀
+        intent_prompt_suffix = get_prompt_suffix(detected.prompt_style)
+
         messages = [m for m in messages if m["role"] != "system"]
 
         # ── 系统提示词组装（静态前缀 → 动态后缀，最大化 Prompt Cache 命中） ──
@@ -376,6 +427,9 @@ async def chat(
         # 技能指令（同上，同角色固定）
         if profile_skill_prompt:
             system_prompt = f"{system_prompt}\n\n### 已启用技能\n\n{profile_skill_prompt}"
+        # 意图路由提示词后缀（快捷回答/知识库检索/代码任务模式）
+        if intent_prompt_suffix:
+            system_prompt = f"{system_prompt}{intent_prompt_suffix}"
 
         # ── 动态后缀（放在 system prompt 最末尾，不影响前面的静态缓存前缀） ──
         dynamic_suffix_parts = [f"当前时间：{get_current_time()}"]
@@ -442,6 +496,8 @@ async def chat(
             __anext__() 杀死了正在等审批/工具执行的生成器。"""
             if route_notice:
                 yield route_notice
+            if intent_notice:
+                yield intent_notice
 
             collected_text = []
             # 用 Queue 解耦生成器与消费者：keepalive timeout 只取消 q.get()，不影响生成器
@@ -458,7 +514,7 @@ async def chat(
                         params=params,
                         message_id=request.message_id,
                         skill_registry=skill_registry,
-                        max_steps=app_config.max_tool_steps,
+                        max_steps=intent_max_steps,
                     )
                     async for chunk in agen:
                         await q.put(chunk)

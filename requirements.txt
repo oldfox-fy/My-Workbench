@@ -22,3 +22,6 @@ pdfplumber>=0.11.0
 pytesseract>=0.3.10        # Tesseract OCR Python 绑定
 Pillow>=10.0.0             # 图片处理（pytesseract 依赖）
 pdf2image>=1.17.0          # PDF → 图片转换（PDF OCR 所需）
+
+# --- 自动标签（中文分词，安装失败自动降级到词频统计）---
+jieba>=0.42.1

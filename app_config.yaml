@@ -97,3 +97,11 @@ skill_selection:
 skill_first:
   enabled: true          # 是否启用技能优先模式
   threshold: 0.4         # 相似度阈值（0-1），超过此值触发"技能优先"指令
+
+# 意图识别路由配置
+# 方案 A（关键词规则）+ 方案 B（LLM 轻量分类器）混合
+# 自动检测用户消息意图，调整 Agent 参数（步数上限/工具注入/提示词风格）
+intent_router:
+  enabled: true           # 是否启用意图路由
+  llm_classify: true      # 是否启用 LLM 分类器（false 则仅关键词检测）
+  llm_threshold: 0.7      # LLM 分类置信度阈值（低于此值降级为 standard）

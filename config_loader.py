@@ -109,6 +109,12 @@ class AppConfig:
         self.skill_first_enabled = sf.get("enabled", True)
         self.skill_first_threshold = float(sf.get("threshold", 0.4))
 
+        # 意图识别路由配置
+        ir = self.raw_config.get("intent_router", {}) or {}
+        self.intent_router_enabled = ir.get("enabled", True)
+        self.intent_router_llm_classify = ir.get("llm_classify", True)
+        self.intent_router_llm_threshold = float(ir.get("llm_threshold", 0.7))
+
     def _resolve_path(self, path_str: str, base: Path) -> Path:
         """将路径字符串解析为 Path 对象，支持绝对路径和相对路径"""
         p = Path(path_str)

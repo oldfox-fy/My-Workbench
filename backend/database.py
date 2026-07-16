@@ -2,16 +2,29 @@
 import os
 import aiosqlite
 from config_loader import config
+from backend.bootstrap import logger
 
 
 async def get_db():
     db = await aiosqlite.connect(f"{config.data_dir}/data/lumneo.db")
     db.row_factory = aiosqlite.Row
+    # WAL 模式是数据库级设置，只要任一连接打开过就会持久化。
+    # 这里做一层保险：哪怕 init_db 没跑过，每次 get_db 也确保 WAL 开启。
+    await db.execute("PRAGMA journal_mode=WAL")
     return db
 
 async def init_db():
     os.makedirs(os.path.dirname(f"{config.data_dir}/data/lumneo.db"), exist_ok=True)
     db = await get_db()
+
+    # ── WAL 模式：防止意外关闭导致数据库损坏 ──
+    # WAL (Write-Ahead Logging) 模式下写入先追加到 WAL 文件，
+    # 崩溃后 SQLite 自动从 WAL 恢复，不会像 DELETE 模式那样损坏主 DB。
+    await db.execute("PRAGMA journal_mode=WAL")
+    # 同步模式设为 NORMAL（WAL 下的推荐值，兼顾性能和安全）
+    await db.execute("PRAGMA synchronous=NORMAL")
+    # 外键约束
+    await db.execute("PRAGMA foreign_keys=ON")
 
     await db.execute("""
         CREATE TABLE IF NOT EXISTS chats (
@@ -282,6 +295,9 @@ async def init_db():
         )
     """)
 
+    # ── 数据库完整性检测与自动修复 ──
+    await _check_and_repair(db)
+
     await db.commit()
     await db.close()
 
@@ -293,3 +309,145 @@ async def _ensure_column(db, table: str, column: str, ddl: str):
     existing = {row[1] for row in rows}
     if column not in existing:
         await db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+
+
+async def _check_and_repair(db):
+    """
+    启动时检测数据库完整性，自动修复最常见的两种损坏：
+      1. kb_chunks_fts（FTS5 虚表）— 损坏后 DROP + 重建 + 从 kb_chunks 全量重建索引
+      2. vec_chunks（sqlite-vec 虚表）— 损坏后 DROP（下次索引时自动重建）
+
+    其它表损坏仅记录警告（自动修复风险太高，建议用户手动处理）。
+    """
+    try:
+        ok = await db.execute("PRAGMA integrity_check")
+        result = await ok.fetchone()
+        if result and result[0] == "ok":
+            logger.info("[DB] 数据库完整性检测通过")
+            return
+        # 有损坏 → 记录详情
+        error_msg = result[0] if result else "未知错误"
+        logger.warning(f"[DB] 数据库完整性检测发现问题: {error_msg}")
+    except Exception as e:
+        # integrity_check 本身抛异常说明损坏严重
+        logger.warning(f"[DB] 数据库完整性检测失败（数据库可能严重损坏）: {e}")
+        return
+
+    # ── 逐表尝试修复 ──
+    repaired = []
+
+    # 1) FTS5 虚表：最常见的损坏来源（高频写入 + 触发器）
+    if await _try_repair_fts(db):
+        repaired.append("kb_chunks_fts")
+
+    # 2) sqlite-vec 向量表：独立扩展管理，可能与主库不一致
+    if await _try_repair_vec(db):
+        repaired.append("vec_chunks")
+
+    if repaired:
+        logger.warning(
+            f"[DB] 已自动修复 {len(repaired)} 个表: {', '.join(repaired)}。"
+            f"知识库需要「全量重建索引」以恢复数据完整性。"
+        )
+    else:
+        logger.warning(
+            "[DB] 检测到数据库损坏但无法自动修复。"
+            "建议手动执行: sqlite3 lumneo.db \"PRAGMA integrity_check\" 查看详情。"
+            "如果仅向量检索不可用，可在知识库设置中「全量重建索引」。"
+        )
+
+
+async def _try_repair_fts(db) -> bool:
+    """尝试修复 FTS5 虚表：DROP → 重建 → 从 kb_chunks 回填。"""
+    try:
+        # 先测试 FTS 表是否可读
+        await db.execute("SELECT count(*) FROM kb_chunks_fts")
+    except Exception:
+        pass  # 不可读，进入修复
+    else:
+        return False  # 可读，不需要修复
+
+    logger.warning("[DB] kb_chunks_fts 损坏，自动重建 FTS 索引...")
+    try:
+        # 先尝试 DROP（可能失败，取决于损坏程度）
+        try:
+            await db.execute("DROP TABLE IF EXISTS kb_chunks_fts")
+        except Exception:
+            pass
+
+        # 重建虚表
+        await db.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS kb_chunks_fts USING fts5(
+                content, heading_path, content='kb_chunks', content_rowid='id'
+            )
+        """)
+
+        # 重建触发器
+        await db.execute("DROP TRIGGER IF EXISTS kb_chunks_fts_ai")
+        await db.execute("""
+            CREATE TRIGGER kb_chunks_fts_ai AFTER INSERT ON kb_chunks BEGIN
+                INSERT INTO kb_chunks_fts(rowid, content, heading_path)
+                VALUES (new.id, new.content, new.heading_path);
+            END
+        """)
+        await db.execute("DROP TRIGGER IF EXISTS kb_chunks_fts_ad")
+        await db.execute("""
+            CREATE TRIGGER kb_chunks_fts_ad AFTER DELETE ON kb_chunks BEGIN
+                INSERT INTO kb_chunks_fts(kb_chunks_fts, rowid, content, heading_path)
+                VALUES ('delete', old.id, old.content, old.heading_path);
+            END
+        """)
+        await db.execute("DROP TRIGGER IF EXISTS kb_chunks_fts_au")
+        await db.execute("""
+            CREATE TRIGGER kb_chunks_fts_au AFTER UPDATE ON kb_chunks BEGIN
+                INSERT INTO kb_chunks_fts(kb_chunks_fts, rowid, content, heading_path)
+                VALUES ('delete', old.id, old.content, old.heading_path);
+                INSERT INTO kb_chunks_fts(rowid, content, heading_path)
+                VALUES (new.id, new.content, new.heading_path);
+            END
+        """)
+
+        # 从 kb_chunks 全量重建 FTS 索引
+        await db.execute(
+            "INSERT INTO kb_chunks_fts(rowid, content, heading_path) "
+            "SELECT id, content, heading_path FROM kb_chunks"
+        )
+        logger.info("[DB] kb_chunks_fts 重建完成")
+        return True
+    except Exception as e:
+        logger.warning(f"[DB] kb_chunks_fts 自动修复失败: {e}")
+        return False
+
+
+async def _try_repair_vec(db) -> bool:
+    """尝试修复 sqlite-vec 向量表：损坏则 DROP（下次索引时自动重建）。"""
+    try:
+        # 检查 vec_chunks 是否存在
+        row = await db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='vec_chunks'"
+        )
+        exists = await row.fetchone()
+        if not exists:
+            return False  # 表不存在，无需修复
+
+        # 尝试读取
+        await db.execute("SELECT count(*) FROM vec_chunks")
+        return False  # 可读，无需修复
+    except Exception:
+        pass  # 损坏，进入修复
+
+    logger.warning("[DB] vec_chunks 向量表损坏，自动清理（下次索引重建）...")
+    try:
+        await db.execute("DROP TABLE IF EXISTS vec_chunks")
+        # 也清理 session_memories 向量表（共用扩展，可能同时受影响）
+        try:
+            await db.execute("DROP TABLE IF EXISTS vec_session_memories")
+        except Exception:
+            pass
+        # 清除索引元数据，强制下次全量重建
+        await db.execute("DELETE FROM kb_index_meta")
+        logger.info("[DB] vec_chunks 已清理，请执行「全量重建索引」恢复")
+        return True
+    except Exception as e:
+        logger.warning(f"[DB] vec_chunks 自动修复失败: {e}")
+        return False
