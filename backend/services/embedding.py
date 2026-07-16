@@ -92,16 +92,25 @@ class Embedder:
         """调用 /embeddings 端点，只发送 model + input + encoding_format 三个参数。"""
         import logging as _logging
         _log = _logging.getLogger("My Workbench")
-        _log.info(
-            f"[embedding] 调用 {self._base_url}/embeddings "
-            f"model={self.cfg.model} texts={len(texts)}"
-        )
+
+        # 清理文本：移除 null 字节、确保有效 UTF-8
+        clean_texts = []
+        for t in texts:
+            t = (t or "").replace("\x00", "").strip()
+            clean_texts.append(t)
 
         body = {
             "model": self.cfg.model,
-            "input": texts,
+            "input": clean_texts,
             "encoding_format": "float",
         }
+        body_json = _json.dumps(body, ensure_ascii=False)
+
+        _log.info(
+            f"[embedding] POST {self._base_url}/embeddings "
+            f"model={self.cfg.model} texts={len(texts)} "
+            f"api_key_len={len(self._api_key)} body_len={len(body_json)}"
+        )
 
         last_err = None
         for attempt in range(_MAX_RETRIES + 1):
@@ -112,11 +121,11 @@ class Embedder:
                 if resp.status_code == 200:
                     data = resp.json()
                     items = data.get("data", [])
-                    # 按 index 排序，保证与输入顺序一致
                     items.sort(key=lambda d: d.get("index", 0))
                     return [d["embedding"] for d in items]
 
                 # 处理错误
+                resp_text = resp.text[:500]
                 err_body = {}
                 try:
                     err_body = resp.json()
@@ -124,6 +133,11 @@ class Embedder:
                     pass
                 err_code = err_body.get("code", "")
                 err_msg = err_body.get("message", "")
+
+                _log.warning(
+                    f"[embedding] HTTP {resp.status_code}: "
+                    f"code={err_code} msg={err_msg or resp_text}"
+                )
 
                 # 硅基流动 20015：参数无效
                 if err_code == 20015 or "20015" in str(err_code):
