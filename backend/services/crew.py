@@ -23,9 +23,19 @@ async def run_single_agent(
     skill_registry=None,
     params: Optional[Dict] = None,
     trace_manager=None,
+    timeout: float = 120.0,
 ) -> Dict[str, Any]:
-    """执行单个子 Agent 任务。"""
-    system_prompt = _build_agent_prompt(role) if role else "你是一个高效的子任务执行者。请仅使用给定的工具完成任务，完成后直接返回结果，不要询问用户。保持输出简洁。"
+    """执行单个子 Agent 任务，默认 120s 总超时。"""
+    import time as _time
+    import logging as _logging
+    _log = _logging.getLogger("My Workbench")
+    _t0 = _time.time()
+    _log.info(f"[CREW] run_single_agent START, task={task[:80]}... timeout={timeout}")
+    system_prompt = _build_agent_prompt(role) if role else (
+        "你是一个高效的子任务执行者。请仅使用给定的工具完成任务，完成后直接返回结果。\n"
+        "**禁止**：不要尝试调用 system_delegate_task 或委派子任务——你没有这个权限，"
+        "调用会直接失败。必须自己用 system_web_fetch / system_read_file / system_write_file 等工具完成任务。"
+    )
     sub_messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": task},
@@ -39,8 +49,11 @@ async def run_single_agent(
     response_parts = []
     tool_calls_count = 0
     sub_params = (params or {}).copy()
+    # 子智能体使用更小的 max_tokens（2048），减少 API 调用耗时
+    sub_params.setdefault("max_tokens", 2048)
 
-    try:
+    async def _run():
+        nonlocal tool_calls_count, response_parts
         async for chunk in llm_service.generate_response(
             messages=sub_messages,
             enable_tools=True,
@@ -52,17 +65,37 @@ async def run_single_agent(
             message_id=None,
             max_steps=3,
             excluded_tools={"system_delegate_task"},
+            auto_approve=True,
         ):
+            # 过滤系统标记和警告文本，避免污染子 Agent 返回给主 Agent 的结果
             if chunk.startswith("<!--"):
                 if chunk.startswith("<!--tool_status:") and ":success-->" in chunk:
                     tool_calls_count += 1
                 continue
+            # 过滤系统级警告消息（force_final、API 重试等），这些对主 Agent 无意义
+            if chunk.startswith(("⚠️", "🔄", "✅ 备用", "❌ 模型", "⏳ 网络")):
+                continue
             response_parts.append(chunk)
 
+    try:
+        _log.info(f"[CREW] entering _run() (generate_response loop)...")
+        await asyncio.wait_for(_run(), timeout=timeout)
+        _elapsed = _time.time() - _t0
         result_text = "".join(response_parts).strip()
+        _log.info(f"[CREW] _run() completed in {_elapsed:.1f}s, result_text={len(result_text)} chars, tool_calls={tool_calls_count}")
 
         if sub_span and trace_manager:
             trace_manager.end_span(sub_span.id, "success", result_text[:300])
+
+        # 如果所有有效内容都被过滤，子 Agent 实际上没有产出
+        if not result_text:
+            return {
+                "success": False,
+                "error": "子智能体未产出有效结果，可能是因为所有工具调用均失败。",
+                "result": "",
+                "tool_calls_count": tool_calls_count,
+                "role_name": role.get("role_name", "") if role else "",
+            }
 
         return {
             "success": True,
@@ -70,7 +103,21 @@ async def run_single_agent(
             "tool_calls_count": tool_calls_count,
             "role_name": role.get("role_name", "") if role else "",
         }
+    except asyncio.TimeoutError:
+        _elapsed = _time.time() - _t0
+        _log.warning(f"[CREW] TIMEOUT after {_elapsed:.1f}s (limit={timeout}s)!")
+        if sub_span and trace_manager:
+            trace_manager.end_span(sub_span.id, "timeout", "", f"子智能体超时（{timeout}s）")
+        return {
+            "success": False,
+            "error": f"子智能体执行超时（{timeout} 秒），任务可能过于复杂。",
+            "result": "".join(response_parts).strip(),
+            "tool_calls_count": tool_calls_count,
+            "role_name": role.get("role_name", "") if role else "",
+        }
     except Exception as e:
+        _elapsed = _time.time() - _t0
+        _log.error(f"[CREW] EXCEPTION after {_elapsed:.1f}s: {type(e).__name__}: {e}", exc_info=True)
         if sub_span and trace_manager:
             trace_manager.end_span(sub_span.id, "error", "", str(e))
         return {
@@ -160,7 +207,7 @@ def _build_agent_prompt(role: Optional[Dict]) -> str:
     parts = [f"你是 **{name}**。", f"目标：{goal}"]
     if backstory:
         parts.append(f"背景：{backstory}")
-    parts.append("规则：只使用分配的工具；完成后直接返回结果；用中文回复。")
+    parts.append("规则：只使用分配的工具；禁止调用 system_delegate_task 或委派子任务；完成后直接返回结果；用中文回复。")
     return "\n".join(parts)
 
 

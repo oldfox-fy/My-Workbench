@@ -251,9 +251,11 @@ def start_fastapi(reload: bool = False):
         if reload:
             # reload 模式要求传入导入字符串，且需在主线程运行
             uvicorn.run("main:app", host="0.0.0.0", port=SERVER_PORT,
-                        log_level="info", reload=True)
+                        log_level="info", reload=True,
+                        timeout_keep_alive=300)
         else:
-            uvicorn.run(app, host="0.0.0.0", port=SERVER_PORT, log_level="info")
+            uvicorn.run(app, host="0.0.0.0", port=SERVER_PORT, log_level="info",
+                        timeout_keep_alive=300)
     except Exception as e:
         # 捕获端口占用等异常，防止线程静默死亡
         logger.error(f"❌ FastAPI 启动失败: {e}")

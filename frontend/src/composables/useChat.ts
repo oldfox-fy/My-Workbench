@@ -82,7 +82,10 @@ export function useChat() {
       const { done, value } = await reader.read()
       if (done) break
 
-      fullText += decoder.decode(value, { stream: true })
+      let decoded = decoder.decode(value, { stream: true })
+      // 过滤 SSE keepalive 注释行，防止泄露到显示文本
+      decoded = decoded.replace(/^: keepalive\n\n/gm, '')
+      fullText += decoded
 
       // 检测计划事件标记
       const planCreateRegex = /<!--plan:create:({[\s\S]*?})-->/g
@@ -222,7 +225,7 @@ export function useChat() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body,
-        signal: controller.signal,
+        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(600_000)]),
       })
 
       fullText = await readStream(response)
@@ -318,7 +321,7 @@ export function useChat() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body,
-        signal: controller.signal,
+        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(600_000)]),
       })
 
       const fullText = await readStream(response)
@@ -401,7 +404,7 @@ export function useChat() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body,
-        signal: controller.signal,
+        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(600_000)]),
       })
 
       const fullText = await readStream(response)
@@ -534,8 +537,10 @@ export function useChat() {
             if (data.usage) {
               streamingContent.value += `\n<!--token_usage:${JSON.stringify(data.usage)}-->`
             }
-            // 保存 AI 回复
-            const finalText = streamingContent.value.replace(/<!--[\s\S]*?-->/g, '').trim()
+            // 保存 AI 回复（保留 ppt_preview 标记供前端渲染预览卡片）
+            const finalText = streamingContent.value
+              .replace(/<!--(?!ppt_preview:)[\s\S]*?-->/g, '')
+              .trim()
             if (finalText) {
               chatStore.addMessageToActive({ role: 'assistant', content: finalText })
             }

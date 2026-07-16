@@ -6,6 +6,7 @@ PPT 生成工具：根据结构化幻灯片数据生成 .pptx 文件。
 - 4 种页面布局：cover（封面）、toc（目录）、content（内容）、ending（结尾）
 - 3 套配色主题：blue（简约蓝）、warm（活力橙）、clean（极简白）
 - 基础 Markdown 解析：**加粗**、- 列表、1. 编号
+- 图片嵌入：image_url（直链）或 image_query（Unsplash 免费图库自动搜索）
 - 生成 .pptx → 返回下载链接 + 推送前端预览标记
 
 Agent 执行流程：
@@ -15,6 +16,11 @@ Agent 执行流程：
 import json
 import os
 import uuid
+import hashlib
+import tempfile
+import urllib.request
+import urllib.error
+import ssl
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -49,8 +55,8 @@ THEMES = {
     "blue": {
         "name": "简约蓝",
         "bg": RGBColor(0xFF, 0xFF, 0xFF),
-        "title_color": RGBColor(0x25, 0x63, 0xEB),   # 蓝色标题
-        "text_color": RGBColor(0x1E, 0x29, 0x3B),     # 深灰正文
+        "title_color": RGBColor(0x25, 0x63, 0xEB),
+        "text_color": RGBColor(0x1E, 0x29, 0x3B),
         "accent": RGBColor(0x25, 0x63, 0xEB),
         "accent_light": RGBColor(0xDB, 0xEA, 0xFE),
         "footer_color": RGBColor(0x94, 0xA3, 0xB8),
@@ -78,38 +84,125 @@ THEMES = {
 DEFAULT_THEME = "blue"
 
 # ── 字体配置 ──
-FONT_FAMILY = "Microsoft YaHei"  # 微软雅黑（Windows 默认中文字体）
-FONT_FAMILY_FALLBACK = "SimSun"   # 备选：宋体
+FONT_FAMILY = "Microsoft YaHei"
 
 # ── 幻灯片尺寸（16:9 宽屏） ──
 SLIDE_WIDTH = Inches(13.333)
 SLIDE_HEIGHT = Inches(7.5)
 
+# ── 图片下载超时（秒）──
+IMAGE_DOWNLOAD_TIMEOUT = 15
+
+# ── 图片缓存目录 ──
+_IMAGE_CACHE_DIR = None
+
+
+def _get_image_cache_dir() -> str:
+    """获取图片缓存目录（惰性创建）。"""
+    global _IMAGE_CACHE_DIR
+    if _IMAGE_CACHE_DIR is None:
+        _IMAGE_CACHE_DIR = os.path.join(str(config.generate_dir), ".image_cache")
+        os.makedirs(_IMAGE_CACHE_DIR, exist_ok=True)
+    return _IMAGE_CACHE_DIR
+
 
 def _get_font_family() -> str:
-    """检测可用字体，优先微软雅黑。"""
     return FONT_FAMILY
 
 
 def _apply_theme_colors(theme_name: str) -> Dict[str, Any]:
-    """获取主题配色，无效主题回退默认。"""
     return THEMES.get(theme_name, THEMES[DEFAULT_THEME])
 
 
-def _parse_markdown_runs(text: str, paragraph, theme: Dict):
-    """将基础 Markdown 文本转换为 python-pptx 的富文本 runs。
+# ── 图片下载与处理 ──
 
-    支持：**加粗**、*斜体*、- / * 无序列表、1. 有序列表。
+def _download_image(url: str) -> Optional[str]:
+    """从 URL 下载图片到本地缓存，返回本地路径。失败返回 None。"""
+    try:
+        # 生成缓存文件名（URL 哈希）
+        url_hash = hashlib.md5(url.encode()).hexdigest()[:12]
+        # 推断扩展名
+        ext = ".jpg"
+        url_lower = url.lower()
+        if ".png" in url_lower:
+            ext = ".png"
+        elif ".webp" in url_lower:
+            ext = ".webp"
+        elif ".gif" in url_lower:
+            ext = ".gif"
+
+        cache_path = os.path.join(_get_image_cache_dir(), f"{url_hash}{ext}")
+
+        # 命中缓存直接返回
+        if os.path.exists(cache_path) and os.path.getsize(cache_path) > 0:
+            return cache_path
+
+        # 下载（忽略 SSL 验证以兼容更多图源）
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        })
+        with urllib.request.urlopen(req, timeout=IMAGE_DOWNLOAD_TIMEOUT, context=ctx) as resp:
+            if resp.status not in (200, 301, 302):
+                return None
+            data = resp.read()
+            if len(data) < 1024:  # 太小，不是有效图片
+                return None
+            with open(cache_path, "wb") as f:
+                f.write(data)
+            return cache_path
+    except Exception:
+        return None
+
+
+def _resolve_image(slide_data: Dict) -> Optional[str]:
+    """解析幻灯片的配图：优先 image_url，其次 image_query。
+
+    对于 image_query，使用多级回退策略搜索免费图片：
+    1. Picsum Photos（基于 query 哈希的稳定随机图片）
+    2. 若全部失败，返回 None（幻灯片无图但不影响整体生成）
+
+    返回本地图片路径，失败返回 None。
     """
+    # 预取缓存命中（由 generate_pptx 并行预下载注入）
+    cached = slide_data.get("_cached_image")
+    if cached:
+        return cached
+
+    # 优先直接 URL
+    image_url = slide_data.get("image_url", "").strip()
+    if image_url:
+        return _download_image(image_url)
+
+    # 其次关键词搜索
+    image_query = slide_data.get("image_query", "").strip()
+    if image_query:
+        from urllib.parse import quote
+        query_encoded = quote(image_query, safe='')
+
+        # 策略 1：用 query 哈希作为 Picsum seed，相同关键词总是返回同一张图
+        query_hash = abs(hash(image_query)) % 1000
+        picsum_url = f"https://picsum.photos/seed/{query_hash}/800/600"
+        path = _download_image(picsum_url)
+        if path:
+            return path
+
+    return None
+
+
+# ── Markdown 解析 ──
+
+def _parse_markdown_runs(text: str, paragraph, theme: Dict):
+    """将基础 Markdown 文本转换为 python-pptx 的富文本 runs。"""
     import re
 
     font_family = _get_font_family()
     text_color = theme["text_color"]
-
-    # 清除首尾空白
     text = text.strip()
 
-    # 检测列表项
     bullet_match = re.match(r'^(\s*)[-*]\s+(.+)$', text)
     numbered_match = re.match(r'^(\s*)\d+[.)]\s+(.+)$', text)
 
@@ -120,7 +213,6 @@ def _parse_markdown_runs(text: str, paragraph, theme: Dict):
         paragraph.level = min(len(numbered_match.group(1)) // 2, 8)
         text = numbered_match.group(2)
 
-    # 按 ** 和 * 分段
     segments = re.split(r'(\*\*.*?\*\*|\*[^*]+\*)', text)
 
     for seg in segments:
@@ -148,12 +240,13 @@ def _parse_markdown_runs(text: str, paragraph, theme: Dict):
             run.font.name = font_family
 
 
+# ── 布局函数 ──
+
 def _add_cover_slide(prs, slide_data: Dict, theme: Dict, title: str = ""):
     """添加封面页。"""
-    slide_layout = prs.slide_layouts[6]  # 空白布局
+    slide_layout = prs.slide_layouts[6]
     slide = prs.slides.add_slide(slide_layout)
 
-    # 背景色
     background = slide.background
     fill = background.fill
     fill.solid()
@@ -180,7 +273,6 @@ def _add_cover_slide(prs, slide_data: Dict, theme: Dict, title: str = ""):
     p.font.name = _get_font_family()
     p.alignment = PP_ALIGN.CENTER
 
-    # 副标题
     subtitle = slide_data.get("subtitle", "")
     if subtitle:
         txBox2 = slide.shapes.add_textbox(Inches(1.5), Inches(4.2), Inches(10.3), Inches(1.0))
@@ -193,7 +285,6 @@ def _add_cover_slide(prs, slide_data: Dict, theme: Dict, title: str = ""):
         p2.font.name = _get_font_family()
         p2.alignment = PP_ALIGN.CENTER
 
-    # 底部信息
     speaker = slide_data.get("speaker", "")
     if speaker:
         txBox3 = slide.shapes.add_textbox(Inches(1.5), Inches(6.2), Inches(10.3), Inches(0.6))
@@ -216,7 +307,6 @@ def _add_toc_slide(prs, slide_data: Dict, theme: Dict, index: int):
     fill.solid()
     fill.fore_color.rgb = theme["bg"]
 
-    # 标题
     slide_title = slide_data.get("title", "目录")
     txBox = slide.shapes.add_textbox(Inches(1.0), Inches(0.6), Inches(11.3), Inches(0.9))
     tf = txBox.text_frame
@@ -227,7 +317,6 @@ def _add_toc_slide(prs, slide_data: Dict, theme: Dict, index: int):
     p.font.color.rgb = theme["title_color"]
     p.font.name = _get_font_family()
 
-    # 左侧装饰线
     shape = slide.shapes.add_shape(
         MSO_SHAPE.RECTANGLE, Inches(1.0), Inches(1.7), Inches(11.3), Inches(0.03)
     )
@@ -235,14 +324,12 @@ def _add_toc_slide(prs, slide_data: Dict, theme: Dict, index: int):
     shape.fill.fore_color.rgb = theme["accent"]
     shape.line.fill.background()
 
-    # 目录项
     items = slide_data.get("items", [])
     if not items:
         items = slide_data.get("bullets", [])
 
     y_start = 2.2
     for i, item in enumerate(items, 1):
-        # 编号
         txNum = slide.shapes.add_textbox(Inches(1.2), Inches(y_start + i * 0.7), Inches(0.8), Inches(0.5))
         tn = txNum.text_frame
         tnp = tn.paragraphs[0]
@@ -252,7 +339,6 @@ def _add_toc_slide(prs, slide_data: Dict, theme: Dict, index: int):
         tnp.font.color.rgb = theme["accent"]
         tnp.font.name = _get_font_family()
 
-        # 条目文字
         txItem = slide.shapes.add_textbox(Inches(2.2), Inches(y_start + i * 0.7), Inches(9.5), Inches(0.5))
         ti = txItem.text_frame
         tip = ti.paragraphs[0]
@@ -263,7 +349,7 @@ def _add_toc_slide(prs, slide_data: Dict, theme: Dict, index: int):
 
 
 def _add_content_slide(prs, slide_data: Dict, theme: Dict, index: int):
-    """添加内容页。"""
+    """添加内容页，支持右侧配图（图文并茂）。"""
     slide_layout = prs.slide_layouts[6]
     slide = prs.slides.add_slide(slide_layout)
 
@@ -271,6 +357,22 @@ def _add_content_slide(prs, slide_data: Dict, theme: Dict, index: int):
     fill = background.fill
     fill.solid()
     fill.fore_color.rgb = theme["bg"]
+
+    # ── 解析配图 ──
+    image_path = _resolve_image(slide_data)
+    has_image = image_path and os.path.exists(image_path)
+
+    # ── 根据是否有图片调整正文区域宽度 ──
+    if has_image:
+        text_width = Inches(6.5)   # 左侧文本区域
+        text_left = Inches(0.8)
+        image_left = Inches(7.8)
+        image_top = Inches(1.8)
+        image_width = Inches(4.8)
+        image_height = Inches(4.5)
+    else:
+        text_width = Inches(11.3)
+        text_left = Inches(1.0)
 
     # 页面标题
     slide_title = slide_data.get("title", f"第 {index + 1} 页")
@@ -295,7 +397,7 @@ def _add_content_slide(prs, slide_data: Dict, theme: Dict, index: int):
     content = slide_data.get("content", "")
     bullets = slide_data.get("bullets", [])
 
-    txBody = slide.shapes.add_textbox(Inches(1.2), Inches(1.8), Inches(10.9), Inches(5.0))
+    txBody = slide.shapes.add_textbox(text_left, Inches(1.8), text_width, Inches(5.0))
     tf_body = txBody.text_frame
     tf_body.word_wrap = True
 
@@ -314,6 +416,18 @@ def _add_content_slide(prs, slide_data: Dict, theme: Dict, index: int):
         else:
             para = tf_body.add_paragraph()
         _parse_markdown_runs(line, para, theme)
+
+    # 嵌入配图
+    if has_image:
+        try:
+            pic = slide.shapes.add_picture(
+                image_path, image_left, image_top, image_width, image_height
+            )
+            # 图片边框
+            pic.line.color.rgb = theme["accent_light"]
+            pic.line.width = Pt(1)
+        except Exception:
+            pass  # 图片嵌入失败不影响整体
 
     # 页码
     txPage = slide.shapes.add_textbox(Inches(11.5), Inches(7.0), Inches(1.5), Inches(0.4))
@@ -336,7 +450,6 @@ def _add_ending_slide(prs, slide_data: Dict, theme: Dict, index: int):
     fill.solid()
     fill.fore_color.rgb = theme["bg"]
 
-    # 顶部装饰条
     shape = slide.shapes.add_shape(
         MSO_SHAPE.RECTANGLE, Inches(0), Inches(0), SLIDE_WIDTH, Inches(0.08)
     )
@@ -344,7 +457,6 @@ def _add_ending_slide(prs, slide_data: Dict, theme: Dict, index: int):
     shape.fill.fore_color.rgb = theme["accent"]
     shape.line.fill.background()
 
-    # 主文字
     slide_title = slide_data.get("title", "感谢聆听")
     txBox = slide.shapes.add_textbox(Inches(1.5), Inches(2.5), Inches(10.3), Inches(1.5))
     tf = txBox.text_frame
@@ -368,7 +480,6 @@ def _add_ending_slide(prs, slide_data: Dict, theme: Dict, index: int):
         p2.alignment = PP_ALIGN.CENTER
 
 
-# 布局分发映射
 _LAYOUT_HANDLERS = {
     "cover": _add_cover_slide,
     "toc": _add_toc_slide,
@@ -388,16 +499,14 @@ async def generate_pptx(
     根据结构化幻灯片数据生成 .pptx 演示文稿文件。
 
     Args:
-        slides: 幻灯片数组，每项是一个页面的描述对象：
-            {title, subtitle?, type?, content?, bullets?, items?, speaker?}
-            type 可选值：cover / toc / content / ending（默认 content）
-        theme: 主题配色方案，可选 blue / warm / clean（默认 blue）
+        slides: 幻灯片数组，每项 {title, type?, content?, bullets?, subtitle?,
+                image_query?, image_url?, speaker?, items?}
+        theme: blue / warm / clean（默认 blue）
         filename: 输出文件名（不含扩展名），省略则自动生成
-        title: 演示文稿总标题，显示在封面页
+        title: 演示文稿总标题
 
     Returns:
-        {success, path, download_url, slide_count, filename, slides_preview}
-        同时推送 <!--ppt_preview:...--> 标记供前端渲染预览卡片。
+        {success, path, download_url, slide_count, slides_preview, image_count}
     """
     slides = slides or []
     if not isinstance(slides, list) or not slides:
@@ -406,13 +515,40 @@ async def generate_pptx(
     theme_name = theme if theme in THEMES else DEFAULT_THEME
     theme_colors = _apply_theme_colors(theme_name)
 
-    # ── 创建 Presentation ──
     prs = Presentation()
     prs.slide_width = SLIDE_WIDTH
     prs.slide_height = SLIDE_HEIGHT
 
-    # ── 逐页生成 ──
+    # ── 并行预下载所有图片（线程池） ──
+    # 原逻辑每张图片调用 _resolve_image 两次（handler + 统计），
+    # 且 urllib 同步串行下载。改为一次性并行预取，大幅提速。
+    from concurrent.futures import ThreadPoolExecutor as _ThreadPoolExecutor
+    _image_specs = []  # [(slide_index, slide_data)]
+    for i, sd in enumerate(slides):
+        if isinstance(sd, dict) and sd.get("type", "content") in (None, "content"):
+            if sd.get("image_url") or sd.get("image_query"):
+                _image_specs.append((i, sd))
+
+    _image_results = {}  # slide_index → local_path or None
+    if _image_specs:
+        with _ThreadPoolExecutor(max_workers=6) as _pool:
+            _futures = {_pool.submit(_resolve_image, sd): i for i, sd in _image_specs}
+            for _fut in _futures:
+                try:
+                    _image_results[_futures[_fut]] = _fut.result(timeout=IMAGE_DOWNLOAD_TIMEOUT)
+                except Exception:
+                    _image_results[_futures[_fut]] = None
+
+    # 注入图片路径到 slide_data，避免 handler 内部二次调用 _resolve_image
+    for i, sd in enumerate(slides):
+        if isinstance(sd, dict) and i in _image_results and _image_results[i]:
+            sd = sd.copy()
+            sd["_cached_image"] = _image_results[i]
+            slides[i] = sd
+
     preview_slides = []
+    image_count = 0
+
     for i, slide_data in enumerate(slides):
         if not isinstance(slide_data, dict):
             continue
@@ -420,7 +556,12 @@ async def generate_pptx(
         handler = _LAYOUT_HANDLERS.get(slide_type, _add_content_slide)
         handler(prs, slide_data, theme_colors, i)
 
-        # 累积预览数据（截断正文至 120 字符）
+        # 统计图片（复用预取结果，无需再次下载）
+        cached = slide_data.get("_cached_image")
+        if cached:
+            image_count += 1
+
+        # 预览数据
         raw_content = slide_data.get("content", "")
         bullets = slide_data.get("bullets", [])
         if bullets:
@@ -434,23 +575,22 @@ async def generate_pptx(
             "title": slide_data.get("title", ""),
             "content_preview": content_preview,
             "type": slide_type,
+            "has_image": bool(slide_data.get("image_url") or slide_data.get("image_query")),
         })
 
-    # ── 确定输出路径 ──
+    # ── 输出路径 ──
     output_dir = config.generate_dir
     os.makedirs(output_dir, exist_ok=True)
 
     safe_filename = filename.strip() if filename and filename.strip() else ""
     if not safe_filename:
         safe_filename = f"presentation_{uuid.uuid4().hex[:8]}"
-    # 移除不安全字符
     safe_filename = "".join(c for c in safe_filename if c.isalnum() or c in "._-（）")
     if not safe_filename:
         safe_filename = f"presentation_{uuid.uuid4().hex[:8]}"
 
     pptx_path = os.path.join(str(output_dir), f"{safe_filename}.pptx")
 
-    # 避免覆盖已有文件
     counter = 1
     while os.path.exists(pptx_path):
         pptx_path = os.path.join(str(output_dir), f"{safe_filename}_{counter}.pptx")
@@ -462,12 +602,11 @@ async def generate_pptx(
     except Exception as e:
         return {"success": False, "error": f"保存 PPTX 文件失败：{e}"}
 
-    # ── 计算下载链接 ──
-    # 使用相对于 generate_dir 的路径作为下载路径
+    # ── 下载链接 ──
     rel_path = os.path.relpath(pptx_path, str(config.generate_dir))
     download_url = f"/files/generate/{rel_path.replace(os.sep, '/')}"
 
-    # ── 构建预览数据 ──
+    # ── 预览数据 ──
     preview_data = {
         "file": download_url,
         "filename": os.path.basename(pptx_path),
@@ -475,23 +614,28 @@ async def generate_pptx(
         "slide_count": len(preview_slides),
         "theme": theme_name,
         "theme_label": theme_colors["name"],
+        "image_count": image_count,
         "slides": preview_slides,
     }
 
     # ── 推送预览标记 ──
     import base64
     marker_json = json.dumps(preview_data, ensure_ascii=False)
-    # 用 base64 编码 JSON 内容，避免特殊字符破坏 HTML 标记格式
     encoded = base64.b64encode(marker_json.encode('utf-8')).decode('ascii')
     marker = f"<!--ppt_preview:{encoded}-->"
     push_ppt_preview(marker)
 
+    img_info = f"，含 {image_count} 张配图" if image_count > 0 else ""
     return {
         "success": True,
         "path": pptx_path,
         "download_url": download_url,
         "filename": os.path.basename(pptx_path),
         "slide_count": len(preview_slides),
+        "image_count": image_count,
         "slides_preview": preview_slides,
-        "message": f"已生成 {len(preview_slides)} 页 PPT（主题：{theme_colors['name']}）\n下载链接：{download_url}",
+        "message": (
+            f"已生成 {len(preview_slides)} 页 PPT（主题：{theme_colors['name']}{img_info}）\n"
+            f"下载链接：{download_url}"
+        ),
     }

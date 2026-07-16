@@ -158,7 +158,8 @@ class MCPClientManager:
         return all_tools
 
     async def call_tool(self, full_name: str, arguments: Dict) -> Any:
-        """调用指定工具（全名格式：mcp_<服务名>__<工具名>）"""
+        """调用指定工具（全名格式：mcp_<服务名>__<工具名>），默认 60s 超时"""
+        import asyncio
         if not full_name.startswith("mcp_"):
             raise ValueError(f"无效的工具调用格式: {full_name}")
         parts = full_name[4:].split("__", 1)
@@ -168,7 +169,10 @@ class MCPClientManager:
         client = self.clients.get(server_name)
         if not client:
             raise ValueError(f"未找到 MCP 服务器 '{server_name}'")
-        result = await client.call_tool(tool_name, arguments)
+        result = await asyncio.wait_for(
+            client.call_tool(tool_name, arguments),
+            timeout=60.0,
+        )
         # 提取文本内容
         if hasattr(result, 'content') and result.content:
             return result.content[0].text

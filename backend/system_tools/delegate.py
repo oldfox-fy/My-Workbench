@@ -19,6 +19,8 @@ import asyncio
 import json
 from typing import Any, Dict, List, Optional
 
+from backend.services.crew import run_single_agent, run_sequential, run_parallel, merge_results
+
 # 子智能体默认允许的只读工具
 DEFAULT_SUBAGENT_TOOLS = {
     "system_read_file",
@@ -61,10 +63,16 @@ async def delegate_task(
     Returns:
         {success, result, agents_results, collaboration, total_tool_calls}
     """
+    import logging as _logging
+    _log = _logging.getLogger("My Workbench")
+
     if not llm_service:
         return {"success": False, "error": "子智能体委派需要 LLM 服务实例。"}
     if not task or not task.strip():
         return {"success": False, "error": "task 参数不能为空。"}
+
+    _log.info(f"[DELEGATE] ========== delegate_task START ==========")
+    _log.info(f"[DELEGATE] task={task[:100]}... collaboration={collaboration}")
 
     # 加载模板
     if template_id is not None:
@@ -89,7 +97,10 @@ async def delegate_task(
 
     all_base = list(local_tools) + list(mcp_tools)
 
-    from backend.services.crew import run_single_agent, run_sequential, run_parallel, merge_results
+    # 不同模式的超时限制（防止子智能体无限挂死）
+    _TIMEOUT_SINGLE = 120.0     # 单 Agent 最多 120 秒（研究任务需网络请求）
+    _TIMEOUT_SEQUENTIAL = 240.0 # 链式最多 240 秒（每个约 120s）
+    _TIMEOUT_PARALLEL = 120.0   # 并行最多 120 秒（同时跑）
 
     try:
         if collaboration == "single" and (not agents or len(agents) <= 1):
@@ -97,64 +108,112 @@ async def delegate_task(
             agent_tools = [t for t in all_base if t.get("function", {}).get("name") in allowed]
             if role and role.get("tools"):
                 agent_tools = [t for t in all_base if t.get("function", {}).get("name") in set(role["tools"])]
-            result = await run_single_agent(
-                task, llm_service, agent_tools,
-                role=role, mcp_manager=mcp_manager,
-                skill_registry=skill_registry, params=params,
-                trace_manager=trace_manager,
+            _log.info(f"[DELEGATE] mode=single, agent_tools={len(agent_tools)}, entering _run_single...")
+            result = await asyncio.wait_for(
+                _run_single(role, task, llm_service, agent_tools, mcp_manager,
+                            skill_registry, params, trace_manager),
+                timeout=_TIMEOUT_SINGLE,
             )
-            return {
-                "success": result["success"],
-                "result": result.get("result", ""),
-                "error": result.get("error", ""),
-                "agents_results": [result],
-                "collaboration": "single",
-                "total_tool_calls": result.get("tool_calls_count", 0),
-            }
+            _log.info(f"[DELEGATE] _run_single returned: success={result.get('success')}")
+            return result
 
         elif collaboration == "sequential" and agents:
-            results = await run_sequential(
-                task, agents, llm_service, all_base,
-                mcp_manager=mcp_manager, skill_registry=skill_registry,
-                params=params, trace_manager=trace_manager,
-                all_local_tools=local_tools,
+            result = await asyncio.wait_for(
+                _run_sequential_wrapped(
+                    task, agents, llm_service, all_base,
+                    mcp_manager, skill_registry, params, trace_manager, local_tools,
+                ),
+                timeout=_TIMEOUT_SEQUENTIAL,
             )
-            merged = merge_results(results, "sequential")
-            total_tc = sum(r.get("tool_calls_count", 0) for r in results)
-            return {
-                "success": True,
-                "result": merged,
-                "agents_results": results,
-                "collaboration": "sequential",
-                "total_tool_calls": total_tc,
-            }
+            return result
 
         elif collaboration == "parallel" and agents:
-            results = await run_parallel(
-                task, agents, llm_service, all_base,
-                mcp_manager=mcp_manager, skill_registry=skill_registry,
-                params=params, trace_manager=trace_manager,
-                all_local_tools=local_tools,
+            result = await asyncio.wait_for(
+                _run_parallel_wrapped(
+                    task, agents, llm_service, all_base,
+                    mcp_manager, skill_registry, params, trace_manager, local_tools,
+                ),
+                timeout=_TIMEOUT_PARALLEL,
             )
-            merged = merge_results(list(results), "parallel")
-            total_tc = sum(r.get("tool_calls_count", 0) for r in results)
-            return {
-                "success": True,
-                "result": merged,
-                "agents_results": list(results),
-                "collaboration": "parallel",
-                "total_tool_calls": total_tc,
-            }
+            return result
 
         else:
             return {"success": False, "error": f"不支持的协作模式: {collaboration}"}
 
+    except asyncio.TimeoutError:
+        _log.warning(f"[DELEGATE] TIMEOUT after {_TIMEOUT_SINGLE}s!")
+        return {
+            "success": False,
+            "error": f"子智能体委派超时，任务可能过于复杂。请尝试拆分任务或减少 Agent 数量。",
+            "result": "",
+        }
     except Exception as e:
+        _log.error(f"[DELEGATE] EXCEPTION: {type(e).__name__}: {e}", exc_info=True)
         return {
             "success": False,
             "error": f"子智能体执行异常：{str(e)}",
             "result": "",
         }
+
+async def _run_single(role, task, llm_service, agent_tools, mcp_manager,
+                      skill_registry, params, trace_manager):
+    """包装 run_single_agent，使其可被 asyncio.wait_for 取消。"""
+    result = await run_single_agent(
+        task, llm_service, agent_tools,
+        role=role, mcp_manager=mcp_manager,
+        skill_registry=skill_registry, params=params,
+        trace_manager=trace_manager,
+    )
+    return {
+        "success": result["success"],
+        "result": result.get("result", ""),
+        "error": result.get("error", ""),
+        "agents_results": [result],
+        "collaboration": "single",
+        "total_tool_calls": result.get("tool_calls_count", 0),
+    }
+
+
+async def _run_sequential_wrapped(task, agents, llm_service, all_base,
+                                   mcp_manager, skill_registry, params,
+                                   trace_manager, local_tools):
+    """包装 run_sequential，使其可被 asyncio.wait_for 取消。"""
+    results = await run_sequential(
+        task, agents, llm_service, all_base,
+        mcp_manager=mcp_manager, skill_registry=skill_registry,
+        params=params, trace_manager=trace_manager,
+        all_local_tools=local_tools,
+    )
+    merged = merge_results(results, "sequential")
+    total_tc = sum(r.get("tool_calls_count", 0) for r in results)
+    return {
+        "success": True,
+        "result": merged,
+        "agents_results": results,
+        "collaboration": "sequential",
+        "total_tool_calls": total_tc,
+    }
+
+
+async def _run_parallel_wrapped(task, agents, llm_service, all_base,
+                                 mcp_manager, skill_registry, params,
+                                 trace_manager, local_tools):
+    """包装 run_parallel，使其可被 asyncio.wait_for 取消。"""
+    results = await run_parallel(
+        task, agents, llm_service, all_base,
+        mcp_manager=mcp_manager, skill_registry=skill_registry,
+        params=params, trace_manager=trace_manager,
+        all_local_tools=local_tools,
+    )
+    merged = merge_results(list(results), "parallel")
+    total_tc = sum(r.get("tool_calls_count", 0) for r in results)
+    return {
+        "success": True,
+        "result": merged,
+        "agents_results": list(results),
+        "collaboration": "parallel",
+        "total_tool_calls": total_tc,
+    }
 
 
 async def _load_template(template_id: int) -> Optional[Dict]:

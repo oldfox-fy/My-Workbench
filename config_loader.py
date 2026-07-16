@@ -60,6 +60,7 @@ class AppConfig:
         
         # 其他配置项
         self.max_upload_size = int(self.raw_config.get("max_upload_size_mb", 100)) * 1024 * 1024
+        self.max_tool_steps = int(self.raw_config.get("max_tool_steps", 25))
 
         # 模型调用容错配置
         retry_cfg = self.raw_config.get("retry", {}) or {}
@@ -96,6 +97,17 @@ class AppConfig:
             "system_ask_user",
         ]))
         self.tool_approval_session_whitelist = ta.get("session_whitelist", True)
+
+        # Skill 智能选择配置
+        sc = self.raw_config.get("skill_selection", {}) or {}
+        self.skill_selection_enabled = sc.get("enabled", True)
+        self.skill_selection_top_k = int(sc.get("top_k", 5))
+        self.skill_selection_min_similarity = float(sc.get("min_similarity", 0.3))
+
+        # Skill 优先模式配置
+        sf = self.raw_config.get("skill_first", {}) or {}
+        self.skill_first_enabled = sf.get("enabled", True)
+        self.skill_first_threshold = float(sf.get("threshold", 0.4))
 
     def _resolve_path(self, path_str: str, base: Path) -> Path:
         """将路径字符串解析为 Path 对象，支持绝对路径和相对路径"""

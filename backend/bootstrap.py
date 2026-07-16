@@ -43,14 +43,14 @@ def setup_logging() -> logging.Logger:
     is_frozen = getattr(sys, "frozen", False)
     is_gui_mode = sys.stdout is not sys.__stdout__
 
-    if is_frozen or is_gui_mode:
-        log_dir = config.logs_dir
-        os.makedirs(log_dir, exist_ok=True)
-        file_handler = logging.FileHandler(
-            os.path.join(log_dir, "lumneo.log"), encoding="utf-8"
-        )
-        file_handler.setFormatter(formatter)
-        logger.addHandler(file_handler)
+    # 始终写入日志文件（无论运行模式），方便排查问题
+    log_dir = config.logs_dir
+    os.makedirs(log_dir, exist_ok=True)
+    file_handler = logging.FileHandler(
+        os.path.join(log_dir, "lumneo.log"), encoding="utf-8"
+    )
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
 
     return logger
 

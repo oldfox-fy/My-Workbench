@@ -116,6 +116,11 @@ async def _stream_to_ws(ws: WebSocket, generator, cancel_event: asyncio.Event):
                 pass
             continue
 
+        # PPT 预览标记 → 透传为普通文本块，由前端 processMessageContent 解析
+        if text.startswith("<!--ppt_preview:"):
+            await ws.send_json({"type": "chunk", "content": text})
+            continue
+
         # 普通文本
         if text and not text.startswith("<!--"):
             await ws.send_json({"type": "chunk", "content": text})
@@ -195,20 +200,40 @@ async def _handle_chat(ws: WebSocket, data: dict, cancel_event: asyncio.Event,
         params = data.get("params", {})
         profile_prompt_value = ""
         profile_skill_prompt = ""
+        skill_first_directive = ""
+        suppressed_tool_names: set = set()
 
         # 构建工具（对齐 SSE 端点的 profile 过滤逻辑）
         tools = None
         if enable_tools:
             from backend.services.tools import get_all_tools, get_local_tools as _get_ws_local, get_mcp_tools as _get_ws_mcp
-            from backend.routes.chat import default_tools, disabled_tools, _detect_command_intent
+            from backend.routes.chat import default_tools, disabled_tools, _detect_command_intent, _detect_ppt_intent
 
             if profile_id == 0:
                 # 全能助手：所有工具 + 所有 MCP + 所有技能
-                tools = await get_all_tools()
+                tools = await get_all_tools(mcp_manager, skill_registry)
                 if skill_registry:
                     expanded = skill_registry.expand_for_all_prompt_skills()
                     if expanded.get("instructions"):
                         profile_skill_prompt = "\n\n".join(expanded["instructions"])
+                    # 全能助手也要做技能优先匹配
+                    all_skill_names = [s["name"] for s in skill_registry.all_enabled()]
+                    if all_skill_names:
+                        last_user = ""
+                        for m_ws in reversed(messages):
+                            if m_ws.get("role") == "user":
+                                last_user = m_ws.get("content", "")
+                                if isinstance(last_user, list):
+                                    last_user = " ".join(
+                                        p.get("text", "") for p in last_user if isinstance(p, dict)
+                                    )
+                                break
+                        from backend.services.skills import assemble_skill_first_context
+                        sf_ctx = await assemble_skill_first_context(
+                            skill_registry, all_skill_names, last_user, app_config
+                        )
+                        skill_first_directive = sf_ctx["skill_first_directive"]
+                        suppressed_tool_names = sf_ctx["suppressed_tool_names"]
             elif profile_id is not None:
                 # 普通角色：按白名单过滤
                 db = await get_db()
@@ -242,14 +267,36 @@ async def _handle_chat(ws: WebSocket, data: dict, cancel_event: asyncio.Event,
                             if t["function"]["name"] not in existing_names:
                                 tools.append(t)
 
-                    # 展开技能
-                    allowed_code_tool_names = []
+                    # 智能注入 system_generate_pptx
+                    if _detect_ppt_intent(messages):
+                        pptx_tool = [t for t in local_tools if t["function"]["name"] == "system_generate_pptx"]
+                        existing_names = {t["function"]["name"] for t in tools}
+                        for t in pptx_tool:
+                            if t["function"]["name"] not in existing_names:
+                                tools.append(t)
+
+                    # 展开技能：智能选择 + 技能优先判断
+                    allowed_code_tool_names: list = []
                     if skill_registry and profile_skills:
-                        expanded = skill_registry.expand_for_profile(profile_skills)
-                        if expanded["instructions"]:
-                            profile_skill_prompt = "\n\n".join(expanded["instructions"])
-                        allowed_tools = list(set(allowed_tools) | expanded["allowed_tools"])
-                        allowed_code_tool_names = expanded["code_tool_names"]
+                        last_user = ""
+                        for m in reversed(messages):
+                            if m.get("role") == "user":
+                                last_user = m.get("content", "")
+                                if isinstance(last_user, list):
+                                    last_user = " ".join(
+                                        p.get("text", "") for p in last_user if isinstance(p, dict)
+                                    )
+                                break
+
+                        from backend.services.skills import assemble_skill_first_context
+                        ctx = await assemble_skill_first_context(
+                            skill_registry, profile_skills, last_user, app_config
+                        )
+                        profile_skill_prompt = ctx["skill_prompt"]
+                        skill_first_directive = ctx["skill_first_directive"]
+                        suppressed_tool_names = ctx["suppressed_tool_names"]
+                        allowed_tools = list(set(allowed_tools) | ctx["allowed_tools_extra"])
+                        allowed_code_tool_names = ctx["code_tool_names"]
 
                     # 筛选 disabled + MCP 工具
                     mcp_tools = await _get_ws_mcp(mcp_manager)
@@ -275,8 +322,20 @@ async def _handle_chat(ws: WebSocket, data: dict, cancel_event: asyncio.Event,
                         if t["function"]["name"] not in existing_names:
                             tools.append(t)
 
+                if _detect_ppt_intent(messages):
+                    pptx_tool = [t for t in local_tools if t["function"]["name"] == "system_generate_pptx"]
+                    existing_names = {t["function"]["name"] for t in tools}
+                    for t in pptx_tool:
+                        if t["function"]["name"] not in existing_names:
+                            tools.append(t)
+
             if tools:
                 tools.sort(key=lambda t: t.get("function", {}).get("name", ""))
+
+            # 技能优先模式：移除被技能覆盖的系统工具
+            if suppressed_tool_names and tools:
+                tools = [t for t in tools
+                         if t.get("function", {}).get("name", "") not in suppressed_tool_names]
 
         # 系统提示词
         system_prompt = ""
@@ -294,6 +353,9 @@ async def _handle_chat(ws: WebSocket, data: dict, cancel_event: asyncio.Event,
         # 注入角色提示词
         if profile_prompt_value:
             system_prompt = system_prompt + "\n\n### 角色扮演\n\n" + profile_prompt_value
+        # 技能优先指令（放在技能指令之前，确保 LLM 先看到优先级约束）
+        if skill_first_directive:
+            system_prompt = system_prompt + "\n\n" + skill_first_directive
         if profile_skill_prompt:
             system_prompt = system_prompt + "\n\n### 已启用技能\n\n" + profile_skill_prompt
 
@@ -310,6 +372,7 @@ async def _handle_chat(ws: WebSocket, data: dict, cancel_event: asyncio.Event,
             message_id=ws_message_id,
             skill_registry=skill_registry,
             mcp_manager=mcp_manager,
+            max_steps=app_config.max_tool_steps,
         )
         await _stream_to_ws(ws, gen, cancel_event)
 

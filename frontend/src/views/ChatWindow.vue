@@ -26,78 +26,87 @@
             我的知识库
           </n-button>
         </div>
-        <n-scrollbar content-style="padding:0 16px" style="max-height: calc(100vh - 200px);">
-          <n-list hoverable clickable :show-divider="false">
-            <n-list-item v-for="chat in chatStore.chats" :key="chat.id"
-              @click="openChat(chat.id)"
-              :class="{ active: chat.id === chatStore.activeChatId }">
-              <div class="chat-item-row">
-                <div class="chat-title" v-if="renamingChatId !== chat.id">
-                  {{ chat.title }}
+        <!-- 3. 历史对话区：独立滚动区域 -->
+        <div class="chat-history-section">
+          <div class="section-label">历史对话</div>
+          <n-scrollbar content-style="padding:0 16px" style="flex:1; min-height:0;">
+            <n-list hoverable clickable :show-divider="false">
+              <n-list-item v-for="chat in chatStore.chats" :key="chat.id"
+                @click="openChat(chat.id)"
+                :class="{ active: chat.id === chatStore.activeChatId }">
+                <div class="chat-item-row">
+                  <div class="chat-title" v-if="renamingChatId !== chat.id">
+                    {{ chat.title }}
+                  </div>
+                  <n-input v-else
+                    v-model:value="renameText"
+                    size="small"
+                    autofocus
+                    @blur="confirmRename(chat.id)"
+                    @keydown.enter="confirmRename(chat.id)"
+                    placeholder="请输入标题"
+                  />
+                  <div class="chat-actions" v-if="renamingChatId !== chat.id">
+                    <n-button text size="tiny" @click.stop="exportChat(chat.id, chat.title)" title="导出">
+                      <template #icon><n-icon :size="16"><DownloadOutline /></n-icon></template>
+                    </n-button>
+                    <n-button text size="tiny" @click.stop="startRename(chat)" title="重命名">
+                      <template #icon><n-icon :size="16"><m-svg name="edit"/></n-icon></template>
+                    </n-button>
+                    <n-popconfirm
+                      @positive-click="() => chatStore.deleteChat(chat.id)"
+                      negative-text="取消"
+                      positive-text="好的"
+                      :negative-button-props="{size: 'tiny'}"
+                      :positive-button-props="{size: 'tiny'}"
+                    >
+                      <template #trigger>
+                        <n-button text size="tiny" @click.stop title="删除">
+                          <template #icon><n-icon :size="16"><m-svg name="del"/></n-icon></template>
+                        </n-button>
+                      </template>
+                      确定删除整个对话「{{ chat.title }}」吗？
+                    </n-popconfirm>
+                  </div>
                 </div>
-                <n-input v-else
-                  v-model:value="renameText"
-                  size="small"
-                  autofocus
-                  @blur="confirmRename(chat.id)"
-                  @keydown.enter="confirmRename(chat.id)"
-                  placeholder="请输入标题"
-                />
-                <div class="chat-actions" v-if="renamingChatId !== chat.id">
-                  <n-button text size="tiny" @click.stop="exportChat(chat.id, chat.title)" title="导出">
-                    <template #icon><n-icon :size="16"><DownloadOutline /></n-icon></template>
-                  </n-button>
-                  <n-button text size="tiny" @click.stop="startRename(chat)" title="重命名">
-                    <template #icon><n-icon :size="16"><m-svg name="edit"/></n-icon></template>
-                  </n-button>
-                  <n-popconfirm
-                    @positive-click="() => chatStore.deleteChat(chat.id)"
-                    negative-text="取消"
-                    positive-text="好的"
-                    :negative-button-props="{size: 'tiny'}"
-                    :positive-button-props="{size: 'tiny'}"
-                  >
-                    <template #trigger>
-                      <n-button text size="tiny" @click.stop title="删除">
-                        <template #icon><n-icon :size="16"><m-svg name="del"/></n-icon></template>
-                      </n-button>
-                    </template>
-                    确定删除整个对话「{{ chat.title }}」吗？
-                  </n-popconfirm>
-                </div>
-              </div>
-            </n-list-item>
-          </n-list>
-        </n-scrollbar>
-        <div class="sidebar-footer">
-          <n-button text @click="showTools = true">
-            <template #icon>
-              <n-icon><ConstructOutline /></n-icon>
-            </template>
-            工具列表
-          </n-button>
-          <n-button text @click="showStats = true">
-            <template #icon>
-              <n-icon><BarChartOutline /></n-icon>
-            </template>
-            使用统计
-          </n-button>
-          <n-button text @click="importChat">
-            <template #icon>
-              <n-icon><CloudUploadOutline /></n-icon>
-            </template>
-            导入对话
-          </n-button>
-          <n-button text @click="showSettings = true">
-            <template #icon>
-              <n-icon><SettingsOutline /></n-icon>
-            </template>
-            系统设置
-          </n-button>
-          <n-button v-if="hasUpdate" text type="warning" @click="openUpdateUrl">
-            <template #icon><n-icon><CloudDownloadOutline /></n-icon></template>
-            更新可用
-          </n-button>
+              </n-list-item>
+            </n-list>
+          </n-scrollbar>
+        </div>
+
+        <!-- 4. 功能菜单区 -->
+        <div class="sidebar-menu-section">
+          <div class="section-label">功能菜单</div>
+          <div class="menu-items">
+            <n-button text @click="showTools = true">
+              <template #icon>
+                <n-icon><ConstructOutline /></n-icon>
+              </template>
+              工具列表
+            </n-button>
+            <n-button text @click="showStats = true">
+              <template #icon>
+                <n-icon><BarChartOutline /></n-icon>
+              </template>
+              使用统计
+            </n-button>
+            <n-button text @click="importChat">
+              <template #icon>
+                <n-icon><CloudUploadOutline /></n-icon>
+              </template>
+              导入对话
+            </n-button>
+            <n-button text @click="showSettings = true">
+              <template #icon>
+                <n-icon><SettingsOutline /></n-icon>
+              </template>
+              系统设置
+            </n-button>
+            <n-button v-if="hasUpdate" text type="warning" @click="openUpdateUrl">
+              <template #icon><n-icon><CloudDownloadOutline /></n-icon></template>
+              更新可用
+            </n-button>
+          </div>
         </div>
       </aside>
     </Transition>
@@ -890,14 +899,40 @@ onUnmounted(() => {
 .kb-btn {
   margin-top: 10px;
 }
-.sidebar-footer {
-  position: fixed;
-  bottom:40px; left:20px; right:0;
-  z-index:100;
+/* ========== 历史对话区 ========== */
+.chat-history-section {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* ========== 功能菜单区 ========== */
+.sidebar-menu-section {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 0 16px;
+  gap: 8px;
+}
+
+.section-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 8px 16px 4px;
+  opacity: 0.7;
+}
+
+.menu-items {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 10px;
+  gap: 4px;
+  padding: 0 8px 12px;
 }
 
 /* ========== 工作区 ========== */

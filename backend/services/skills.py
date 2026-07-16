@@ -103,24 +103,25 @@ class SkillRegistry:
         except Exception:
             pass  # embedding 不可用时降级为全量注入
 
-    async def select_relevant_skills(
+    async def select_relevant_skills_with_scores(
         self,
         user_query: str,
         profile_skills: List[str],
         top_k: int = 5,
         min_similarity: float = 0.3,
-    ) -> List[str]:
+    ) -> List[tuple]:
         """
-        从角色的技能列表中选出与用户查询最相关的 Top-K 个。
-        如果 embedding 不可用或技能数 ≤ top_k，返回全部。
+        从角色的技能列表中选出与用户查询最相关的 Top-K 个，
+        返回 (skill_name, similarity_score) 元组列表，按分数降序排列。
+        如果 embedding 不可用或技能数 ≤ top_k，返回全部（dummy 分数 0.5）。
         """
         available = [s for s in profile_skills if s in self._skills]
         if len(available) <= top_k:
-            return available
+            return [(name, 0.5) for name in available]
 
         await self._ensure_embeddings(available)
         if not self._skill_embeddings:
-            return available  # embedding 不可用，全量注入
+            return [(name, 0.5) for name in available]  # embedding 不可用，全量注入
 
         try:
             from backend.services.embedding import get_embedder
@@ -128,7 +129,7 @@ class SkillRegistry:
                 self._embedder = await get_embedder()
             qvec = await self._embedder.embed_one(user_query)
             if not qvec:
-                return available
+                return [(name, 0.5) for name in available]
 
             # 余弦相似度排序
             scored = []
@@ -141,12 +142,28 @@ class SkillRegistry:
                     scored.append((name, 0.5))  # 无缓存时给中等分数
 
             scored.sort(key=lambda x: x[1], reverse=True)
-            result = [name for name, sim in scored[:top_k] if sim >= min_similarity]
+            result = [(name, sim) for name, sim in scored[:top_k] if sim >= min_similarity]
             if not result:
-                result = [scored[0][0]]  # 至少选一个
+                result = [scored[0]]  # 至少选一个
             return result
         except Exception:
-            return available
+            return [(name, 0.5) for name in available]
+
+    async def select_relevant_skills(
+        self,
+        user_query: str,
+        profile_skills: List[str],
+        top_k: int = 5,
+        min_similarity: float = 0.3,
+    ) -> List[str]:
+        """
+        从角色的技能列表中选出与用户查询最相关的 Top-K 个。
+        委托给 select_relevant_skills_with_scores()，只返回名称。
+        """
+        scored = await self.select_relevant_skills_with_scores(
+            user_query, profile_skills, top_k, min_similarity
+        )
+        return [name for name, _ in scored]
 
     # ---------- 查询 ----------
 
@@ -220,6 +237,79 @@ class SkillRegistry:
                 )
         return {"instructions": instructions}
 
+    def build_skill_first_prompt(
+        self,
+        ranked_skills: List[tuple],
+        threshold: float,
+    ) -> tuple:
+        """
+        生成"技能优先"系统提示词指令，同时返回需抑制的系统工具列表。
+
+        ranked_skills: (skill_name, similarity_score) 元组列表，按分数降序。
+        threshold: 只有分数 ≥ 此值的技能才会被列入优先指令。
+
+        Returns: (directive_text, suppressed_system_tools_set)
+        """
+        top = [(name, sim) for name, sim in ranked_skills if sim >= threshold]
+        if not top:
+            return "", set()
+
+        # 关键词 → 需抑制的系统工具映射
+        # 注意：system_run_command 不在此列表中，因为技能优先模式下仍需保留命令执行能力。
+        # skill 可通过 prompt 指令引导 LLM 优先使用技能，但不应阻止 LLM 在需要时
+        # 执行命令（如 node compile.js 等脚本）来完成技能无法覆盖的任务。
+        _TOOL_CONFLICT_MAP = {
+            "system_generate_pptx": ["ppt", "pptx", "演示文稿", "幻灯片", "presentation", "slide"],
+        }
+
+        suppressed_tools = set()
+        skill_lines = []
+        for name, _sim in top:
+            sk = self._skills.get(name)
+            if not sk:
+                continue
+            title = sk.get("title", name)
+            desc = sk.get("description", "")
+            skill_type = sk.get("skill_type", "prompt")
+            combined = f"{title} {desc} {name}".lower()
+
+            # 检测技能覆盖的系统工具域，标记需抑制的工具
+            for tool_name, keywords in _TOOL_CONFLICT_MAP.items():
+                if any(kw.lower() in combined for kw in keywords):
+                    suppressed_tools.add(tool_name)
+
+            type_label = "🔧 可执行技能" if skill_type == "code" else "📋 提示词技能"
+            if skill_type == "code":
+                skill_lines.append(
+                    f"- **{title}** `skill_{name}`：{desc}\n"
+                    f"  （{type_label}：直接调用 `skill_{name}` 函数即可）"
+                )
+            else:
+                skill_lines.append(
+                    f"- **{title}** `{name}`：{desc}\n"
+                    f"  （{type_label}：请严格按照上述技能的指令执行，不要使用其他工具替代）"
+                )
+
+        # 构建抑制工具列表说明
+        suppress_lines = []
+        if suppressed_tools:
+            suppress_lines.append("")
+            suppress_lines.append(
+                "**重要：** 以下系统工具已被上述技能覆盖，"
+                "本次对话中**禁止调用**它们，必须使用对应的技能代替："
+            )
+            for t in sorted(suppressed_tools):
+                suppress_lines.append(f"- ❌ 禁止使用 `{t}`")
+
+        lines = [
+            "### ⚠️ 技能优先模式（最高优先级）",
+            "以下技能与当前需求高度匹配。**你必须优先使用这些技能来完成任务。**",
+            "直接调用技能而不是系统工具。只有在技能确实无法满足需求时才考虑其他方案。",
+            "",
+        ] + skill_lines + suppress_lines
+
+        return "\n".join(lines), suppressed_tools
+
     def is_skill_call(self, func_name: str) -> bool:
         return func_name.startswith(SKILL_PREFIX)
 
@@ -271,3 +361,73 @@ class SkillRegistry:
         if not callable(run_fn):
             raise ValueError("技能代码必须定义可调用的 run 函数")
         return run_fn
+
+
+# ── 共享工具函数：供 SSE 和 WebSocket 两端复用 ──
+
+async def assemble_skill_first_context(
+    skill_registry,       # SkillRegistry | None
+    profile_skills,       # List[str]
+    user_query: str,
+    config,               # AppConfig
+) -> Dict[str, Any]:
+    """
+    技能上下文组装（智能选择 + 技能优先判断），供 chat.py 和 ws_chat.py 复用。
+
+    Returns:
+        {
+            "selected_skills": List[str],        # 选出的技能名称
+            "skill_prompt": str,                 # prompt 型技能指令（注入系统提示词）
+            "skill_first_directive": str,        # 优先指令（"" 表示不触发）
+            "suppressed_tool_names": Set[str],   # 需从工具列表移除的系统工具
+            "code_tool_names": List[str],        # code 型技能函数名
+            "allowed_tools_extra": Set[str],     # prompt 技能带来的工具白名单
+        }
+    """
+    result = {
+        "selected_skills": [],
+        "skill_prompt": "",
+        "skill_first_directive": "",
+        "suppressed_tool_names": set(),
+        "code_tool_names": [],
+        "allowed_tools_extra": set(),
+    }
+
+    if not skill_registry or not profile_skills:
+        return result
+
+    # ---- Step 1: 智能技能选择 ----
+    se_enabled = getattr(config, "skill_selection_enabled", True)
+    top_k = getattr(config, "skill_selection_top_k", 5)
+    min_sim = getattr(config, "skill_selection_min_similarity", 0.3)
+
+    if se_enabled and len(profile_skills) > 3:
+        scored = await skill_registry.select_relevant_skills_with_scores(
+            user_query, profile_skills, top_k=top_k, min_similarity=min_sim
+        )
+        selected = [name for name, _ in scored]
+    else:
+        selected = profile_skills
+        scored = [(name, 0.5) for name in selected]
+
+    result["selected_skills"] = selected
+
+    # ---- Step 2: 展开选中技能 ----
+    expanded = skill_registry.expand_for_profile(selected)
+    if expanded["instructions"]:
+        result["skill_prompt"] = "\n\n".join(expanded["instructions"])
+    result["allowed_tools_extra"] = expanded["allowed_tools"]
+    result["code_tool_names"] = expanded["code_tool_names"]
+
+    # ---- Step 3: 技能优先指令（含工具冲突检测）----
+    sf_enabled = getattr(config, "skill_first_enabled", True)
+    sf_threshold = getattr(config, "skill_first_threshold", 0.4)
+
+    if sf_enabled:
+        directive, suppressed = skill_registry.build_skill_first_prompt(
+            scored, sf_threshold
+        )
+        result["skill_first_directive"] = directive
+        result["suppressed_tool_names"] = suppressed
+
+    return result

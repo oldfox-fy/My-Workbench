@@ -6,10 +6,14 @@ import asyncio
 from fastapi import Request
 from openai import AsyncOpenAI, APIError
 from typing import List, Dict, AsyncGenerator, Optional
+import httpx
 from backend.services.tools import get_all_tools, execute_tool
 from backend.db.tool_calls import create_tool_call, update_tool_call, update_tool_call_arguments
 from config_loader import config as app_config
 from backend.utils.base import normalize_base_url
+
+# AsyncOpenAI 默认 HTTP 超时：连接 10s，读取 120s，写入 10s，连接池 10s
+_CLIENT_TIMEOUT = httpx.Timeout(connect=10.0, read=120.0, write=10.0, pool=10.0)
 
 # 工具审批：模块级状态（同一进程内共享）
 _pending_approvals: Dict[str, asyncio.Event] = {}
@@ -40,6 +44,19 @@ def _is_retryable(error: APIError) -> bool:
     return status in _RETRYABLE_STATUSES
 
 
+def _is_sensitive_tool(func_name: str) -> bool:
+    """判断工具是否需要用户审批（敏感工具不应在流式阶段 eager-launch）"""
+    sensitive = getattr(app_config, 'tool_approval_sensitive', set())
+    return func_name in sensitive
+
+
+def _cancel_pending(pending_executions: dict) -> None:
+    """取消所有未完成的背景工具任务，防止资源泄露。"""
+    for task in pending_executions.values():
+        if not task.done():
+            task.cancel()
+
+
 class LLMService:
     instance: Optional["LLMService"] = None
 
@@ -60,7 +77,11 @@ class LLMService:
         self.max_retries = max_retries
         self.base_delay = base_delay
         self.fallback_config = fallback_config
-        self.client = AsyncOpenAI(api_key=api_key or None, base_url=normalize_base_url(base_url or ""))
+        self.client = AsyncOpenAI(
+            api_key=api_key or None,
+            base_url=normalize_base_url(base_url or ""),
+            timeout=_CLIENT_TIMEOUT,
+        )
         # 备用客户端（惰性创建，仅在触发降级时初始化）
         self._fallback_client = None
 
@@ -74,10 +95,14 @@ class LLMService:
         params: Dict = None,
         message_id: Optional[int] = None,
         skill_registry=None,
-        max_steps: int = 10,
+        max_steps: int = 25,
         excluded_tools: Optional[set] = None,
+        skip_approval: bool = False,
+        auto_approve: bool = False,
     ) -> AsyncGenerator[str, None]:
         params = params or {}
+        _sub_agent = skip_approval  # 子智能体模式下跳过审批
+        _auto_approve = auto_approve  # 子智能体模式下自动同意审批
 
         # ---------- Span 追踪 ----------
         from backend.services.tracer import TraceManager, persist_trace
@@ -168,7 +193,10 @@ class LLMService:
         last_step_generation_time = 0.0
 
         MAX_STEPS = max_steps
-        MAX_CONSECUTIVE_FAILURES = 3
+        # 连续失败上限与 max_steps 联动：每步可能并行调用多个工具，
+        # 因此失败容忍度应至少等于步数上限，避免子智能体（max_steps=3）
+        # 在第一步并行工具全失败时就被 force_final 终止。
+        MAX_CONSECUTIVE_FAILURES = max(3, max_steps * 2)
         consecutive_failures = 0
         force_final = False
 
@@ -194,6 +222,7 @@ class LLMService:
                 "top_p": params.get('top_p', 0.95),
                 "frequency_penalty": params.get('frequency_penalty', 0.0),
                 "presence_penalty": params.get('presence_penalty', 0.0),
+                "max_tokens": params.get('max_tokens', 16384),
                 "stream_options": {"include_usage": True},
             }
 
@@ -223,9 +252,13 @@ class LLMService:
                     "role": "user",
                     "content": ("【系统指令】你的工具调用已达限制或连续多次失败。"
                                 "请立即放弃尝试调用工具，根据上面已经收集到的上下文信息，"
-                                "直接回答我的问题并进行最终总结。")
+                                "直接以纯文本形式回答我的问题并进行最终总结。"
+                                "禁止输出任何 XML/JSON 格式的工具调用标记。")
                 })
                 kwargs["messages"] = current_messages
+                # 移除本轮可能残留的 tools 参数，确保 API 不尝试生成工具调用
+                kwargs.pop("tools", None)
+                kwargs.pop("tool_choice", None)
                 tools = None
                 force_final = False
             elif tools:
@@ -236,6 +269,10 @@ class LLMService:
             response = None
             api_error = None
             client = self.client  # 当前使用的客户端（可能已在之前的步骤中降级）
+            _api_t0 = time.time()
+            import logging as _logging
+            _log = _logging.getLogger("My Workbench")
+            _log.info(f"[LLM] API call step={step+1}/{MAX_STEPS}, model={kwargs.get('model','?')[:30]}...")
 
             for attempt in range(self.max_retries + 1):
                 try:
@@ -257,6 +294,7 @@ class LLMService:
                             self._fallback_client = AsyncOpenAI(
                                 api_key=self.fallback_config.get('api_key') or None,
                                 base_url=normalize_base_url(self.fallback_config.get('base_url') or ''),
+                                timeout=_CLIENT_TIMEOUT,
                             )
                         client = self._fallback_client
                         kwargs["model"] = self.fallback_config.get("model_name", self.model_name)
@@ -275,13 +313,26 @@ class LLMService:
                             yield f"\n❌ 模型服务错误（已重试 {attempt} 次）：{e.message}"
                         break
                 except Exception as e:
+                    # 网络层异常（httpx 连接/超时/协议错误）纳入重试
+                    if isinstance(e, (httpx.ConnectError, httpx.ReadTimeout,
+                                       httpx.RemoteProtocolError, httpx.WriteError,
+                                       httpx.PoolTimeout, httpx.TimeoutException,
+                                       httpx.NetworkError)):
+                        if attempt < self.max_retries - 1:
+                            delay = self.base_delay * (2 ** attempt)
+                            yield (f"\n⏳ 网络异常（{type(e).__name__}），"
+                                   f"{delay:.0f}s 后重试（{attempt + 1}/{self.max_retries}）...\n")
+                            await asyncio.sleep(delay)
+                            continue
                     api_error = APIError(message=str(e))
                     yield f"\n❌ 模型调用异常：{str(e)}\n"
                     break
 
             if api_error:
+                _log.warning(f"[LLM] API call FAILED step={step+1} in {time.time()-_api_t0:.1f}s: {api_error.message[:100]}")
                 break
 
+            _log.info(f"[LLM] API call DONE step={step+1} in {time.time()-_api_t0:.1f}s, streaming...")
             first_token_time = None
             tool_preview_active = {}
             tool_calls_started = False
@@ -302,6 +353,23 @@ class LLMService:
                     func_name = tc["function"]["name"] or "未知工具"
                     raw_args = tc["function"]["arguments"]
 
+                    # ── 执行级工具黑名单：被排除的工具直接拒绝 ──
+                    # 只过滤 tools 列表不够（部分模型会从训练记忆"回忆"工具并生成调用），
+                    # 必须在执行前二次拦截，彻底禁止子智能体递归委派。
+                    if excluded_tools and func_name in excluded_tools:
+                        return {
+                            "idx": idx,
+                            "local_call_id": local_call_id,
+                            "real_tool_call_id": real_tool_call_id,
+                            "func_name": func_name,
+                            "failed": True,
+                            "tool_content": json.dumps({
+                                "success": False,
+                                "error": f"子智能体禁止使用 {func_name}。请用已授权的工具（system_web_fetch / system_read_file / system_write_file 等）直接完成任务，不要再次委派。"
+                            }, ensure_ascii=False),
+                            "parse_error": None,
+                        }
+
                     # 创建 tool_call Span（用于数据库持久化）
                     tool_span = trace.start_tool_call(func_name, raw_args[:300])
 
@@ -320,8 +388,14 @@ class LLMService:
 
                     start_time = time.time()
                     failed = False
+                    import logging as _logging
+                    _log = _logging.getLogger("My Workbench")
+                    _log.info(f"[LLM] tool START: {func_name}")
                     try:
-                        result = await execute_tool(func_name, args, mcp_manager, skill_registry, llm_service=self, params=params)
+                        result = await asyncio.wait_for(
+                            execute_tool(func_name, args, mcp_manager, skill_registry, llm_service=self, params=params),
+                            timeout=120.0,
+                        )
                         if isinstance(result, str):
                             try:
                                 result_obj = json.loads(result)
@@ -360,6 +434,7 @@ class LLMService:
                         tool_content = str(result)
 
                     # 结束 tool_call Span
+                    _log.info(f"[LLM] tool DONE: {func_name} in {exec_time_ms}ms, failed={failed}")
                     trace.end_span(tool_span.id, "error" if failed else "success",
                                    tool_content[:300], result if failed else None)
 
@@ -486,12 +561,14 @@ class LLMService:
                             target["function"]["arguments"] += arg_delta
 
                         # 流式工具执行：检测到新 idx → 前一个 idx 参数已完整 → 后台启动
+                        # ⚠️ 敏感工具不在此阶段 eager-launch，需等待后续审批流程
                         if idx != last_active_idx:
                             if last_active_idx is not None and last_active_idx not in pending_executions:
                                 prev_tc = tool_calls_by_index.get(last_active_idx)
                                 if prev_tc and prev_tc["function"]["arguments"].strip():
-                                    pending_executions[last_active_idx] = asyncio.create_task(
-                                        _execute_one_tool(last_active_idx, prev_tc, tool_preview_active.get(last_active_idx, {})))
+                                    if not _is_sensitive_tool(prev_tc["function"]["name"]):
+                                        pending_executions[last_active_idx] = asyncio.create_task(
+                                            _execute_one_tool(last_active_idx, prev_tc, tool_preview_active.get(last_active_idx, {})))
                             last_active_idx = idx
 
                 elif delta_content:
@@ -519,9 +596,11 @@ class LLMService:
                     continue
 
             if tool_calls and request and await request.is_disconnected():
+                _cancel_pending(pending_executions)
                 break
 
             if not tool_calls:
+                _cancel_pending(pending_executions)
                 break
 
             # ---------- 构建 valid_calls (用于执行工具，保留 idx) ----------
@@ -554,16 +633,22 @@ class LLMService:
             }
 
             # 流结束后：最后一个 tool_call 的参数也已完成 → 后台启动
+            # ⚠️ 敏感工具不在此 eager-launch，等审批流处理
             if last_active_idx is not None and last_active_idx not in pending_executions:
                 last_tc = tool_calls_by_index.get(last_active_idx)
                 if last_tc and last_tc["function"]["arguments"].strip():
-                    pending_executions[last_active_idx] = asyncio.create_task(
-                        _execute_one_tool(last_active_idx, last_tc, preview_snapshot.get(last_active_idx, {}))
-                    )
+                    if not _is_sensitive_tool(last_tc["function"]["name"]):
+                        pending_executions[last_active_idx] = asyncio.create_task(
+                            _execute_one_tool(last_active_idx, last_tc, preview_snapshot.get(last_active_idx, {}))
+                        )
 
             # ---------- 工具审批流 ----------
+            # 子智能体模式：跳过审批（无人可响应审批请求，event.wait() 会永久阻塞）
+            if _sub_agent:
+                approval_enabled = False
+            else:
+                approval_enabled = getattr(app_config, 'tool_approval_enabled', True)
             sensitive_set = set(getattr(app_config, 'tool_approval_sensitive', set()))
-            approval_enabled = getattr(app_config, 'tool_approval_enabled', True)
 
             # 收集需要审批的敏感工具
             approval_needed = []
@@ -582,7 +667,7 @@ class LLMService:
 
             # 发出审批请求，等待前端响应
             rejected_call_ids = set()
-            if approval_needed and request:
+            if approval_needed and (request or _auto_approve):
                 for idx, local_call_id, func_name, args_preview in approval_needed:
                     event = asyncio.Event()
                     _pending_approvals[local_call_id] = event
@@ -590,12 +675,17 @@ class LLMService:
 
                 # 等待所有审批结果（最长 60s 超时，超时自动拒绝）
                 for idx, local_call_id, func_name, args_preview in approval_needed:
-                    event = _pending_approvals.get(local_call_id)
-                    if event:
-                        try:
-                            await asyncio.wait_for(event.wait(), timeout=60.0)
-                        except asyncio.TimeoutError:
-                            _approval_results[local_call_id] = False
+                    if _auto_approve:
+                        # 子智能体模式：自动同意所有敏感工具，不等待用户
+                        _approval_results[local_call_id] = True
+                        yield f"<!--tool_status:{local_call_id}:approved_auto-->"
+                    else:
+                        event = _pending_approvals.get(local_call_id)
+                        if event:
+                            try:
+                                await asyncio.wait_for(event.wait(), timeout=60.0)
+                            except asyncio.TimeoutError:
+                                _approval_results[local_call_id] = False
                     if not _approval_results.get(local_call_id, False):
                         rejected_call_ids.add(local_call_id)
                         yield f"<!--tool_status:{local_call_id}:rejected-->"

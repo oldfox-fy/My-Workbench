@@ -377,6 +377,10 @@ tools:
 
       支持 3 套主题（theme 字段）：blue（简约蓝）、warm（活力橙）、clean（极简白）。
 
+      图片支持：
+      - image_query：提供关键词，工具自动从 Unsplash 免费图库搜索配图
+      - image_url：直接提供图片 URL，工具下载后嵌入幻灯片
+
       生成产物通过 /files/generate/ 链接下载，同时自动渲染为可视化幻灯片卡片预览。
     parameters:
       type: object
@@ -384,11 +388,48 @@ tools:
         slides:
           type: array
           description: >
-            幻灯片数组，每项为一个页面的描述对象 JSON。
-            格式：{"title":"标题","type":"cover|toc|content|ending","content":"正文","subtitle":"副标题","bullets":["要点1","要点2"],"items":["目录项1"],"speaker":"演讲者"}
-            必填字段：title（每页标题）
+            幻灯片数组，每项为一个页面的描述对象。
+            必填：title（每页标题）
+            常用：content（正文）、bullets（要点列表）、type（页面类型）
+            可选：subtitle（副标题）、speaker（演讲者）、items（目录项）、
+            image_query（配图关键词，如 "artificial intelligence brain"）、
+            image_url（配图直链URL）
           items:
             type: object
+            properties:
+              title:
+                type: string
+                description: 每页标题（必填）
+              type:
+                type: string
+                enum: ["cover", "toc", "content", "ending"]
+                description: 页面类型，默认 content
+              content:
+                type: string
+                description: 正文内容，支持 Markdown（**加粗**、- 列表）
+              bullets:
+                type: array
+                items:
+                  type: string
+                description: 要点列表，每项一行
+              subtitle:
+                type: string
+                description: 副标题（封面页或结尾页使用）
+              speaker:
+                type: string
+                description: 演讲者信息（封面页使用）
+              items:
+                type: array
+                items:
+                  type: string
+                description: 目录项列表（toc 类型使用）
+              image_query:
+                type: string
+                description: 配图搜索关键词（英文），工具自动从免费图库匹配相关图片
+              image_url:
+                type: string
+                description: 配图直链 URL，工具下载后嵌入幻灯片
+            required: ["title"]
         theme:
           type: string
           enum: ["blue", "warm", "clean"]

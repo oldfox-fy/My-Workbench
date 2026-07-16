@@ -16,7 +16,7 @@ from backend.services.model_router import (
 )
 from backend.database import get_db
 from backend.utils.base import resource_path, get_current_time, get_local_ip
-from config_loader import config
+from config_loader import config as app_config
 import backend
 import asyncio
 
@@ -29,10 +29,10 @@ full_path = resource_path("system_prompt.md")
 with open(full_path, 'r', encoding="utf-8") as f:
     BASE_SYSTEM_PROMPT = f.read()
 
-BASE_SYSTEM_PROMPT = BASE_SYSTEM_PROMPT.replace("{{uploads_dir}}", str(config.uploads_dir))
+BASE_SYSTEM_PROMPT = BASE_SYSTEM_PROMPT.replace("{{uploads_dir}}", str(app_config.uploads_dir))
 
 
-disabled_tools = ['system_write_file', 'system_patch_file', 'system_create_project_tree', 'system_read_file_list', 'system_run_command']
+disabled_tools = ['system_write_file', 'system_patch_file', 'system_create_project_tree', 'system_read_file_list', 'system_run_command', 'system_generate_pptx', 'system_delegate_task', 'system_ask_user', 'system_todo', 'system_web_fetch']
 default_tools = ['system_get_weather', 'system_read_file', 'system_kb_list', 'system_kb_read', 'system_kb_search']
 
 # ── 命令执行意图检测：按需自动注入 system_run_command ──
@@ -76,6 +76,38 @@ def _detect_command_intent(messages: list) -> bool:
                 return True
     return False
 
+
+# ── PPT 生成意图检测：按需自动注入 system_generate_pptx ──
+_PPT_INTENT_KEYWORDS = [
+    "生成ppt", "做ppt", "制作ppt", "做个ppt", "做一个ppt", "制作一个ppt",
+    "ppt", "pptx", "演示文稿", "幻灯片", "slide", "powerpoint",
+    "presentation",
+]
+
+
+def _detect_ppt_intent(messages: list) -> bool:
+    """扫描最近用户消息，判断是否需要 PPT 生成能力。"""
+    user_msgs = [m for m in messages if m.get("role") == "user"]
+    if not user_msgs:
+        return False
+    recent = user_msgs[-1]
+    content = recent.get("content", "")
+    if isinstance(content, list):
+        content = " ".join(p.get("text", "") for p in content if isinstance(p, dict))
+    if not isinstance(content, str):
+        return False
+    text = content.lower()
+    for kw in _PPT_INTENT_KEYWORDS:
+        kw_lower = kw.lower()
+        if len(kw_lower) <= 4:
+            if re.search(rf'\b{re.escape(kw_lower)}\b', text):
+                return True
+        else:
+            if kw_lower in text:
+                return True
+    return False
+
+
 class ModelConfig(BaseModel):
     type: str
     model_name: str
@@ -112,9 +144,9 @@ async def chat(
     try:
         # 1. 创建 LLM 服务实例
         # 从全局配置读取容错参数
-        max_retries = getattr(config, 'max_retries', 3)
-        base_delay = getattr(config, 'base_delay', 1.0)
-        fallback_cfg = getattr(config, 'fallback_config', None)
+        max_retries = getattr(app_config, 'max_retries', 3)
+        base_delay = getattr(app_config, 'base_delay', 1.0)
+        fallback_cfg = getattr(app_config, 'fallback_config', None)
 
         # ── 智能模型路由 ──
         routed_role = None  # 记录被路由到的角色
@@ -199,6 +231,8 @@ async def chat(
         tools = [t for t in local_tools if t["function"]["name"] in default_tools]
         profile_prompt = ""
         profile_skill_prompt = ""
+        skill_first_directive = ""
+        suppressed_tool_names: set = set()
         params = {}
 
         # ── 智能按需注入 system_run_command ──
@@ -211,6 +245,16 @@ async def chat(
             # 去重：避免已通过角色白名单添加后重复
             existing_names = {t["function"]["name"] for t in tools}
             for t in runner_tool:
+                if t["function"]["name"] not in existing_names:
+                    tools.append(t)
+
+        # ── 智能按需注入 system_generate_pptx ──
+        # 检测到 PPT 制作意图时自动挂载 PPT 生成工具，
+        # 避免 LLM 只能用 system_run_command 手写脚本的低效路径。
+        if _detect_ppt_intent(messages):
+            pptx_tool = [t for t in local_tools if t["function"]["name"] == "system_generate_pptx"]
+            existing_names = {t["function"]["name"] for t in tools}
+            for t in pptx_tool:
                 if t["function"]["name"] not in existing_names:
                     tools.append(t)
 
@@ -231,11 +275,29 @@ async def chat(
                     for d in code_defs:
                         if d["function"]["name"] not in {x["function"]["name"] for x in tools}:
                             tools.append(d)
-                # 注入所有 prompt 型技能指令
+                # 注入所有 prompt 型技能指令 + 技能优先判断
                 if skill_registry:
                     expanded = skill_registry.expand_for_all_prompt_skills()
                     if expanded.get("instructions"):
                         profile_skill_prompt = "\n\n".join(expanded["instructions"])
+                    # 全能助手也要做技能优先匹配
+                    all_skill_names = [s["name"] for s in skill_registry.all_enabled()]
+                    if all_skill_names:
+                        last_user = ""
+                        for m in reversed(messages):
+                            if m.get("role") == "user":
+                                last_user = m.get("content", "")
+                                if isinstance(last_user, list):
+                                    last_user = " ".join(
+                                        p.get("text", "") for p in last_user if isinstance(p, dict)
+                                    )
+                                break
+                        from backend.services.skills import assemble_skill_first_context
+                        sf_ctx = await assemble_skill_first_context(
+                            skill_registry, all_skill_names, last_user, app_config
+                        )
+                        skill_first_directive = sf_ctx["skill_first_directive"]
+                        suppressed_tool_names = sf_ctx["suppressed_tool_names"]
             else:
                 db = await get_db()
                 cursor = await db.execute(
@@ -257,31 +319,28 @@ async def chat(
                     }
                     profile_skills = json.loads(row[7] or "[]") if len(row) > 7 and row[7] else []
 
-                    # 展开角色勾选的技能：prompt 技能 → 注入指令 + 追加工具白名单；code 技能 → 可调用 function
-                    allowed_code_tool_names = []
+                    # 展开角色勾选的技能：智能选择 + 技能优先判断
+                    allowed_code_tool_names: List[str] = []
                     if skill_registry and profile_skills:
-                        # 智能选择：仅注入与用户查询最相关的技能（节省 token）
-                        se_cfg = getattr(app_config, 'skill_selection', None)
-                        smart_select = se_cfg and se_cfg.get('enabled', True) if se_cfg else True
-                        if smart_select and len(profile_skills) > 3:
-                            top_k = se_cfg.get('top_k', 5) if se_cfg else 5
-                            min_sim = se_cfg.get('min_similarity', 0.3) if se_cfg else 0.3
-                            last_user = ""
-                            for m in reversed(messages):
-                                if m.get("role") == "user":
-                                    last_user = m.get("content", "")
-                                    break
-                            relevant = await skill_registry.select_relevant_skills(
-                                last_user, profile_skills, top_k=top_k, min_similarity=min_sim
-                            )
-                            selected = relevant
-                        else:
-                            selected = profile_skills
-                        expanded = skill_registry.expand_for_profile(selected)
-                        if expanded["instructions"]:
-                            profile_skill_prompt = "\n\n".join(expanded["instructions"])
-                        allowed_tools = list(set(allowed_tools) | expanded["allowed_tools"])
-                        allowed_code_tool_names = expanded["code_tool_names"]
+                        last_user = ""
+                        for m in reversed(messages):
+                            if m.get("role") == "user":
+                                last_user = m.get("content", "")
+                                if isinstance(last_user, list):
+                                    last_user = " ".join(
+                                        p.get("text", "") for p in last_user if isinstance(p, dict)
+                                    )
+                                break
+
+                        from backend.services.skills import assemble_skill_first_context
+                        ctx = await assemble_skill_first_context(
+                            skill_registry, profile_skills, last_user, app_config
+                        )
+                        profile_skill_prompt = ctx["skill_prompt"]
+                        skill_first_directive = ctx["skill_first_directive"]
+                        suppressed_tool_names = ctx["suppressed_tool_names"]
+                        allowed_tools = list(set(allowed_tools) | ctx["allowed_tools_extra"])
+                        allowed_code_tool_names = ctx["code_tool_names"]
 
                     # 筛选工具
                     mcp_tools = await get_mcp_tools(mcp_manager) if request.enable_tools else []
@@ -298,6 +357,11 @@ async def chat(
         # 工具列表按名称排序，确保每次请求的工具定义顺序一致（Prompt Cache 友好）
         tools.sort(key=lambda t: t.get("function", {}).get("name", ""))
 
+        # 技能优先模式：移除被技能覆盖的系统工具（如 pptx-generator 覆盖 system_generate_pptx）
+        if suppressed_tool_names:
+            tools = [t for t in tools
+                     if t.get("function", {}).get("name", "") not in suppressed_tool_names]
+
         messages = [m for m in messages if m["role"] != "system"]
 
         # ── 系统提示词组装（静态前缀 → 动态后缀，最大化 Prompt Cache 命中） ──
@@ -306,6 +370,9 @@ async def chat(
         # profile_prompt（固定角色 → 静态内容，放在时间前面以利缓存）
         if profile_prompt:
             system_prompt = f"{system_prompt}\n\n### 角色扮演\n\n{profile_prompt}"
+        # 技能优先指令（放在技能指令之前，确保 LLM 先看到优先级约束）
+        if skill_first_directive:
+            system_prompt = f"{system_prompt}\n\n{skill_first_directive}"
         # 技能指令（同上，同角色固定）
         if profile_skill_prompt:
             system_prompt = f"{system_prompt}\n\n### 已启用技能\n\n{profile_skill_prompt}"
@@ -364,30 +431,74 @@ async def chat(
                         part["text"] = text
 
         # 3. 上下文压缩（长对话自动压缩中间部分，防止 token 溢出）
-        if request.enable_tools and len(messages) > 12:
-            messages = compress_messages(messages, max_tokens=8000, keep_recent=10)
+        # 提高阈值：工具调用场景下每轮用户消息产生多条 tool 消息，12 条太容易触发
+        if request.enable_tools and len(messages) > 30:
+            messages = compress_messages(messages, max_tokens=8000, keep_recent=20)
 
-        # 4. 流式响应（含自动会话记忆索引）
+        # 4. 流式响应（含自动会话记忆索引 + SSE keepalive 心跳）
         async def stream_with_memory():
-            """流式响应的同时收集纯文本，结束后自动索引到会话记忆。"""
+            """流式响应的同时收集纯文本，结束后自动索引到会话记忆。
+            用独立后台任务跑生成器，避免 keepalive 的 asyncio.wait_for 取消
+            __anext__() 杀死了正在等审批/工具执行的生成器。"""
             if route_notice:
                 yield route_notice
 
             collected_text = []
-            async for chunk in service.generate_response(
-                messages=messages,
-                enable_tools=request.enable_tools,
-                tools=tools,
-                request=fastapi_request,
-                mcp_manager=mcp_manager,
-                params=params,
-                message_id=request.message_id,
-                skill_registry=skill_registry,
-            ):
-                yield chunk
-                # 收集非标记文本用于索引
-                if chunk and not chunk.startswith("<!--"):
-                    collected_text.append(chunk)
+            # 用 Queue 解耦生成器与消费者：keepalive timeout 只取消 q.get()，不影响生成器
+            q: asyncio.Queue = asyncio.Queue()
+
+            async def feed():
+                try:
+                    agen = service.generate_response(
+                        messages=messages,
+                        enable_tools=request.enable_tools,
+                        tools=tools,
+                        request=fastapi_request,
+                        mcp_manager=mcp_manager,
+                        params=params,
+                        message_id=request.message_id,
+                        skill_registry=skill_registry,
+                        max_steps=app_config.max_tool_steps,
+                    )
+                    async for chunk in agen:
+                        await q.put(chunk)
+                except Exception as e:
+                    await q.put(("__error__", str(e)))
+                finally:
+                    await q.put(None)  # sentinel
+
+            feed_task = asyncio.create_task(feed())
+
+            try:
+                while True:
+                    try:
+                        item = await asyncio.wait_for(q.get(), timeout=15.0)
+                    except asyncio.TimeoutError:
+                        # 空闲超过 15 秒 → 发 SSE keepalive 注释
+                        # 只取消 q.get()，feed_task 里的生成器完全不受影响
+                        yield ": keepalive\n\n"
+                        continue
+
+                    if item is None:
+                        break
+
+                    if isinstance(item, tuple) and item[0] == "__error__":
+                        yield f"\n\n❌ 流式响应中断：{item[1]}\n"
+                        break
+
+                    chunk = item
+                    yield chunk
+                    # 收集非标记文本用于索引
+                    if chunk and not chunk.startswith("<!--"):
+                        collected_text.append(chunk)
+            finally:
+                # 确保 feed_task 被清理
+                if not feed_task.done():
+                    feed_task.cancel()
+                    try:
+                        await feed_task
+                    except asyncio.CancelledError:
+                        pass
 
             # 流结束后：后台索引当前 AI 回复
             if request.enable_tools and collected_text:
@@ -458,7 +569,7 @@ async def get_tools_info(
 async def get_system_info():
     return {
         "workspace_dir": backend.workspace_path,
-        "upload_dir": config.uploads_dir,
+        "upload_dir": app_config.uploads_dir,
         "local_ip": get_local_ip(),
     }
 
@@ -491,7 +602,7 @@ async def check_update():
         import httpx
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.get(
-                "https://api.github.com/repos/lumneo/LumNeo/releases/latest",
+                "https://api.github.com/repos/oldfox-fy/My-Workbench/releases/latest",
                 headers={"Accept": "application/vnd.github+json", "User-Agent": "MyWorkbench"},
             )
             if resp.status_code == 200:

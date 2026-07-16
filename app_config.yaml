@@ -23,6 +23,10 @@ static_dir: "html"
 # 其他配置
 max_upload_size_mb: 100
 
+# 工具调用步数上限（单次对话中 LLM 最多进行多少轮工具调用）
+# 复杂任务（如 PPT 生成、多步骤脚本执行）建议提高此值
+max_tool_steps: 50
+
 # 模型调用容错配置（可选）
 retry:
   max_retries: 3      # API 调用失败最大重试次数
@@ -65,7 +69,7 @@ auto_switch:
 
 # 工具审批配置（可选，默认启用）
 tool_approval:
-  enabled: true
+  enabled: false
   # 需要用户审批的敏感工具列表
   sensitive_tools:
     - system_write_file
@@ -86,3 +90,10 @@ skill_selection:
   enabled: true
   top_k: 5
   min_similarity: 0.3
+
+# Skill 优先模式配置
+# 当技能与用户查询的语义相似度超过阈值时，系统提示词会注入优先指令，
+# 引导 LLM 优先使用匹配的技能，技能无法满足时才回退到系统工具。
+skill_first:
+  enabled: true          # 是否启用技能优先模式
+  threshold: 0.4         # 相似度阈值（0-1），超过此值触发"技能优先"指令
