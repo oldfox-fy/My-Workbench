@@ -296,16 +296,15 @@ async def auto_tag_and_persist(
     """
     自动提取标签并持久化到数据库。
 
-    Args:
-        file_path: 文件相对路径
-        text: 文件文本内容
-        llm_service: 可选的 LLMService
-
-    Returns:
-        写入的标签数量
+    返回写入的标签数量。
     """
+    # 诊断：记录输入文本长度
+    content_len = len(text) if text else 0
+    logger.info(f"[auto_tagger] {file_path} 开始分析（文本长度 {content_len}）")
+
     tags = await auto_tag_file(file_path, text, llm_service)
     if not tags:
+        logger.info(f"[auto_tagger] {file_path} 未提取到标签（文本过短或无可分词内容）")
         return 0
 
     from backend.database import get_db
@@ -317,7 +316,6 @@ async def auto_tag_and_persist(
             tag_name = tag_name.strip()
             if not tag_name:
                 continue
-            # INSERT OR IGNORE：标签不存在时自动创建（绿色标识自动标签）
             await db.execute(
                 "INSERT OR IGNORE INTO kb_tags (name, color) VALUES (?, ?)",
                 (tag_name, _AUTO_TAG_COLOR),
@@ -332,7 +330,9 @@ async def auto_tag_and_persist(
                 written += 1
         await db.commit()
         if written:
-            logger.info(f"[auto_tagger] {file_path} 已自动打标 {written} 个: {tags}")
+            logger.info(f"[auto_tagger] {file_path} 已打标 {written} 个: {tags}")
+        else:
+            logger.warning(f"[auto_tagger] {file_path} DB写入异常：{len(tags)} 个标签，0 个成功写入")
     except Exception as e:
         logger.error(f"[auto_tagger] 持久化失败 {file_path}: {e}")
         written = 0
@@ -384,35 +384,61 @@ async def auto_tag_all_files(
     total = len(files)
     tagged = 0
     skipped = 0
+    skipped_no_content = 0  # 文件无内容/读不到
+    skipped_no_tags = 0     # 有内容但分词无结果
+    skipped_error = 0       # 异常跳过
+    sample_no_tags: list = []  # 记录前几个无标签文件用于诊断
 
     for i, (rel_path, abs_path) in enumerate(files):
         try:
-            # 读取文件文本
             from backend.system_tools.reader import file_read
-            # 限制读取大小（标签只需要前几千字）
             result = await file_read(abs_path, max_size_mb=1)
             if not result or not result.get("content"):
                 skipped += 1
+                skipped_no_content += 1
+                if len(sample_no_tags) < 5:
+                    sample_no_tags.append(f"{rel_path}（无内容）")
                 continue
 
             text = result.get("content", "")
             if isinstance(text, list):
                 text = "\n".join(str(t) for t in text)
+            if isinstance(text, str) and len(text) < 10:  # 太短无意义
+                skipped += 1
+                skipped_no_content += 1
+                continue
 
             written = await auto_tag_and_persist(rel_path, text, llm_service)
             if written > 0:
                 tagged += 1
+            else:
+                skipped += 1
+                skipped_no_tags += 1
+                if len(sample_no_tags) < 5:
+                    sample_no_tags.append(f"{rel_path}（{len(text)}字）")
 
         except Exception as e:
             logger.warning(f"[auto_tagger] 跳过 {rel_path}: {e}")
             skipped += 1
+            skipped_error += 1
 
         if progress_callback:
             progress_callback(i + 1, total, rel_path)
+
+    logger.info(
+        f"[auto_tagger] 全量完成: 扫描{total} 打标{tagged} 跳过{skipped} "
+        f"（无内容{skipped_no_content} 无分词{skipped_no_tags} 异常{skipped_error}）"
+    )
+    if sample_no_tags:
+        logger.info(f"[auto_tagger] 无标签样本: {sample_no_tags}")
 
     return {
         "success": True,
         "total_files": total,
         "tagged": tagged,
         "skipped": skipped,
+        "skipped_no_content": skipped_no_content,
+        "skipped_no_tags": skipped_no_tags,
+        "skipped_error": skipped_error,
+        "sample_no_tags": sample_no_tags[:5],
     }
