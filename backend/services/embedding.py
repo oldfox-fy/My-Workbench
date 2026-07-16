@@ -3,17 +3,19 @@
 可配置的 embedding（向量化）服务层。
 
 设计目标：
-- 双引擎：本地 Ollama 与云端 OpenAI 均通过 OpenAI 兼容协议调用（复用 AsyncOpenAI），
-  与项目现有 LLMService 的客户端构造方式保持一致。
+- 双引擎：本地 Ollama 与云端（硅基流动/OpenAI 等）均通过 httpx 直调 OpenAI 兼容 API。
+  不再依赖 openai SDK，避免 SDK 自动注入不兼容参数（如 dimensions/modalities 等）
+  导致硅基流动等提供商返回 code=20015。
 - 配置驱动：provider / base_url / api_key / model 来自 app_settings（见 db/kb_settings.py）。
 - 维度自适应：不同模型维度不同（bge-m3=1024，text-embedding-3-small=1536），
   维度由 probe() 探测并持久化；切换模型后维度变化必须重建索引。
 """
 import asyncio
+import json as _json
 from dataclasses import dataclass
 from typing import List, Dict, Any
 
-from openai import AsyncOpenAI, APIError
+import httpx
 
 from backend.db.kb_settings import get_embedding_config, update_embedding_dim
 from backend.bootstrap import logger
@@ -22,6 +24,10 @@ from backend.bootstrap import logger
 _BATCH_SIZE = 32
 # 失败重试次数
 _MAX_RETRIES = 2
+# 可重试的 HTTP 状态码
+_RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+# httpx 超时
+_TIMEOUT = httpx.Timeout(connect=10.0, read=60.0, write=10.0, pool=10.0)
 
 
 class EmbeddingError(Exception):
@@ -49,7 +55,10 @@ class EmbeddingConfig:
 
 
 class Embedder:
-    """封装一个 embedding 配置对应的客户端与调用逻辑。"""
+    """
+    封装 embedding 配置与调用逻辑。
+    使用 httpx 直调（不依赖 openai SDK），精确控制请求参数。
+    """
 
     def __init__(self, cfg: EmbeddingConfig):
         self.cfg = cfg
@@ -57,56 +66,112 @@ class Embedder:
             raise EmbeddingError("尚未配置 embedding 模型，请先在「知识库设置」中填写。")
         if not cfg.base_url:
             raise EmbeddingError("尚未配置 embedding 服务地址（base_url）。")
-        # Ollama 本地无需 key；云端必须有 key
-        self.client = AsyncOpenAI(api_key=cfg.api_key or "ollama", base_url=cfg.base_url)
+        self._base_url = cfg.base_url.rstrip("/")
+        self._api_key = cfg.api_key or "ollama"
+        self._client: httpx.AsyncClient | None = None
+
+    def _get_client(self) -> httpx.AsyncClient:
+        """惰性创建 httpx 客户端（复用连接池）。"""
+        if self._client is None:
+            self._client = httpx.AsyncClient(
+                base_url=self._base_url,
+                headers={
+                    "Authorization": f"Bearer {self._api_key}",
+                    "Content-Type": "application/json",
+                },
+                timeout=_TIMEOUT,
+            )
+        return self._client
+
+    async def close(self):
+        if self._client:
+            await self._client.aclose()
+            self._client = None
 
     async def _embed_batch(self, texts: List[str]) -> List[List[float]]:
+        """调用 /embeddings 端点，只发送 model + input + encoding_format 三个参数。"""
+        body = {
+            "model": self.cfg.model,
+            "input": texts,
+            "encoding_format": "float",
+        }
+
         last_err = None
         for attempt in range(_MAX_RETRIES + 1):
             try:
-                resp = await self.client.embeddings.create(
-                    model=self.cfg.model,
-                    input=texts,
-                    encoding_format="float",  # 显式指定 float，兼容不支持 base64 的提供商
-                )
-                # 保持与输入顺序一致
-                data = sorted(resp.data, key=lambda d: d.index)
-                return [d.embedding for d in data]
-            except APIError as e:
-                last_err = e
-                status = getattr(e, 'status_code', 0)
+                client = self._get_client()
+                resp = await client.post("/embeddings", json=body)
+
+                if resp.status_code == 200:
+                    data = resp.json()
+                    items = data.get("data", [])
+                    # 按 index 排序，保证与输入顺序一致
+                    items.sort(key=lambda d: d.get("index", 0))
+                    return [d["embedding"] for d in items]
+
+                # 处理错误
                 err_body = {}
                 try:
-                    err_body = e.body if isinstance(e.body, dict) else {}
+                    err_body = resp.json()
                 except Exception:
                     pass
                 err_code = err_body.get("code", "")
-                err_msg = err_body.get("message", str(e))
+                err_msg = err_body.get("message", "")
 
-                # 硅基流动 20015：参数无效 → 通常是模型名不支持或 encoding_format 问题
-                if err_code == 20015:
-                    logger.warning(
-                        f"[embedding] API 参数错误（code=20015）。"
-                        f"请检查知识库设置中的 embedding 模型名是否正确。"
-                        f"硅基流动支持的模型如 BAAI/bge-m3、BAAI/bge-large-zh-v1.5 等。"
-                        f"当前模型: {self.cfg.model}"
-                    )
-                    # 不重试——参数错误重试也没用
+                # 硅基流动 20015：参数无效
+                if err_code == 20015 or "20015" in str(err_code):
                     raise EmbeddingError(
                         f"embedding API 参数无效（code=20015）。"
-                        f"请检查模型名「{self.cfg.model}」是否在当前服务商支持。"
-                    ) from e
+                        f"当前模型: {self.cfg.model}，请确认该模型在当前服务商可用。"
+                        f"硅基流动可用: BAAI/bge-m3 / BAAI/bge-large-zh-v1.5 等"
+                    )
 
-                logger.warning(
-                    f"[embedding] 第 {attempt + 1} 次调用失败"
-                    f"（HTTP {status}）: {err_msg[:200]}"
+                # 可重试的状态码
+                if resp.status_code in _RETRYABLE_STATUS and attempt < _MAX_RETRIES:
+                    last_err = EmbeddingError(
+                        f"HTTP {resp.status_code}: {err_msg or resp.text[:200]}"
+                    )
+                    logger.warning(
+                        f"[embedding] 第 {attempt + 1} 次调用失败"
+                        f"（HTTP {resp.status_code}），{0.5 * (attempt + 1):.1f}s 后重试..."
+                    )
+                    await asyncio.sleep(0.5 * (attempt + 1))
+                    continue
+
+                # 不可重试的错误
+                raise EmbeddingError(
+                    f"embedding API 返回 HTTP {resp.status_code}: "
+                    f"{err_msg or resp.text[:200]}"
                 )
-                await asyncio.sleep(0.5 * (attempt + 1))
+
+            except EmbeddingError:
+                raise  # 不包装
+            except httpx.TimeoutException as e:
+                last_err = e
+                if attempt < _MAX_RETRIES:
+                    logger.warning(
+                        f"[embedding] 第 {attempt + 1} 次调用超时，"
+                        f"{0.5 * (attempt + 1):.1f}s 后重试..."
+                    )
+                    await asyncio.sleep(0.5 * (attempt + 1))
+                else:
+                    raise EmbeddingError(f"embedding 调用超时（已重试 {_MAX_RETRIES} 次）") from e
+            except httpx.HTTPError as e:
+                last_err = e
+                if attempt < _MAX_RETRIES:
+                    logger.warning(
+                        f"[embedding] 第 {attempt + 1} 次网络异常: {e}，"
+                        f"{0.5 * (attempt + 1):.1f}s 后重试..."
+                    )
+                    await asyncio.sleep(0.5 * (attempt + 1))
+                else:
+                    raise EmbeddingError(f"embedding 网络异常（已重试 {_MAX_RETRIES} 次）: {e}") from e
             except Exception as e:
                 last_err = e
                 logger.warning(f"[embedding] 第 {attempt + 1} 次调用异常：{e}")
                 await asyncio.sleep(0.5 * (attempt + 1))
-        raise EmbeddingError(f"embedding 调用失败：{last_err}")
+
+        raise EmbeddingError(f"embedding 调用失败（已重试 {_MAX_RETRIES} 次）: {last_err}")
 
     async def embed(self, texts: List[str]) -> List[List[float]]:
         """对一组文本做向量化，自动分批。返回与输入等长的向量列表。"""
@@ -136,6 +201,7 @@ async def probe_config(cfg_dict: Dict[str, Any]) -> Dict[str, Any]:
 
     返回: {"success": bool, "dim": int, "error": str}
     """
+    embedder = None
     try:
         cfg = EmbeddingConfig.from_dict(cfg_dict)
         embedder = Embedder(cfg)
@@ -153,3 +219,6 @@ async def probe_config(cfg_dict: Dict[str, Any]) -> Dict[str, Any]:
         return {"success": False, "dim": 0, "error": str(e)}
     except Exception as e:
         return {"success": False, "dim": 0, "error": f"连接失败：{e}"}
+    finally:
+        if embedder:
+            await embedder.close()
