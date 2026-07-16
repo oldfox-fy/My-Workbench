@@ -41,6 +41,41 @@
 
     <n-divider style="margin: 4px 0" />
 
+    <!-- ========== reranker 配置（可选） ========== -->
+    <h4 style="margin: 0">Reranker 模型（可选）</h4>
+
+    <n-text depth="3" style="font-size: 0.8rem">
+      Reranker 对语义检索的候选结果做二次精排，提升检索精准度。
+      需平台支持标准 /rerank 端点（如 SiliconFlow、Jina、Cohere）。
+      未填写地址和 Key 时会自动复用上方 Embedding 配置。
+    </n-text>
+
+    <n-form label-placement="left" label-width="80" size="small">
+      <n-form-item label="启用">
+        <n-switch v-model:value="rerankerForm.enabled" />
+      </n-form-item>
+      <n-form-item v-if="rerankerForm.enabled" label="模型">
+        <n-input v-model:value="rerankerForm.model" placeholder="BAAI/bge-reranker-v2-m3" />
+      </n-form-item>
+      <n-form-item v-if="rerankerForm.enabled" label="地址（可选）">
+        <n-input v-model:value="rerankerForm.base_url" placeholder="留空则复用 embedding 地址" />
+      </n-form-item>
+      <n-form-item v-if="rerankerForm.enabled" label="Key（可选）">
+        <n-input v-model:value="rerankerForm.api_key" type="password" placeholder="留空则复用 embedding Key" />
+      </n-form-item>
+    </n-form>
+
+    <n-space v-if="rerankerForm.enabled">
+      <n-button size="small" :loading="rerankerTesting" @click="onRerankerTest">测试连接</n-button>
+      <n-button size="small" type="primary" :loading="rerankerSaving" @click="onRerankerSave">保存配置</n-button>
+    </n-space>
+
+    <n-alert v-if="rerankerInfo" :type="rerankerInfo.type" size="small" :title="rerankerInfo.title">
+      {{ rerankerInfo.body }}
+    </n-alert>
+
+    <n-divider style="margin: 4px 0" />
+
     <!-- ========== 索引管理 ========== -->
     <h4 style="margin: 0">索引管理</h4>
 
@@ -82,11 +117,13 @@ import { ref, reactive, computed, onMounted } from 'vue'
 import {
   NSpace, NText, NForm, NFormItem, NRadioGroup, NRadio, NInput,
   NButton, NAlert, NDivider, NDescriptions, NDescriptionsItem,
-  NPopconfirm, useMessage,
+  NPopconfirm, NSwitch, useMessage,
 } from 'naive-ui'
 import {
   getEmbeddingConfig, saveEmbeddingConfig, testEmbeddingConfig,
+  getRerankerConfig, saveRerankerConfig, testRerankerConfig,
   getIndexStatus, rebuildIndex, type EmbeddingConfig, type IndexStatus,
+  type RerankerConfig,
 } from '@/api/knowledge'
 
 const message = useMessage()
@@ -124,6 +161,64 @@ const dimChanged = computed(
 )
 
 const canIndex = computed(() => !!form.dim && (!status.value || status.value.vec_available))
+
+// ── reranker 配置 ──
+const rerankerForm = reactive<RerankerConfig>({
+  enabled: false,
+  provider: 'openai',
+  base_url: '',
+  api_key: '',
+  model: 'BAAI/bge-reranker-v2-m3',
+})
+
+const rerankerTesting = ref(false)
+const rerankerSaving = ref(false)
+
+const rerankerInfo = ref<{ type: 'success' | 'error'; title: string; body: string } | null>(null)
+
+async function loadRerankerConfig() {
+  try {
+    const cfg = await getRerankerConfig()
+    Object.assign(rerankerForm, cfg)
+  } catch (e: any) {
+    console.warn('加载 reranker 配置失败', e)
+  }
+}
+
+async function onRerankerTest() {
+  rerankerTesting.value = true
+  rerankerInfo.value = null
+  try {
+    const r = await testRerankerConfig({ ...rerankerForm })
+    if (r.success) {
+      rerankerInfo.value = {
+        type: 'success',
+        title: `连接正常，最高相关性分数 ${r.top_score}`,
+        body: '可以启用 reranker 了。',
+      }
+    } else {
+      rerankerInfo.value = { type: 'error', title: '连接失败', body: r.error || '未知错误' }
+    }
+  } catch (e: any) {
+    rerankerInfo.value = { type: 'error', title: '连接失败', body: e.message || '测试失败' }
+  } finally {
+    rerankerTesting.value = false
+  }
+}
+
+async function onRerankerSave() {
+  rerankerSaving.value = true
+  rerankerInfo.value = null
+  try {
+    const saved = await saveRerankerConfig({ ...rerankerForm })
+    Object.assign(rerankerForm, saved)
+    message.success('Reranker 配置已保存')
+  } catch (e: any) {
+    message.error(e.message || '保存失败')
+  } finally {
+    rerankerSaving.value = false
+  }
+}
 
 async function loadConfig() {
   try {
@@ -190,6 +285,7 @@ async function onRebuild(full: boolean) {
 
 onMounted(async () => {
   await loadConfig()
+  await loadRerankerConfig()
   await refreshStatus()
 })
 </script>

@@ -259,10 +259,13 @@ async def rebuild(full: bool = False) -> Dict[str, Any]:
     }
 
 
-async def search(query: str, top_k: int = 8) -> List[Dict[str, Any]]:
+async def search(query: str, top_k: int = 8,
+                use_rerank: bool = False) -> List[Dict[str, Any]]:
     """
     语义检索：query 向量化 → 向量库 KNN → 回填分片内容。
-    返回 [{file_path, heading_path, content, distance}, ...]。
+    当 use_rerank=True 时：先召回 top_k × 5 候选 → Reranker 精排 → 返回 top_k。
+
+    返回 [{file_path, heading_path, content, distance, ...}]。
     """
     available, msg = vec_store.check_available()
     if not available:
@@ -273,18 +276,21 @@ async def search(query: str, top_k: int = 8) -> List[Dict[str, Any]]:
     if not qvec:
         return []
 
-    hits = await vec_store.search(qvec, top_k)
+    # 如果启用 reranker，多召回一些候选
+    recall_k = min(top_k * 5, 64) if use_rerank else top_k
+
+    hits = await vec_store.search(qvec, recall_k)
     if not hits:
         return []
 
     ids = [cid for cid, _ in hits]
     meta = await kb_chunks.get_chunks_by_ids(ids)
-    results: List[Dict[str, Any]] = []
-    for cid, distance in hits:
+
+    def _build_result(cid: int, distance: float, rerank_score: Optional[float] = None) -> Dict[str, Any]:
         m = meta.get(cid)
         if not m:
-            continue
-        results.append({
+            return None
+        r = {
             "file_path": m["file_path"],
             "heading_path": m["heading_path"],
             "content": m["content"],
@@ -293,5 +299,41 @@ async def search(query: str, top_k: int = 8) -> List[Dict[str, Any]]:
             "citation_text": f"[来源: {m['file_path']}{' > ' + m['heading_path'] if m['heading_path'] else ''}](cite://{m.get('citation_id', '')})" if m.get("citation_id") else "",
             "chunk_type": m.get("chunk_type", "text"),
             "page_number": m.get("page_number"),
-        })
-    return results
+        }
+        if rerank_score is not None:
+            r["rerank_score"] = round(rerank_score, 4)
+        return r
+
+    results: List[Dict[str, Any]] = []
+    for cid, distance in hits:
+        b = _build_result(cid, distance)
+        if b:
+            results.append(b)
+
+    # ── Reranker 精排 ──
+    if use_rerank and results:
+        try:
+            from backend.services.reranker import get_reranker
+            reranker = await get_reranker()
+            if reranker:
+                # 用 reranker 对候选文档重新打分
+                contents = [r["content"] for r in results]
+                reranked = await reranker.rerank(query, contents, top_n=top_k)
+                if reranked:
+                    rescored: List[Dict[str, Any]] = []
+                    for item in reranked:
+                        idx = item.get("index", 0)
+                        score = item.get("relevance_score", 0)
+                        if 0 <= idx < len(results):
+                            results[idx]["rerank_score"] = round(score, 4)
+                            rescored.append(results[idx])
+                    if rescored:
+                        results = rescored
+                    logger.info(
+                        f"[kb_indexer] Reranker 精排完成：{len(hits)} 候选 → {len(results)} 结果"
+                    )
+        except Exception as e:
+            logger.warning(f"[kb_indexer] Reranker 调用失败，回退到原始排序：{e}")
+            # 回退：保持向量距离排序即可，无需额外处理
+
+    return results[:top_k]

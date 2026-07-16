@@ -216,6 +216,9 @@ tools:
           type: string
           enum: ["semantic", "keyword", "hybrid"]
           description: 检索方式。semantic=语义向量（默认），keyword=关键词全文，hybrid=混合。
+        use_rerank:
+          type: boolean
+          description: 是否启用 Reranker 精排（需要已配置 Reranker 模型）。仅在 semantic/hybrid 模式下生效，先召回较多候选再二次排序，结果更精准但多一次 API 调用。
       required: ["query"]
     module: backend.system_tools.kb_search
     function_name: kb_search

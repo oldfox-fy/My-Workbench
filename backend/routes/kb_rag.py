@@ -16,8 +16,12 @@ from backend.database import get_db
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from backend.db.kb_settings import get_embedding_config, save_embedding_config
+from backend.db.kb_settings import (
+    get_embedding_config, save_embedding_config,
+    get_reranker_config, save_reranker_config,
+)
 from backend.services.embedding import probe_config
+from backend.services.reranker import probe_reranker_config
 from backend.db import kb_chunks, vec_store
 from backend.services import kb_indexer, kb_graph
 from backend.services.kb_indexer import KbNotConfiguredError
@@ -42,9 +46,18 @@ class RebuildIn(BaseModel):
     full: bool = False
 
 
+class RerankerConfigIn(BaseModel):
+    enabled: Optional[bool] = None
+    provider: Optional[str] = None
+    base_url: Optional[str] = None
+    api_key: Optional[str] = None
+    model: Optional[str] = None
+
+
 class SearchIn(BaseModel):
     query: str
     top_k: int = 8
+    use_rerank: bool = False
 
 
 # ──────────────────────── embedding 配置（M1） ────────────────────────
@@ -75,6 +88,37 @@ async def test_embedding_cfg(cfg: EmbeddingConfigIn):
         if v is not None:
             merged[k] = v
     result = await probe_config(merged)
+    return result
+
+
+# ──────────────────────── reranker 配置 ────────────────────────
+
+@router.get("/reranker/config")
+async def get_reranker_cfg():
+    """读取当前 reranker 配置。"""
+    return await get_reranker_config()
+
+
+@router.post("/reranker/config")
+async def set_reranker_cfg(cfg: RerankerConfigIn):
+    """保存 reranker 配置。"""
+    payload = {k: v for k, v in cfg.dict().items() if v is not None}
+    saved = await save_reranker_config(payload)
+    return {"status": "ok", "config": saved}
+
+
+@router.post("/reranker/test")
+async def test_reranker_cfg(cfg: RerankerConfigIn):
+    """
+    用给定配置测试 reranker 连通性。
+    成功返回 {"success": true, "top_score": 0.98}。
+    """
+    current = await get_reranker_config()
+    merged = dict(current)
+    for k, v in cfg.dict().items():
+        if v is not None:
+            merged[k] = v
+    result = await probe_reranker_config(merged)
     return result
 
 
@@ -134,12 +178,15 @@ async def index_status():
 
 @router.post("/search")
 async def semantic_search(req: SearchIn):
-    """界面内语义搜索。"""
+    """界面内语义搜索（可选 reranker 精排）。"""
     if not req.query or not req.query.strip():
         raise HTTPException(400, "检索内容不能为空。")
     top_k = max(1, min(int(req.top_k or 8), 20))
     try:
-        hits = await kb_indexer.search(req.query.strip(), top_k)
+        hits = await kb_indexer.search(
+            req.query.strip(), top_k,
+            use_rerank=req.use_rerank,
+        )
     except KbNotConfiguredError as e:
         raise HTTPException(400, str(e))
     except RuntimeError as e:

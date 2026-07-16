@@ -1,5 +1,5 @@
 // frontend/src/api/knowledge.ts
-// 知识库 RAG 相关接口封装（embedding 配置、索引管理、语义搜索）
+// 知识库 RAG 相关接口封装（embedding/reranker 配置、索引管理、语义搜索）
 
 export interface EmbeddingConfig {
   provider: 'ollama' | 'openai'
@@ -13,6 +13,59 @@ export interface EmbeddingTestResult {
   success: boolean
   dim: number
   error: string
+}
+
+// ---------- reranker 配置 ----------
+
+export interface RerankerConfig {
+  enabled: boolean
+  provider: 'ollama' | 'openai'
+  base_url: string
+  api_key: string
+  model: string
+}
+
+export interface RerankerTestResult {
+  success: boolean
+  top_score: number
+  error: string
+}
+
+export async function getRerankerConfig(): Promise<RerankerConfig> {
+  const res = await fetch('/api/kb/reranker/config')
+  if (!res.ok) throw new Error('获取 reranker 配置失败')
+  return res.json()
+}
+
+export async function saveRerankerConfig(
+  cfg: Partial<RerankerConfig>
+): Promise<RerankerConfig> {
+  const res = await fetch('/api/kb/reranker/config', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(cfg),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.detail || '保存 reranker 配置失败')
+  }
+  const data = await res.json()
+  return data.config as RerankerConfig
+}
+
+export async function testRerankerConfig(
+  cfg: Partial<RerankerConfig>
+): Promise<RerankerTestResult> {
+  const res = await fetch('/api/kb/reranker/test', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(cfg),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.detail || '测试 reranker 连接失败')
+  }
+  return res.json()
 }
 
 // ---------- embedding 配置（M1） ----------
@@ -72,6 +125,11 @@ export interface SearchHit {
   heading_path: string
   content: string
   distance: number
+  rerank_score?: number
+  citation_id?: string
+  citation_text?: string
+  chunk_type?: string
+  page_number?: number
 }
 
 export async function getIndexStatus(): Promise<IndexStatus> {
@@ -93,11 +151,11 @@ export async function rebuildIndex(full: boolean): Promise<{ status: string }> {
   return res.json()
 }
 
-export async function kbSearch(query: string, topK = 8): Promise<SearchHit[]> {
+export async function kbSearch(query: string, topK = 8, useRerank = false): Promise<SearchHit[]> {
   const res = await fetch('/api/kb/search', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query, top_k: topK }),
+    body: JSON.stringify({ query, top_k: topK, use_rerank: useRerank }),
   })
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))
