@@ -268,6 +268,28 @@ def _build_sync(root: Path, include_tags: bool, collect_texts: bool = False,
             for m in _TAG_RE.finditer(text):
                 tags_by_file.setdefault(source_rel, set()).add(m.group(1))
 
+    # ── 合并数据库标签（auto_tagger 写入 kb_file_tags 表的标签）──
+    if include_tags:
+        try:
+            import sqlite3 as _sqlite3
+            from config_loader import config as _cfg
+            _sync_conn = _sqlite3.connect(f"{_cfg.data_dir}/data/lumneo.db")
+            _sync_conn.row_factory = _sqlite3.Row
+            try:
+                _rows = _sync_conn.execute(
+                    "SELECT kft.file_path, kt.name FROM kb_file_tags kft "
+                    "JOIN kb_tags kt ON kt.id = kft.tag_id ORDER BY kt.name"
+                ).fetchall()
+                for _row in _rows:
+                    _fp = _row["file_path"]
+                    if scope_files is not None and _fp not in scope_files:
+                        continue
+                    tags_by_file.setdefault(_fp, set()).add(_row["name"])
+            finally:
+                _sync_conn.close()
+        except Exception:
+            pass  # 静默失败，不影响图谱主流程
+
     # ---------- 组装节点 ----------
     degree: Dict[str, int] = {}
     for e in edges:
