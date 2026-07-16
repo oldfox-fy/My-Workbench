@@ -197,8 +197,28 @@ async def rebuild(full: bool = False) -> Dict[str, Any]:
     model_name = embedder.cfg.model
 
     if full:
-        await kb_chunks.clear_all()
-        await vec_store.clear()
+        try:
+            await kb_chunks.clear_all()
+        except Exception as e:
+            if "malformed" in str(e).lower() or "corrupt" in str(e).lower():
+                logger.warning(
+                    f"[kb_index] 数据库损坏，自动重建 KB 表结构..."
+                )
+                from backend.database import _force_repair_kb_tables
+                if await _force_repair_kb_tables():
+                    logger.info("[kb_index] KB 表重建完成，继续全量索引")
+                else:
+                    raise RuntimeError("数据库损坏且自动修复失败，请手动处理。") from e
+            else:
+                raise
+        try:
+            await vec_store.clear()
+        except Exception as e:
+            if "malformed" in str(e).lower() or "corrupt" in str(e).lower():
+                from backend.database import _force_repair_vec
+                await _force_repair_vec()
+            else:
+                raise
 
     await vec_store.ensure_table(dim)
 

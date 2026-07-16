@@ -302,6 +302,31 @@ async def init_db():
     await db.close()
 
 
+async def _force_repair_kb_tables() -> bool:
+    """
+    公开接口：强制重建 KB 表结构（kb_chunks + kb_index_meta + kb_chunks_fts）。
+    供 kb_indexer / kb_watcher 在检测到 malformed 时自愈调用。
+    """
+    db = await get_db()
+    try:
+        return await _try_repair_kb_tables(db)
+    finally:
+        await db.commit()
+        await db.close()
+
+
+async def _force_repair_vec() -> bool:
+    """
+    公开接口：强制清理向量表。供 kb_indexer 自愈调用。
+    """
+    db = await get_db()
+    try:
+        return await _try_repair_vec(db)
+    finally:
+        await db.commit()
+        await db.close()
+
+
 async def _ensure_column(db, table: str, column: str, ddl: str):
     """若表缺少指定列则动态添加（兼容旧版数据库）。"""
     cursor = await db.execute(f"PRAGMA table_info({table})")
@@ -437,28 +462,29 @@ async def _probe_vec_access(db) -> bool:
 
 async def _probe_kb_chunks(db) -> bool:
     """
-    kb_chunks 主表探活：先 SELECT 再尝试临时表写入。
-    如果连 SELECT 都失败，说明主 B-tree 已损坏，需要 DROP + 重建。
+    kb_chunks 主表探活：INSERT 一个傀儡行 → DELETE 它。
+    这会触发 FTS5 影子表写入，是真正的全链路探活。
+
     返回 True 表示损坏，False 表示正常。
     """
     try:
-        # 检查表是否存在
         row = await db.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='kb_chunks'"
         )
         if not await row.fetchone():
             return False  # 全新数据库
 
-        # SELECT 探活
-        await db.execute("SELECT count(*) FROM kb_chunks")
-
-        # 更进一步：尝试创建一个临时表然后立即删除，
-        # 验证 SQLite 的写入路径没有损坏
+        # 真实 INSERT（触发 FTS5 触发器）→ 立即 DELETE 回滚
         await db.execute(
-            "CREATE TEMP TABLE IF NOT EXISTS _db_probe (x INTEGER)"
+            "INSERT INTO kb_chunks (file_path, chunk_index, heading_path, content,"
+            " file_hash, model_name, chunk_type, citation_id)"
+            " VALUES ('__db_probe__', -1, '', '__probe__', '__probe__', '__probe__', 'text', '')"
         )
-        await db.execute("INSERT INTO _db_probe VALUES (1)")
-        await db.execute("DROP TABLE _db_probe")
+        cursor = await db.execute("SELECT last_insert_rowid()")
+        row = await cursor.fetchone()
+        probe_id = row[0] if row else None
+        if probe_id:
+            await db.execute("DELETE FROM kb_chunks WHERE id = ?", (probe_id,))
         return False
     except Exception:
         return True

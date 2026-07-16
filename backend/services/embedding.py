@@ -90,6 +90,13 @@ class Embedder:
 
     async def _embed_batch(self, texts: List[str]) -> List[List[float]]:
         """调用 /embeddings 端点，只发送 model + input + encoding_format 三个参数。"""
+        import logging as _logging
+        _log = _logging.getLogger("My Workbench")
+        _log.info(
+            f"[embedding] 调用 {self._base_url}/embeddings "
+            f"model={self.cfg.model} texts={len(texts)}"
+        )
+
         body = {
             "model": self.cfg.model,
             "input": texts,
