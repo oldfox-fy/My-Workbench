@@ -32,31 +32,6 @@
         </n-button>
       </n-space>
     </div>
-    <!-- 标签行 -->
-    <div v-if="kbStore.currentPath" class="kb-tags-row">
-      <n-space :size="4" align="center">
-        <n-tag
-          v-for="tag in currentTags"
-          :key="tag.id"
-          :color="{ color: tag.color, textColor: '#fff' }"
-          size="small"
-          closable
-          @close="removeFileTag(tag)"
-        >{{ tag.name }}</n-tag>
-        <n-button text size="tiny" @click="showTagInput = !showTagInput" title="添加标签">
-          <template #icon><n-icon :size="14"><AddOutline /></n-icon></template>
-        </n-button>
-        <n-input
-          v-if="showTagInput"
-          v-model:value="newTagName"
-          size="tiny"
-          placeholder="标签名"
-          style="width:80px"
-          @keydown.enter="addTag"
-          @blur="addTag"
-        />
-      </n-space>
-    </div>
     <div class="kb-content-scroll">
       <!-- 编辑模式 -->
       <div v-if="editing" class="kb-editor-wrap">
@@ -90,12 +65,18 @@
 
     <!-- 底部固定面板：标签 + 附注/反向链接 -->
     <div v-if="kbStore.currentPath" class="kb-bottom-panel">
-      <!-- 标签栏 -->
+      <!-- 标签栏（数据库标签 + 文件内 #标签 统一显示） -->
       <div class="kb-tags-bar">
         <span class="kb-tags-label">🏷️</span>
-        <n-tag v-for="(tag, i) in fileTags" :key="i" size="small" closable @on-close="() => removeTag(i)" type="info">
-          {{ tag }}
-        </n-tag>
+        <n-tag
+          v-for="tag in allTags"
+          :key="tag.key"
+          size="small"
+          closable
+          :color="tag.dbId ? { color: tag.color, textColor: '#fff' } : undefined"
+          :type="tag.dbId ? undefined : 'info'"
+          @on-close="() => removeUnifiedTag(tag)"
+        >{{ tag.name }}</n-tag>
         <n-input
           v-if="addingTag"
           ref="tagInputRef"
@@ -107,7 +88,6 @@
           @blur="confirmAddTag"
         />
         <n-button v-else size="tiny" secondary type="info" @click="startAddTag">+ 标签</n-button>
-        <span v-if="!kbStore.isEditable" style="font-size:0.7rem;color:var(--text-secondary);margin-left:4px">（只读）</span>
       </div>
       <!-- 附注笔记（仅非 md 需要） -->
       <KbSidecarPanel v-if="showSidecar" :target="kbStore.currentPath" />
@@ -148,10 +128,28 @@ const kbStore = useKnowledgeStore()
 
 const editing = ref(false)
 
-// 标签
-const currentTags = ref<{ id: number; name: string; color: string }[]>([])
+// ── 统一标签（数据库标签 + 文件内 #标签）──
+interface UnifiedTag { key: string; name: string; color: string; dbId: number | null }
+const currentTags = ref<{ id: number; name: string; color: string }[]>([])  // DB 标签
 const showTagInput = ref(false)
 const newTagName = ref('')
+
+// 合并去重：DB 标签优先（有颜色信息）
+const allTags = computed<UnifiedTag[]>(() => {
+  const seen = new Set<string>()
+  const result: UnifiedTag[] = []
+  for (const t of currentTags.value) {
+    seen.add(t.name.toLowerCase())
+    result.push({ key: `db-${t.id}`, name: t.name, color: t.color, dbId: t.id })
+  }
+  for (const t of fileTags.value) {
+    if (!seen.has(t.toLowerCase())) {
+      seen.add(t.toLowerCase())
+      result.push({ key: `file-${t}`, name: t, color: '#6366f1', dbId: null })
+    }
+  }
+  return result
+})
 
 async function loadTags() {
   if (!kbStore.currentPath) return
@@ -161,12 +159,8 @@ async function loadTags() {
   } catch { /* ignore */ }
 }
 
-async function addTag() {
-  const name = newTagName.value.trim()
-  newTagName.value = ''
-  showTagInput.value = false
+async function addDbTag(name: string) {
   if (!name || !kbStore.currentPath) return
-
   const newTags = [...currentTags.value.map(t => t.name), name]
   await fetch(`/api/kb/files/tags?file_path=${encodeURIComponent(kbStore.currentPath)}`, {
     method: 'POST',
@@ -176,7 +170,7 @@ async function addTag() {
   await loadTags()
 }
 
-async function removeFileTag(tag: { id: number; name: string }) {
+async function removeDbTag(tag: { id: number; name: string }) {
   const newTags = currentTags.value.filter(t => t.id !== tag.id).map(t => t.name)
   await fetch(`/api/kb/files/tags?file_path=${encodeURIComponent(kbStore.currentPath)}`, {
     method: 'POST',
@@ -184,6 +178,17 @@ async function removeFileTag(tag: { id: number; name: string }) {
     body: JSON.stringify({ tags: newTags }),
   })
   await loadTags()
+}
+
+// 统一删除：DB 标签走 API，文件标签走内容编辑
+async function removeUnifiedTag(tag: UnifiedTag) {
+  if (tag.dbId !== null) {
+    await removeDbTag({ id: tag.dbId, name: tag.name })
+  }
+  if (fileTags.value.includes(tag.name)) {
+    fileTags.value = fileTags.value.filter(t => t !== tag.name)
+    await saveTagsToFile()
+  }
 }
 
 watch(() => kbStore.currentPath, () => {
@@ -393,14 +398,9 @@ function startAddTag() {
 async function confirmAddTag() {
   const tag = newTag.value.trim()
   addingTag.value = false
-  if (!tag || fileTags.value.includes(tag)) return
-  fileTags.value.push(tag)
-  await saveTagsToFile()
-}
-
-async function removeTag(idx: number) {
-  fileTags.value.splice(idx, 1)
-  await saveTagsToFile()
+  if (!tag) return
+  // 统一写入数据库标签
+  await addDbTag(tag)
 }
 
 async function saveTagsToFile() {
