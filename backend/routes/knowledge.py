@@ -18,6 +18,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from backend.bootstrap import logger
+from backend.database import get_db
 
 import backend
 from backend.utils.validators import validate_path
@@ -530,6 +531,9 @@ async def get_file_tags(file_path: str = ""):
         )
         rows = await cursor.fetchall()
         return [{"id": r[0], "name": r[1], "color": r[2]} for r in rows]
+    except Exception as e:
+        logger.error(f"[tags] get_file_tags 异常 file_path={file_path!r}: {e}", exc_info=True)
+        raise HTTPException(500, f"查询标签失败：{e}")
     finally:
         await db.close()
 
