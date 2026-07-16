@@ -16,11 +16,9 @@ My Workbench 是一款跨平台 AI 桌面应用，将**本地隐私**与**云端
 
 <p align="center">
   <img src="screenshots/dark.png"  width="45%" alt="深色模式">
-  <img src="screenshots/light.png" width="45%" alt="浅色模式">
+  <img src="screenshots/Image.png" width="45%" alt="浅色模式">
 </p>
-<p align="center">
-  <img src="screenshots/p5.gif" width="100%" alt="演示视频">
-</p>
+
 
 ---
 
