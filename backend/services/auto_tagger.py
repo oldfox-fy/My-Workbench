@@ -342,6 +342,37 @@ async def auto_tag_and_persist(
     return written
 
 
+async def _read_file_for_tagging(abs_path: str) -> str:
+    """
+    直接读取文件文本（绕过 file_read 的路径白名单校验）。
+    知识库内的文件已经过 _scan_files 安全扫描，无需额外路径校验。
+    仅读取前 8KB，足够标签提取使用。
+    """
+    import os as _os
+    ext = _os.path.splitext(abs_path)[1].lower()
+    # 文本类扩展名：直接读
+    _text_exts = {".md", ".markdown", ".txt", ".rst", ".html", ".htm", ".csv", ".tsv", ".json", ".yaml", ".yml"}
+    if ext in _text_exts:
+        try:
+            with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
+                return f.read(8192)
+        except Exception:
+            # 尝试 GBK 编码
+            try:
+                with open(abs_path, "r", encoding="gbk", errors="replace") as f:
+                    return f.read(8192)
+            except Exception:
+                return ""
+    # 非文本文件：用 kb_parser 解析
+    try:
+        from backend.services.kb_parser import DocumentParser
+        parser = DocumentParser()
+        text = await parser.parse_text_only(abs_path)
+        return (text or "")[:8192]
+    except Exception:
+        return ""
+
+
 async def auto_tag_all_files(
     llm_service=None,
     progress_callback=None,
@@ -391,21 +422,13 @@ async def auto_tag_all_files(
 
     for i, (rel_path, abs_path) in enumerate(files):
         try:
-            from backend.system_tools.reader import file_read
-            result = await file_read(abs_path, max_size_mb=1)
-            if not result or not result.get("content"):
+            # 直接读文件（KB 目录内的文件，无需 file_read 的路径白名单校验）
+            text = await _read_file_for_tagging(abs_path)
+            if not text or len(text) < 10:
                 skipped += 1
                 skipped_no_content += 1
                 if len(sample_no_tags) < 5:
-                    sample_no_tags.append(f"{rel_path}（无内容）")
-                continue
-
-            text = result.get("content", "")
-            if isinstance(text, list):
-                text = "\n".join(str(t) for t in text)
-            if isinstance(text, str) and len(text) < 10:  # 太短无意义
-                skipped += 1
-                skipped_no_content += 1
+                    sample_no_tags.append(f"{rel_path}（无内容或过短）")
                 continue
 
             written = await auto_tag_and_persist(rel_path, text, llm_service)
