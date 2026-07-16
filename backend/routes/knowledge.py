@@ -17,6 +17,7 @@ mimetypes.init()
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
+from backend.bootstrap import logger
 
 import backend
 from backend.utils.validators import validate_path
@@ -581,6 +582,35 @@ async def tree_by_tag(tag: str = ""):
 class AutoTagRequest(BaseModel):
     file_path: str = ""  # 为空则对全部文件执行
 
+# 后台自动标签任务状态
+_auto_tag_state = {"running": False, "progress": 0, "total": 0, "current_file": "", "result": None, "error": None}
+
+
+async def _run_auto_tag_all():
+    """后台执行全部文件自动标签。"""
+    from backend.services.auto_tagger import auto_tag_all_files
+
+    _auto_tag_state["running"] = True
+    _auto_tag_state["error"] = None
+    _auto_tag_state["result"] = None
+    _auto_tag_state["progress"] = 0
+    _auto_tag_state["total"] = 0
+    _auto_tag_state["current_file"] = ""
+
+    def _progress(current, total, file_path):
+        _auto_tag_state["progress"] = current
+        _auto_tag_state["total"] = total
+        _auto_tag_state["current_file"] = file_path
+
+    try:
+        result = await auto_tag_all_files(progress_callback=_progress)
+        _auto_tag_state["result"] = result
+    except Exception as e:
+        _auto_tag_state["error"] = str(e)
+        logger.warning(f"[auto_tag] 全量自动标签失败：{e}")
+    finally:
+        _auto_tag_state["running"] = False
+
 
 @router.post("/tags/auto/suggest")
 async def auto_tag_suggest(data: AutoTagRequest):
@@ -648,10 +678,21 @@ async def auto_tag_apply(data: AutoTagRequest):
         except Exception as e:
             raise HTTPException(500, f"自动标签失败：{e}")
     else:
-        # 全部文件（后台异步执行）
-        from backend.services.auto_tagger import auto_tag_all_files
-        result = await auto_tag_all_files()
-        if not result.get("success"):
-            raise HTTPException(400, result.get("error", "自动标签失败"))
-        return result
+        # 全部文件：后台异步执行（避免长时间阻塞 HTTP 请求）
+        if _auto_tag_state["running"]:
+            raise HTTPException(409, "自动标签任务正在进行中，请稍候。")
+
+        import backend as _be
+        kb_root = getattr(_be, "kb_path", "")
+        if not kb_root:
+            raise HTTPException(400, "知识库尚未配置")
+
+        asyncio.create_task(_run_auto_tag_all())
+        return {"status": "started"}
+
+
+@router.get("/tags/auto/status")
+async def auto_tag_status():
+    """查询全量自动标签任务的状态与进度。"""
+    return _auto_tag_state.copy()
 

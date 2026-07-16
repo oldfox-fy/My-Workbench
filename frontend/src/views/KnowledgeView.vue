@@ -51,6 +51,15 @@
         </n-popover>
 
         <n-text depth="3" class="kb-path" v-if="kbStore.root">{{ kbStore.root }}</n-text>
+
+        <n-popconfirm @positive-click="runAutoTag" :disabled="autoTagRunning">
+          <template #trigger>
+            <n-button text class="icon-btn" :loading="autoTagRunning" title="自动标签：为知识库所有文件智能打标">
+              <template #icon><n-icon :size="18"><PricetagsOutline /></n-icon></template>
+            </n-button>
+          </template>
+          {{ autoTagRunning ? `打标中 ${autoTagProgress.current}/${autoTagProgress.total}…` : '为知识库全部文件自动生成标签？' }}
+        </n-popconfirm>
       </div>
     </header>
 
@@ -92,8 +101,8 @@
 <script setup lang="ts">
 import { onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { NButton, NIcon, NText, NScrollbar, NInput, NPopover, useMessage } from 'naive-ui'
-import { ArrowBackOutline, LibraryOutline, SearchOutline, GitNetworkOutline } from '@vicons/ionicons5'
+import { NButton, NIcon, NText, NScrollbar, NInput, NPopover, NPopconfirm, useMessage } from 'naive-ui'
+import { ArrowBackOutline, LibraryOutline, SearchOutline, GitNetworkOutline, PricetagsOutline } from '@vicons/ionicons5'
 import { MarkdownRender } from 'markstream-vue'
 import 'markstream-vue/index.css'
 import { useConfigStore } from '@/stores/config'
@@ -148,6 +157,56 @@ async function doSearch() {
 function clearSearch() {
   searchHits.value = []
   showResults.value = false
+}
+
+// ---------- 自动标签 ----------
+const autoTagRunning = ref(false)
+const autoTagProgress = ref({ current: 0, total: 0 })
+
+async function runAutoTag() {
+  if (autoTagRunning.value) return
+  autoTagRunning.value = true
+  autoTagProgress.value = { current: 0, total: 0 }
+  try {
+    // 启动后台任务
+    const resp = await fetch('/api/kb/tags/auto/apply', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ file_path: '' }),
+    })
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({ detail: '启动失败' }))
+      throw new Error(err.detail || '启动自动标签失败')
+    }
+
+    // 轮询进度
+    let done = false
+    while (!done) {
+      await new Promise(r => setTimeout(r, 1000))
+      try {
+        const s = await fetch('/api/kb/tags/auto/status')
+        const state = await s.json()
+        autoTagProgress.value = { current: state.progress || 0, total: state.total || 0 }
+        if (!state.running) {
+          done = true
+          if (state.error) {
+            message.error(`自动标签失败：${state.error}`)
+          } else if (state.result) {
+            const r = state.result as any
+            message.success(
+              `自动标签完成！已为 ${r.tagged} 个文件打标（共扫描 ${r.total_files} 个文件）`
+            )
+          }
+        }
+      } catch {
+        done = true
+      }
+    }
+  } catch (e: any) {
+    message.error(e.message || '自动标签失败')
+  } finally {
+    autoTagRunning.value = false
+  }
 }
 
 async function openHit(hit: SearchHit) {
