@@ -412,15 +412,6 @@ myskill.zip
 
 ---
 
-## ️ 界面预览
-
-| 深色主题 | 浅色主题 |
-|---------|---------|
-| ![深色](screenshots/dark.png) | ![浅色](screenshots/light.png) |
-
-更多截图请查看 [screenshots](screenshots/) 目录。
-
----
 
 ##  参与贡献
 
