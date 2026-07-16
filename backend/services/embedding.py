@@ -93,11 +93,19 @@ class Embedder:
         import logging as _logging
         _log = _logging.getLogger("My Workbench")
 
-        # 清理文本：移除 null 字节、确保有效 UTF-8
+        # 清理文本：移除 null 字节 → 截断过长的 → 过滤空字符串
+        MAX_CHARS_PER_TEXT = 8192  # bge-m3 最大 token 限制的安全边界
         clean_texts = []
         for t in texts:
             t = (t or "").replace("\x00", "").strip()
+            if not t:
+                continue  # 跳过空文本
+            if len(t) > MAX_CHARS_PER_TEXT:
+                t = t[:MAX_CHARS_PER_TEXT]
             clean_texts.append(t)
+
+        if not clean_texts:
+            return []  # 全部是空文本，直接返回空列表
 
         body = {
             "model": self.cfg.model,
@@ -106,9 +114,11 @@ class Embedder:
         }
         body_json = _json.dumps(body, ensure_ascii=False)
 
+        text_lens = [len(t) for t in clean_texts]
         _log.info(
             f"[embedding] POST {self._base_url}/embeddings "
-            f"model={self.cfg.model} texts={len(texts)} "
+            f"model={self.cfg.model} texts={len(clean_texts)} "
+            f"text_lens={text_lens} "
             f"api_key_len={len(self._api_key)} body_len={len(body_json)}"
         )
 
