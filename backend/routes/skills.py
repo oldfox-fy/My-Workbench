@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 
 from backend.db import skills as skills_db
-from backend.db.user_settings import get_user_role, set_user_role, require_admin
+from backend.auth import get_current_user, get_current_admin
 from backend.services import skill_package
 
 router = APIRouter(prefix="/api/skills", tags=["skills"])
@@ -66,24 +66,16 @@ def _validate(req: SkillRequest):
         raise HTTPException(400, "可执行代码技能必须定义 run(**kwargs) 函数")
 
 
-# ---------- 身份 ----------
-
-@router.get("/user-role")
-async def read_user_role():
-    return {"role": await get_user_role()}
-
-
-@router.post("/user-role")
-async def write_user_role(req: RoleRequest):
-    role = await set_user_role(req.role)
-    return {"role": role}
+# ---------- 身份（由认证系统接管，详见 backend/auth.py）----------
 
 
 # ---------- 技能 CRUD ----------
 
 @router.get("")
-async def list_all():
-    return {"skills": await skills_db.list_skills()}
+async def list_all(request: Request):
+    """列出当前用户的技能 + 系统内置技能（user_id IS NULL 的视为系统级）。"""
+    user_id = request.state.user["id"]
+    return {"skills": await skills_db.list_skills(user_id=user_id)}
 
 
 @router.get("/{skill_id}")
@@ -113,12 +105,15 @@ async def export_package(skill_id: int):
 @router.post("")
 async def create_or_ignore(req: SkillRequest, request: Request):
     _validate(req)
-    if req.skill_type == "code":
-        await require_admin()
+    user = request.state.user
+    if req.skill_type == "code" and user.get("role") != "admin":
+        raise HTTPException(403, "该操作仅管理员可用（可执行代码技能）")
     existing = await skills_db.get_skill_by_name(req.name)
     if existing:
         raise HTTPException(400, f"技能标识「{req.name}」已存在")
-    skill = await skills_db.create_skill(req.model_dump())
+    data = req.model_dump()
+    data["user_id"] = user["id"]
+    skill = await skills_db.create_skill(data)
     await _reload(request)
     return skill
 
@@ -140,18 +135,26 @@ async def import_package(request: Request, file: UploadFile = File(...), overwri
         raise HTTPException(400, f"技能元数据不合法：{e}")
     _validate(req)
     if req.skill_type == "code":
-        await require_admin()
+        if request.state.user.get("role") != "admin":
+            raise HTTPException(403, "该操作仅管理员可用（可执行代码技能）")
 
     existing = await skills_db.get_skill_by_name(req.name)
     if existing:
         if not overwrite:
             raise HTTPException(409, f"技能标识「{req.name}」已存在")
-        # 覆盖既有技能（改为 code 型或原为 code 型需管理员）
+        # 检查所有权
+        if existing.get("user_id") is not None and existing["user_id"] != request.state.user["id"]:
+            raise HTTPException(403, "无权覆盖他人的技能")
         if req.skill_type == "code" or existing["skill_type"] == "code":
-            await require_admin()
-        skill = await skills_db.update_skill(existing["id"], req.model_dump())
+            if request.state.user.get("role") != "admin":
+                raise HTTPException(403, "该操作仅管理员可用（可执行代码技能）")
+        data = req.model_dump()
+        data["user_id"] = request.state.user["id"]
+        skill = await skills_db.update_skill(existing["id"], data)
     else:
-        skill = await skills_db.create_skill(req.model_dump())
+        data = req.model_dump()
+        data["user_id"] = request.state.user["id"]
+        skill = await skills_db.create_skill(data)
     await _reload(request)
     return skill
 
@@ -163,15 +166,22 @@ async def update_one(skill_id: int, req: SkillRequest, request: Request):
     old = await skills_db.get_skill(skill_id)
     if not old:
         raise HTTPException(404, "技能不存在")
+    # 检查所有权：只能编辑自己的技能（admin 也只能编辑自己的）
+    user = request.state.user
+    if old.get("user_id") is not None and old["user_id"] != user["id"]:
+        raise HTTPException(403, "无权修改他人的技能")
     # 编辑 code 型（或把技能改为 code 型）需要管理员
     if req.skill_type == "code" or old["skill_type"] == "code":
-        await require_admin()
+        if user.get("role") != "admin":
+            raise HTTPException(403, "该操作仅管理员可用（可执行代码技能）")
     # 名称唯一性（改名时）
     if req.name != old["name"]:
         dup = await skills_db.get_skill_by_name(req.name)
         if dup:
             raise HTTPException(400, f"技能标识「{req.name}」已存在")
-    skill = await skills_db.update_skill(skill_id, req.model_dump())
+    data = req.model_dump()
+    data["user_id"] = user["id"]
+    skill = await skills_db.update_skill(skill_id, data)
     await _reload(request)
     return skill
 
@@ -181,6 +191,9 @@ async def toggle(skill_id: int, req: ToggleRequest, request: Request):
     old = await skills_db.get_skill(skill_id)
     if not old:
         raise HTTPException(404, "技能不存在")
+    user = request.state.user
+    if old.get("user_id") is not None and old["user_id"] != user["id"]:
+        raise HTTPException(403, "无权操作他人的技能")
     skill = await skills_db.set_enabled(skill_id, req.enabled)
     await _reload(request)
     return skill
@@ -191,8 +204,12 @@ async def remove(skill_id: int, request: Request):
     old = await skills_db.get_skill(skill_id)
     if not old:
         raise HTTPException(404, "技能不存在")
+    user = request.state.user
+    if old.get("user_id") is not None and old["user_id"] != user["id"]:
+        raise HTTPException(403, "无权删除他人的技能")
     if old["skill_type"] == "code":
-        await require_admin()
+        if user.get("role") != "admin":
+            raise HTTPException(403, "该操作仅管理员可用（可执行代码技能）")
     await skills_db.delete_skill(skill_id)
     await _reload(request)
     return {"status": "ok"}

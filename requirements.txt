@@ -2,6 +2,8 @@ fastapi>=0.110.0
 uvicorn[standard]>=0.27.0
 pywebview>=5.0
 openai>=1.12.0
+aiofiles>=24.0.0
+httpx>=0.27.0
 python-dotenv>=1.0.0
 aiosqlite>=0.20.0
 fastmcp>=3.2.4
@@ -18,10 +20,10 @@ python-pptx>=1.0.0
 PyPDF2>=3.0.0
 pdfplumber>=0.11.0
 
-# --- 可选：OCR 增强（安装失败不阻塞，系统自动降级）---
-pytesseract>=0.3.10        # Tesseract OCR Python 绑定
-Pillow>=10.0.0             # 图片处理（pytesseract 依赖）
-pdf2image>=1.17.0          # PDF → 图片转换（PDF OCR 所需）
+# --- Optional: OCR enhancement (non-blocking on failure) ---
+pytesseract>=0.3.10        # Tesseract OCR Python binding
+Pillow>=10.0.0             # Image processing (pytesseract dependency)
+pdf2image>=1.17.0          # PDF to image conversion (PDF OCR needed)
 
-# --- 自动标签（中文分词，安装失败自动降级到词频统计）---
+# --- Auto-tagging (Chinese word seg, non-blocking on failure) ---
 jieba>=0.42.1

@@ -34,12 +34,12 @@ DEFAULT_RERANKER_CONFIG: Dict[str, Any] = {
 }
 
 
-async def get_setting(key: str) -> Optional[str]:
-    """读取任意 app_settings 值，不存在返回 None。"""
+async def get_setting(key: str, user_id: int = 0) -> Optional[str]:
+    """读取任意 app_settings 值，按用户隔离。user_id=0 表示全局设置（兼容旧逻辑）。"""
     db = await get_db()
     try:
         cursor = await db.execute(
-            "SELECT value FROM app_settings WHERE key = ?", (key,)
+            "SELECT value FROM app_settings WHERE key = ? AND user_id = ?", (key, user_id)
         )
         row = await cursor.fetchone()
         return row[0] if row else None
@@ -47,28 +47,28 @@ async def get_setting(key: str) -> Optional[str]:
         await db.close()
 
 
-async def set_setting(key: str, value: str) -> None:
-    """写入（或覆盖）任意 app_settings 值。"""
+async def set_setting(key: str, value: str, user_id: int = 0) -> None:
+    """写入（或覆盖）任意 app_settings 值，按用户隔离。"""
     db = await get_db()
     try:
         await db.execute(
-            """INSERT INTO app_settings (key, value, updated_at)
-               VALUES (?, ?, CURRENT_TIMESTAMP)
-               ON CONFLICT(key) DO UPDATE SET value = excluded.value,
+            """INSERT INTO app_settings (key, value, user_id, updated_at)
+               VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+               ON CONFLICT(key, user_id) DO UPDATE SET value = excluded.value,
                                               updated_at = CURRENT_TIMESTAMP""",
-            (key, value),
+            (key, value, user_id),
         )
         await db.commit()
     finally:
         await db.close()
 
 
-async def get_embedding_config() -> Dict[str, Any]:
+async def get_embedding_config(user_id: int = 0) -> Dict[str, Any]:
     """
     读取 embedding 配置，与默认值合并（保证字段齐全）。
     未配置时返回默认（本地 Ollama / bge-m3，dim=0）。
     """
-    raw = await get_setting(_EMBEDDING_KEY)
+    raw = await get_setting(_EMBEDDING_KEY, user_id)
     cfg = dict(DEFAULT_EMBEDDING_CONFIG)
     if raw:
         try:
@@ -80,31 +80,31 @@ async def get_embedding_config() -> Dict[str, Any]:
     return cfg
 
 
-async def save_embedding_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
+async def save_embedding_config(cfg: Dict[str, Any], user_id: int = 0) -> Dict[str, Any]:
     """
     保存 embedding 配置。仅持久化已知字段，避免脏数据。
     返回合并后的完整配置。
     """
-    merged = await get_embedding_config()
+    merged = await get_embedding_config(user_id)
     for k in DEFAULT_EMBEDDING_CONFIG:
         if k in cfg and cfg[k] is not None:
             merged[k] = cfg[k]
-    await set_setting(_EMBEDDING_KEY, json.dumps(merged, ensure_ascii=False))
+    await set_setting(_EMBEDDING_KEY, json.dumps(merged, ensure_ascii=False), user_id)
     return merged
 
 
-async def update_embedding_dim(dim: int) -> None:
+async def update_embedding_dim(dim: int, user_id: int = 0) -> None:
     """探测到向量维度后单独更新 dim 字段。"""
-    cfg = await get_embedding_config()
+    cfg = await get_embedding_config(user_id)
     cfg["dim"] = int(dim)
-    await set_setting(_EMBEDDING_KEY, json.dumps(cfg, ensure_ascii=False))
+    await set_setting(_EMBEDDING_KEY, json.dumps(cfg, ensure_ascii=False), user_id)
 
 
 # ──────────────────────── Reranker 配置读写 ────────────────────────
 
-async def get_reranker_config() -> Dict[str, Any]:
+async def get_reranker_config(user_id: int = 0) -> Dict[str, Any]:
     """读取 reranker 配置，未配置时返回默认（enabled=False）。"""
-    raw = await get_setting(_RERANKER_KEY)
+    raw = await get_setting(_RERANKER_KEY, user_id)
     cfg = dict(DEFAULT_RERANKER_CONFIG)
     if raw:
         try:
@@ -116,11 +116,11 @@ async def get_reranker_config() -> Dict[str, Any]:
     return cfg
 
 
-async def save_reranker_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
+async def save_reranker_config(cfg: Dict[str, Any], user_id: int = 0) -> Dict[str, Any]:
     """保存 reranker 配置。仅持久化已知字段。返回合并后的完整配置。"""
-    merged = await get_reranker_config()
+    merged = await get_reranker_config(user_id)
     for k in DEFAULT_RERANKER_CONFIG:
         if k in cfg and cfg[k] is not None:
             merged[k] = cfg[k]
-    await set_setting(_RERANKER_KEY, json.dumps(merged, ensure_ascii=False))
+    await set_setting(_RERANKER_KEY, json.dumps(merged, ensure_ascii=False), user_id)
     return merged

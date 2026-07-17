@@ -51,19 +51,20 @@ async def create_tool_call(
     message_id: int,
     call_id: str,
     tool_name: str,
-    arguments: Optional[Dict] = None
+    arguments: Optional[Dict] = None,
+    user_id: Optional[int] = None,
 ) -> ToolCallRecord:
     """创建工具调用记录"""
     db = await get_db()
     try:
         args_json = json.dumps(arguments, ensure_ascii=False) if arguments else None
         cursor = await db.execute(
-            """INSERT INTO tool_calls (message_id, call_id, tool_name, arguments, status)
-               VALUES (?, ?, ?, ?, 'calling')""",
-            (message_id, call_id, tool_name, args_json)
+            """INSERT INTO tool_calls (message_id, call_id, tool_name, arguments, status, user_id)
+               VALUES (?, ?, ?, ?, 'calling', ?)""",
+            (message_id, call_id, tool_name, args_json, user_id)
         )
         await db.commit()
-        
+
         # 查询刚插入的记录
         cursor = await db.execute(
             "SELECT * FROM tool_calls WHERE id = ?",

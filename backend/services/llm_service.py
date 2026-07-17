@@ -104,6 +104,11 @@ class LLMService:
         _sub_agent = skip_approval  # 子智能体模式下跳过审批
         _auto_approve = auto_approve  # 子智能体模式下自动同意审批
 
+        # ---------- 提取用户上下文 ----------
+        _user_id = None
+        if request and hasattr(request.state, "user"):
+            _user_id = request.state.user.get("id")
+
         # ---------- Span 追踪 ----------
         from backend.services.tracer import TraceManager, persist_trace
         chat_id = ""
@@ -538,7 +543,8 @@ class LLMService:
                                     await create_tool_call(
                                         message_id=message_id,
                                         call_id=call_id,
-                                        tool_name=func_name
+                                        tool_name=func_name,
+                                        user_id=_user_id,
                                     )
                                     tool_preview_active[idx]['db_created'] = True
                                 except Exception as e:

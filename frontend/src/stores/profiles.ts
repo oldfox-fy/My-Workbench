@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
+import { apiFetch } from '@/api/client'
 
 export interface Profile {
   id: number
@@ -21,7 +22,7 @@ export const useProfileStore = defineStore('profile', () => {
   const activeProfileId = ref<number | null>(null)
 
   async function loadProfiles() {
-    const res = await fetch('/api/profiles/')
+    const res = await apiFetch('/api/profiles/')
     let data = await res.json()
     // 确保每个角色都有生成参数默认值（后端可能尚未返回这些字段）
     data = data.map((p: any) => ({
@@ -67,7 +68,7 @@ export const useProfileStore = defineStore('profile', () => {
     presence_penalty: number = 0,
     skills: string[] = []
   ) {
-    const res = await fetch('/api/profiles/', {
+    const res = await apiFetch('/api/profiles/', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name, tools, profile_prompt, temperature, top_p, top_k, frequency_penalty, presence_penalty, skills })
@@ -104,7 +105,7 @@ export const useProfileStore = defineStore('profile', () => {
       console.warn('内置角色不可编辑')
       return
     }
-    await fetch(`/api/profiles/${id}`, {
+    await apiFetch(`/api/profiles/${id}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name, tools, profile_prompt, temperature, top_p, top_k, frequency_penalty, presence_penalty, skills: skills ?? [] })
@@ -128,7 +129,7 @@ export const useProfileStore = defineStore('profile', () => {
       console.warn('内置角色不可删除')
       return
     }
-    await fetch(`/api/profiles/${id}`, { method: 'DELETE' })
+    await apiFetch(`/api/profiles/${id}`, { method: 'DELETE' })
     profiles.value = profiles.value.filter(p => p.id !== id)
     if (activeProfileId.value === id) {
       activeProfileId.value = profiles.value[0]?.id ?? null

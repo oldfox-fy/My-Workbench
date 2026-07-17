@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
+import { apiFetch } from '@/api/client'
 
 
 export interface toolConfig {
@@ -12,7 +13,7 @@ export interface toolConfig {
 export const useToolStore = defineStore('tools', () => {
   const toolsInfo = ref<toolConfig[]>([])
     async function loadToolsInfo() {
-        const res = await fetch('/api/tools-info')
+        const res = await apiFetch('/api/tools-info')
         const data = await res.json()
         toolsInfo.value = data
     }

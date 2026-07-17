@@ -1,11 +1,12 @@
 # backend/routes/tool_calls.py
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from backend.database import get_db
 from backend.db.tool_calls import (
     get_tool_call_by_id,
     get_tool_calls_by_message,
     delete_tool_calls_by_message,
 )
+from backend.db.token_usage import get_user_token_stats, get_token_breakdown_by_model
 from typing import Optional
 from pydantic import BaseModel
 from backend.services.llm_service import set_approval_result
@@ -17,43 +18,52 @@ router = APIRouter(prefix="/api/tool-calls", tags=["tool-calls"])
 # 注意：/stats 必须在 /{call_id} 之前注册，否则 "stats" 会被当作 call_id 参数匹配
 
 @router.get("/stats")
-async def get_stats():
-    """聚合使用统计：Token 消耗、工具调用、对话数据。"""
+async def get_stats(request: Request):
+    """聚合使用统计：Token 消耗、工具调用、对话数据（按用户隔离）。"""
+    user_id = request.state.user["id"]
     db = await get_db()
     try:
         # 对话总数
-        cur = await db.execute("SELECT COUNT(*) FROM chats")
+        cur = await db.execute("SELECT COUNT(*) FROM chats WHERE user_id = ?", (user_id,))
         chat_count = (await cur.fetchone())[0]
 
         # 消息总数
-        cur = await db.execute("SELECT COUNT(*) FROM messages")
+        cur = await db.execute("SELECT COUNT(*) FROM messages WHERE user_id = ?", (user_id,))
         msg_count = (await cur.fetchone())[0]
 
         # 工具调用总数 + 成功/失败
-        cur = await db.execute("SELECT COUNT(*), SUM(CASE WHEN status='success' THEN 1 ELSE 0 END), SUM(CASE WHEN status='error' THEN 1 ELSE 0 END) FROM tool_calls")
+        cur = await db.execute(
+            "SELECT COUNT(*), SUM(CASE WHEN status='success' THEN 1 ELSE 0 END), SUM(CASE WHEN status='error' THEN 1 ELSE 0 END) FROM tool_calls WHERE user_id = ?",
+            (user_id,),
+        )
         row = await cur.fetchone()
         tool_total = row[0] or 0
         tool_success = row[1] or 0
         tool_error = row[2] or 0
 
         # TOP 10 工具
-        cur = await db.execute("SELECT tool_name, COUNT(*) c FROM tool_calls GROUP BY tool_name ORDER BY c DESC LIMIT 10")
+        cur = await db.execute(
+            "SELECT tool_name, COUNT(*) c FROM tool_calls WHERE user_id = ? GROUP BY tool_name ORDER BY c DESC LIMIT 10",
+            (user_id,),
+        )
         tool_top = [{"name": r[0], "count": r[1]} for r in await cur.fetchall()]
 
-        # 最近 30 天每日工具调用趋势
-        cur = await db.execute("""
-            SELECT DATE(created_at) as d, COUNT(*) as c
-            FROM tool_calls WHERE created_at >= DATE('now', '-30 days')
-            GROUP BY d ORDER BY d
-        """)
-        daily_trend = [{"date": r[0], "count": r[1]} for r in await cur.fetchall()]
+        # Token 消耗统计
+        token_stats = await get_user_token_stats(user_id)
+        token_by_model = await get_token_breakdown_by_model(user_id)
 
         return {
             "chats": chat_count,
             "messages": msg_count,
             "tool_calls": {"total": tool_total, "success": tool_success, "error": tool_error},
             "tool_top": tool_top,
-            "daily_trend": daily_trend,
+            "token_usage": {
+                "request_count": token_stats["request_count"],
+                "prompt_tokens": token_stats["prompt_tokens"],
+                "completion_tokens": token_stats["completion_tokens"],
+                "total_tokens": token_stats["total_tokens"],
+                "by_model": token_by_model,
+            },
         }
     finally:
         await db.close()

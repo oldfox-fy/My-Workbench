@@ -118,6 +118,7 @@ import { MarkdownRender } from 'markstream-vue'
 import 'markstream-vue/index.css'
 import { useKnowledgeStore } from '@/stores/knowledge'
 import { getBacklinks, getNoteNames, type Backlink } from '@/api/knowledge'
+import { apiFetch } from '@/api/client'
 import KbSidecarPanel from '@/components/kb/KbSidecarPanel.vue'
 
 const props = defineProps<{ width?: number }>()
@@ -154,7 +155,7 @@ const allTags = computed<UnifiedTag[]>(() => {
 async function loadTags() {
   if (!kbStore.currentPath) return
   try {
-    const resp = await fetch(`/api/kb/files/tags?file_path=${encodeURIComponent(kbStore.currentPath)}`)
+    const resp = await apiFetch(`/api/kb/files/tags?file_path=${encodeURIComponent(kbStore.currentPath)}`)
     if (resp.ok) currentTags.value = await resp.json()
   } catch { /* ignore */ }
 }
@@ -162,7 +163,7 @@ async function loadTags() {
 async function addDbTag(name: string) {
   if (!name || !kbStore.currentPath) return
   const newTags = [...currentTags.value.map(t => t.name), name]
-  await fetch(`/api/kb/files/tags?file_path=${encodeURIComponent(kbStore.currentPath)}`, {
+  await apiFetch(`/api/kb/files/tags?file_path=${encodeURIComponent(kbStore.currentPath)}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ tags: newTags }),
@@ -172,7 +173,7 @@ async function addDbTag(name: string) {
 
 async function removeDbTag(tag: { id: number; name: string }) {
   const newTags = currentTags.value.filter(t => t.id !== tag.id).map(t => t.name)
-  await fetch(`/api/kb/files/tags?file_path=${encodeURIComponent(kbStore.currentPath)}`, {
+  await apiFetch(`/api/kb/files/tags?file_path=${encodeURIComponent(kbStore.currentPath)}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ tags: newTags }),

@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
+import { apiFetch } from '@/api/client'
 
 export interface MCPServer {
   name: string
@@ -33,7 +34,7 @@ export const useMcpStore = defineStore('mcp', () => {
   async function loadServers() {
     loading.value = true
     try {
-      const res = await fetch('/api/mcp/servers')
+      const res = await apiFetch('/api/mcp/servers')
       const data = await res.json()
       servers.value = data.servers || []
     } catch (e) {
@@ -44,7 +45,7 @@ export const useMcpStore = defineStore('mcp', () => {
   }
 
   async function saveServer(payload: SaveServerPayload): Promise<SaveServerResult> {
-    const res = await fetch('/api/mcp/servers', {
+    const res = await apiFetch('/api/mcp/servers', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
@@ -58,7 +59,7 @@ export const useMcpStore = defineStore('mcp', () => {
   }
 
   async function deleteServer(name: string) {
-    await fetch(`/api/mcp/servers/${encodeURIComponent(name)}`, { method: 'DELETE' })
+    await apiFetch(`/api/mcp/servers/${encodeURIComponent(name)}`, { method: 'DELETE' })
     await loadServers()
   }
 

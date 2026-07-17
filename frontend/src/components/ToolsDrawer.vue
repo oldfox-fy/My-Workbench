@@ -68,6 +68,7 @@
 import { ref, watch, computed } from 'vue'
 import { NDrawer, NDrawerContent, NSpace, NText, NDivider, NGrid, NGi, NCard, NTag, NSpin, NPagination } from 'naive-ui'
 import { useSkillStore } from '@/stores/skills'
+import { apiFetch } from '@/api/client'
 
 interface ToolItem {
   function: { name: string; title: string; description: string }
@@ -96,7 +97,7 @@ const pagedSkills = computed(() =>
 async function loadTools() {
   loading.value = true
   try {
-    const res = await fetch('/api/tools')
+    const res = await apiFetch('/api/tools')
     const data = await res.json()
     tools.value = data.tools || []
   } catch (e) {

@@ -83,6 +83,7 @@ import { NModal, NTag, NButton, NSpin } from 'naive-ui'
 import MSvg from '@/components/mSvg.vue'
 import { copyToClipboard } from '@/utils/common'
 import { useToolStore } from '@/stores/tools'
+import { apiFetch } from '@/api/client'
 
 const props = defineProps<{
   callId: string
@@ -155,7 +156,7 @@ async function loadDetail() {
   loading.value = true
   data.value = null
   try {
-    const res = await fetch(`/api/tool-calls/${props.callId}`)
+    const res = await apiFetch(`/api/tool-calls/${props.callId}`)
     if (res.ok) {
       data.value = await res.json()
     }

@@ -21,6 +21,7 @@ import json
 import asyncio
 from backend.services.intent_router import detect_intent, get_prompt_suffix, IntentResult
 from fastapi import WebSocket, WebSocketDisconnect
+from backend.auth import validate_token
 
 from backend.services.llm_service import LLMService, set_approval_result
 from backend.services.tools import get_local_tools, get_mcp_tools
@@ -97,6 +98,22 @@ async def _stream_to_ws(ws: WebSocket, generator, cancel_event: asyncio.Event):
                 usage_json = text.replace("<!--token_usage:", "").replace("-->", "")
                 usage = json.loads(usage_json)
                 await ws.send_json({"type": "done", "usage": usage})
+                # 持久化 token 用量
+                try:
+                    user = getattr(ws.state, "user", None)
+                    if user and user.get("id"):
+                        from backend.db.token_usage import record_token_usage
+                        model_name = ws.state._ws_llm_model if hasattr(ws.state, "_ws_llm_model") else ""
+                        asyncio.create_task(record_token_usage(
+                            user_id=user["id"],
+                            chat_id="",
+                            model_name=model_name,
+                            prompt_tokens=usage.get("prompt_tokens", 0) or 0,
+                            completion_tokens=usage.get("completion_tokens", 0) or 0,
+                            total_tokens=usage.get("total_tokens", 0) or 0,
+                        ))
+                except Exception:
+                    pass  # token 记录失败不影响主流程
             except Exception:
                 await ws.send_json({"type": "done"})
             return
@@ -180,6 +197,8 @@ async def _handle_chat(ws: WebSocket, data: dict, cancel_event: asyncio.Event,
                     llm_cfg.get("model_name", ""),
                     llm_cfg.get("base_url", ""),
                 )
+            # 存储模型名供 token 用量记录使用
+            ws.state._ws_llm_model = llm_cfg.get("model_name", "")
             service = LLMService(
                 model_type=llm_cfg.get("type", "online"),
                 model_name=llm_cfg.get("model_name", ""),
@@ -402,10 +421,16 @@ async def _handle_chat(ws: WebSocket, data: dict, cancel_event: asyncio.Event,
 
         # 流式生成
         ws_message_id = data.get("message_id")
+        # 构建一个简单的 user 上下文供 generate_response 提取 user_id
+        class _WSRequest:
+            state = type("_State", (), {"user": ws.state.user})()
+            async def is_disconnected(self) -> bool:
+                return cancel_event.is_set()
         gen = service.generate_response(
             messages=messages,
             enable_tools=enable_tools,
             tools=tools,
+            request=_WSRequest(),
             params=params,
             message_id=ws_message_id,
             skill_registry=skill_registry,
@@ -424,8 +449,23 @@ async def _handle_chat(ws: WebSocket, data: dict, cancel_event: asyncio.Event,
 # ──────────── WebSocket 端点 ────────────
 
 async def ws_chat_endpoint(websocket: WebSocket):
-    """主 WebSocket 端点。"""
+    """主 WebSocket 端点。连接时验证 token。"""
+    token = websocket.query_params.get("token")
+    if not token:
+        await websocket.close(code=4001, reason="Missing token")
+        return
+
+    user = await validate_token(token)
+    if not user:
+        await websocket.close(code=4001, reason="Invalid or expired token")
+        return
+
+    if user.get("status") == "pending":
+        await websocket.close(code=4003, reason="Account pending approval")
+        return
+
     await websocket.accept()
+    websocket.state.user = user
     cancel_event = asyncio.Event()
     chat_task = None
 

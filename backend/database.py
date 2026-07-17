@@ -296,6 +296,106 @@ async def init_db():
         )
     """)
 
+    # ── 用户管理：用户表 ──
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL UNIQUE,
+            password_hash TEXT NOT NULL,
+            role TEXT NOT NULL DEFAULT 'user',
+            status TEXT NOT NULL DEFAULT 'pending',
+            kb_path TEXT DEFAULT '',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    # ── 用户管理：认证令牌表 ──
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS auth_tokens (
+            token TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            expires_at TIMESTAMP NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        )
+    """)
+
+    # ── 用户管理：操作审计日志表 ──
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS audit_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            username TEXT NOT NULL,
+            action TEXT NOT NULL,
+            target TEXT DEFAULT '',
+            detail TEXT DEFAULT '',
+            ip_address TEXT DEFAULT '',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+        )
+    """)
+
+    # ── Token 用量统计表 ──
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS token_usage (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            chat_id TEXT,
+            model_name TEXT DEFAULT '',
+            prompt_tokens INTEGER NOT NULL DEFAULT 0,
+            completion_tokens INTEGER NOT NULL DEFAULT 0,
+            total_tokens INTEGER NOT NULL DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        )
+    """)
+
+    # ── 为已有表添加列 ──
+    await _ensure_column(db, "users", "workspace_path", "TEXT DEFAULT ''")
+    await _ensure_column(db, "chats", "user_id", "INTEGER DEFAULT NULL")
+    await _ensure_column(db, "messages", "user_id", "INTEGER DEFAULT NULL")
+    await _ensure_column(db, "models", "user_id", "INTEGER DEFAULT NULL")
+    await _ensure_column(db, "app_settings", "user_id", "INTEGER DEFAULT NULL")
+    await _ensure_column(db, "kb_chunks", "user_id", "INTEGER DEFAULT NULL")
+    await _ensure_column(db, "kb_index_meta", "user_id", "INTEGER DEFAULT NULL")
+    await _ensure_column(db, "profiles", "user_id", "INTEGER DEFAULT NULL")
+    await _ensure_column(db, "tool_calls", "user_id", "INTEGER DEFAULT NULL")
+    await _ensure_column(db, "skills", "user_id", "INTEGER DEFAULT NULL")
+
+    # ── 为 app_settings 添加复合唯一索引（key + user_id）──
+    await db.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_app_settings_key_user
+        ON app_settings (key, user_id)
+    """)
+
+    # ── 为 skills 添加 user_id 索引 ──
+    await db.execute("""
+        CREATE INDEX IF NOT EXISTS idx_skills_user_id ON skills (user_id)
+    """)
+
+    # ── 种子默认用户（仅在用户表为空时）──
+    import hashlib, secrets
+    cursor = await db.execute("SELECT COUNT(*) FROM users")
+    count = (await cursor.fetchone())[0]
+    if count == 0:
+        def _make_hash(pw: str) -> str:
+            salt = secrets.token_hex(16)
+            h = hashlib.sha256(f"{salt}{pw}".encode()).hexdigest()
+            return f"{salt}:{h}"
+
+        await db.execute(
+            "INSERT INTO users (username, password_hash, role, status) VALUES (?, ?, ?, ?)",
+            ("admin", _make_hash("admin123"), "admin", "active"),
+        )
+        await db.execute(
+            "INSERT INTO users (username, password_hash, role, status) VALUES (?, ?, ?, ?)",
+            ("user001", _make_hash("user001"), "user", "active"),
+        )
+        logger.info("[DB] 已创建默认用户: admin, user001")
+
+    # ── 回填旧数据：将 user_id IS NULL 的数据归属到 admin（id=1）──
+    await _backfill_null_user_ids(db)
+
     # ── 数据库完整性检测与自动修复 ──
     await _check_and_repair(db)
 
@@ -326,6 +426,25 @@ async def _force_repair_vec() -> bool:
     finally:
         await db.commit()
         await db.close()
+
+
+async def _backfill_null_user_ids(db):
+    """将迁移前所有 user_id IS NULL 的行归属到 admin（id=1）"""
+    tables_with_user_id = ["chats", "messages", "models", "app_settings", "kb_chunks", "kb_index_meta", "profiles", "tool_calls", "skills"]
+    try:
+        for tbl in tables_with_user_id:
+            # 先确认该表有 user_id 列
+            cursor = await db.execute(f"PRAGMA table_info({tbl})")
+            cols = {row[1] for row in await cursor.fetchall()}
+            if "user_id" not in cols:
+                continue
+            cursor = await db.execute(f"SELECT COUNT(*) FROM {tbl} WHERE user_id IS NULL")
+            count = (await cursor.fetchone())[0]
+            if count > 0:
+                await db.execute(f"UPDATE {tbl} SET user_id = 1 WHERE user_id IS NULL")
+                logger.info(f"[DB] 已将 {tbl} 表 {count} 行 NULL user_id 回填到 admin")
+    except Exception as e:
+        logger.warning(f"[DB] user_id 回填失败（非致命）: {e}")
 
 
 async def _ensure_column(db, table: str, column: str, ddl: str):

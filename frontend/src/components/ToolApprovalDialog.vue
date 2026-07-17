@@ -39,6 +39,7 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
 import { NModal, NTag, NScrollbar, NCheckbox, NInput } from 'naive-ui'
+import { apiFetch } from '@/api/client'
 
 const props = defineProps<{
   callId: string
@@ -99,7 +100,7 @@ async function reject() {
 
 async function sendApproval(approved: boolean, answer?: string) {
   try {
-    await fetch('/api/tool-calls/approval', {
+    await apiFetch('/api/tool-calls/approval', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ call_id: props.callId, approved, answer }),

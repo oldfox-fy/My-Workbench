@@ -1,15 +1,16 @@
 # backend/routes/mcp.py
 import json
 import logging
-from pathlib import Path
 from fastapi import APIRouter, HTTPException, Depends, Request
 from pydantic import BaseModel
-from typing import List, Optional, Dict
-from config_loader import config
+from typing import List, Optional
+from backend.db.kb_settings import get_setting, set_setting
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/mcp", tags=["mcp"])
+
+_MCP_KEY = "mcp_servers"
 
 
 class MCPServerRequest(BaseModel):
@@ -24,27 +25,6 @@ async def get_mcp_manager(request: Request):
     return request.app.state.mcp_manager
 
 
-def _read_config() -> dict:
-    """读取 mcp_config.json，不存在则返回空结构"""
-    path = Path(config.mcp_config_path)
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        data = {"mcpServers": {}}
-    if "mcpServers" not in data or not isinstance(data.get("mcpServers"), dict):
-        data["mcpServers"] = {}
-    return data
-
-
-def _write_config(data: dict):
-    """整体写回 mcp_config.json"""
-    path = Path(config.mcp_config_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-
-
 def _to_server_config(req: MCPServerRequest) -> dict:
     """将请求转换为存储用的 server 配置片段"""
     if req.transport == "stdio":
@@ -57,10 +37,29 @@ def _to_server_config(req: MCPServerRequest) -> dict:
         return {"url": req.url}
 
 
+async def _read_user_config(user_id: int) -> dict:
+    """读取指定用户的 MCP 配置，不存在则返回空结构"""
+    raw = await get_setting(_MCP_KEY, user_id)
+    if raw:
+        try:
+            data = json.loads(raw)
+            if isinstance(data, dict) and "mcpServers" in data:
+                return data
+        except json.JSONDecodeError:
+            pass
+    return {"mcpServers": {}}
+
+
+async def _write_user_config(user_id: int, data: dict):
+    """保存指定用户的 MCP 配置"""
+    await set_setting(_MCP_KEY, json.dumps(data, ensure_ascii=False), user_id)
+
+
 @router.get("/servers")
-async def list_servers(mcp_manager=Depends(get_mcp_manager)):
-    """列出所有已配置的 MCP 服务器，并合并实时连接状态"""
-    data = _read_config()
+async def list_servers(request: Request, mcp_manager=Depends(get_mcp_manager)):
+    """列出当前用户已配置的 MCP 服务器，并合并实时连接状态"""
+    user_id = request.state.user["id"]
+    data = await _read_user_config(user_id)
     servers = []
     for name, cfg in data["mcpServers"].items():
         transport = "stdio" if ("command" in cfg or "commad" in cfg) else "http"
@@ -78,18 +77,19 @@ async def list_servers(mcp_manager=Depends(get_mcp_manager)):
 
 
 @router.post("/servers")
-async def save_server(req: MCPServerRequest, mcp_manager=Depends(get_mcp_manager)):
-    """新增或更新一个 MCP 服务器：写入配置文件并立即热连接"""
+async def save_server(req: MCPServerRequest, request: Request, mcp_manager=Depends(get_mcp_manager)):
+    """新增或更新一个 MCP 服务器：写入用户配置并立即热连接"""
     name = req.name.strip()
     if not name:
         raise HTTPException(400, "服务名称不能为空")
 
+    user_id = request.state.user["id"]
     server_config = _to_server_config(req)
 
-    # 1. 写入配置文件（整体读-改-写，避免覆盖其他条目）
-    data = _read_config()
+    # 1. 写入用户配置
+    data = await _read_user_config(user_id)
     data["mcpServers"][name] = server_config
-    _write_config(data)
+    await _write_user_config(user_id, data)
 
     # 2. 热连接（若管理器尚未就绪则仅保存配置，重启后生效）
     if not mcp_manager:
@@ -106,12 +106,13 @@ async def save_server(req: MCPServerRequest, mcp_manager=Depends(get_mcp_manager
 
 
 @router.delete("/servers/{name}")
-async def delete_server(name: str, mcp_manager=Depends(get_mcp_manager)):
-    """删除一个 MCP 服务器：断开连接并从配置文件移除"""
-    data = _read_config()
+async def delete_server(name: str, request: Request, mcp_manager=Depends(get_mcp_manager)):
+    """删除一个 MCP 服务器：断开连接并从用户配置移除"""
+    user_id = request.state.user["id"]
+    data = await _read_user_config(user_id)
     if name in data["mcpServers"]:
         del data["mcpServers"][name]
-        _write_config(data)
+        await _write_user_config(user_id, data)
     if mcp_manager:
         await mcp_manager.remove_server(name)
     return {"status": "ok"}

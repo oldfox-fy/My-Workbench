@@ -1,10 +1,9 @@
 # backend/routes/profiles.py
 import json
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 from typing import List, Optional
 from backend.database import get_db
-from backend.db.user_settings import get_user_role
 
 router = APIRouter(prefix="/api/profiles", tags=["profiles"])
 
@@ -33,17 +32,18 @@ class ProfileResponse(BaseModel):
 
 # 创建角色
 @router.post("/", response_model=ProfileResponse)
-async def create_profile(profile: ProfileCreate):
+async def create_profile(profile: ProfileCreate, request: Request):
+    user_id = request.state.user["id"]
     db = await get_db()
     tools_json = json.dumps(profile.tools)
     skills_json = json.dumps(profile.skills)
     cursor = await db.execute(
         """INSERT INTO profiles
-           (name, tools, profile_prompt, temperature, top_p, top_k, frequency_penalty, presence_penalty, skills)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           (name, tools, profile_prompt, temperature, top_p, top_k, frequency_penalty, presence_penalty, skills, user_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (profile.name, tools_json, profile.profile_prompt,
          profile.temperature, profile.top_p, profile.top_k, profile.frequency_penalty, profile.presence_penalty,
-         skills_json)
+         skills_json, user_id)
     )
     await db.commit()
     profile_id = cursor.lastrowid
@@ -63,26 +63,36 @@ async def create_profile(profile: ProfileCreate):
 
 # 更新角色
 @router.put("/{profile_id}", response_model=ProfileResponse)
-async def update_profile(profile_id: int, profile: ProfileCreate):
+async def update_profile(profile_id: int, profile: ProfileCreate, request: Request):
     if profile_id == 0:
         raise HTTPException(status_code=400, detail="内置角色不可编辑")
     db = await get_db()
-    tools_json = json.dumps(profile.tools)
-    skills_json = json.dumps(profile.skills)
-    cursor = await db.execute(
-        """UPDATE profiles
-           SET name = ?, tools = ?, profile_prompt = ?,
-               temperature = ?, top_p = ?, top_k = ?, frequency_penalty = ?, presence_penalty = ?, skills = ?
-           WHERE id = ?""",
-        (profile.name, tools_json, profile.profile_prompt,
-         profile.temperature, profile.top_p, profile.top_k, profile.frequency_penalty, profile.presence_penalty,
-         skills_json, profile_id)
-    )
-    if cursor.rowcount == 0:
+    try:
+        # 检查所有权
+        user_id = request.state.user["id"]
+        cur = await db.execute("SELECT user_id FROM profiles WHERE id = ?", (profile_id,))
+        row = await cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="角色不存在")
+        if row[0] is not None and row[0] != user_id:
+            raise HTTPException(status_code=403, detail="无权修改他人的角色")
+
+        tools_json = json.dumps(profile.tools)
+        skills_json = json.dumps(profile.skills)
+        cursor = await db.execute(
+            """UPDATE profiles
+               SET name = ?, tools = ?, profile_prompt = ?,
+                   temperature = ?, top_p = ?, top_k = ?, frequency_penalty = ?, presence_penalty = ?, skills = ?
+               WHERE id = ? AND (user_id = ? OR user_id IS NULL)""",
+            (profile.name, tools_json, profile.profile_prompt,
+             profile.temperature, profile.top_p, profile.top_k, profile.frequency_penalty, profile.presence_penalty,
+             skills_json, profile_id, user_id)
+        )
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=403, detail="无权修改此角色")
+        await db.commit()
+    finally:
         await db.close()
-        raise HTTPException(status_code=404, detail="角色不存在")
-    await db.commit()
-    await db.close()
     return {
         "id": profile_id,
         "name": profile.name,
@@ -98,13 +108,26 @@ async def update_profile(profile_id: int, profile: ProfileCreate):
 
 # 获取所有角色
 @router.get("/", response_model=List[ProfileResponse])
-async def list_profiles():
+async def list_profiles(request: Request):
+    user_id = request.state.user["id"]
+    is_admin = request.state.user.get("role") == "admin"
+
     db = await get_db()
-    cursor = await db.execute(
-        """SELECT id, name, tools, profile_prompt,
-                  temperature, top_p, top_k, frequency_penalty, presence_penalty, skills
-           FROM profiles"""
-    )
+    if is_admin:
+        # 管理员：看到所有角色 + 虚拟角色"全能助手"
+        cursor = await db.execute(
+            """SELECT id, name, tools, profile_prompt,
+                      temperature, top_p, top_k, frequency_penalty, presence_penalty, skills
+               FROM profiles"""
+        )
+    else:
+        # 普通用户：只看到自己创建的角色
+        cursor = await db.execute(
+            """SELECT id, name, tools, profile_prompt,
+                      temperature, top_p, top_k, frequency_penalty, presence_penalty, skills
+               FROM profiles WHERE user_id = ?""",
+            (user_id,),
+        )
     rows = await cursor.fetchall()
     await db.close()
     results = []
@@ -123,8 +146,7 @@ async def list_profiles():
         })
 
     # 管理员插入内置虚拟角色"全能助手"（id=0，全放行）
-    role = await get_user_role()
-    if role == "admin":
+    if is_admin:
         results.insert(0, {
             "id": 0,
             "name": "全能助手",
@@ -141,10 +163,22 @@ async def list_profiles():
     return results
 
 @router.delete("/{profile_id}")
-async def delete_profile(profile_id: int):
+async def delete_profile(profile_id: int, request: Request):
     if profile_id == 0:
         raise HTTPException(status_code=400, detail="内置角色不可删除")
+    user_id = request.state.user["id"]
+    is_admin = request.state.user.get("role") == "admin"
     db = await get_db()
+    if not is_admin:
+        # 普通用户只能删除自己的角色
+        cursor = await db.execute("SELECT user_id FROM profiles WHERE id = ?", (profile_id,))
+        row = await cursor.fetchone()
+        if not row:
+            await db.close()
+            raise HTTPException(status_code=404, detail="角色不存在")
+        if row[0] is not None and row[0] != user_id:
+            await db.close()
+            raise HTTPException(status_code=403, detail="无权删除此角色")
     await db.execute("DELETE FROM profiles WHERE id = ?", (profile_id,))
     await db.commit()
     await db.close()

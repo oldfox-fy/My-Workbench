@@ -13,7 +13,7 @@ from typing import Optional
 
 from backend.database import get_db
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from backend.db.kb_settings import (
@@ -63,26 +63,26 @@ class SearchIn(BaseModel):
 # ──────────────────────── embedding 配置（M1） ────────────────────────
 
 @router.get("/embedding/config")
-async def get_embedding_cfg():
+async def get_embedding_cfg(request: Request):
     """读取当前 embedding 配置（apiKey 原样返回，与 models 表一致）。"""
-    return await get_embedding_config()
+    return await get_embedding_config(request.state.user["id"])
 
 
 @router.post("/embedding/config")
-async def set_embedding_cfg(cfg: EmbeddingConfigIn):
+async def set_embedding_cfg(cfg: EmbeddingConfigIn, request: Request):
     """保存 embedding 配置。若修改了 provider/base_url/model，维度需重新探测。"""
     payload = {k: v for k, v in cfg.dict().items() if v is not None}
-    saved = await save_embedding_config(payload)
+    saved = await save_embedding_config(payload, request.state.user["id"])
     return {"status": "ok", "config": saved}
 
 
 @router.post("/embedding/test")
-async def test_embedding_cfg(cfg: EmbeddingConfigIn):
+async def test_embedding_cfg(cfg: EmbeddingConfigIn, request: Request):
     """
     用给定配置（未填的字段回退到已保存值）测试连通性并探测向量维度。
     成功返回 {"success": true, "dim": N}。
     """
-    current = await get_embedding_config()
+    current = await get_embedding_config(request.state.user["id"])
     merged = dict(current)
     for k, v in cfg.dict().items():
         if v is not None:
@@ -94,26 +94,26 @@ async def test_embedding_cfg(cfg: EmbeddingConfigIn):
 # ──────────────────────── reranker 配置 ────────────────────────
 
 @router.get("/reranker/config")
-async def get_reranker_cfg():
+async def get_reranker_cfg(request: Request):
     """读取当前 reranker 配置。"""
-    return await get_reranker_config()
+    return await get_reranker_config(request.state.user["id"])
 
 
 @router.post("/reranker/config")
-async def set_reranker_cfg(cfg: RerankerConfigIn):
+async def set_reranker_cfg(cfg: RerankerConfigIn, request: Request):
     """保存 reranker 配置。"""
     payload = {k: v for k, v in cfg.dict().items() if v is not None}
-    saved = await save_reranker_config(payload)
+    saved = await save_reranker_config(payload, request.state.user["id"])
     return {"status": "ok", "config": saved}
 
 
 @router.post("/reranker/test")
-async def test_reranker_cfg(cfg: RerankerConfigIn):
+async def test_reranker_cfg(cfg: RerankerConfigIn, request: Request):
     """
     用给定配置测试 reranker 连通性。
     成功返回 {"success": true, "top_score": 0.98}。
     """
-    current = await get_reranker_config()
+    current = await get_reranker_config(request.state.user["id"])
     merged = dict(current)
     for k, v in cfg.dict().items():
         if v is not None:

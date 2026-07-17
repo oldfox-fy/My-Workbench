@@ -2,6 +2,7 @@ import { ref, computed } from 'vue'
 import type { UploadFileInfo } from 'naive-ui'
 import { useMessage } from 'naive-ui'
 import { fileConfig } from '@/stores/config'
+import { apiFetch } from '@/api/client'
 
 export interface UploadedFile {
   filename: string
@@ -35,7 +36,7 @@ export function useFileUpload() {
       const formData = new FormData()
       formData.append('file', file)
       try {
-        const res = await fetch('/api/files/upload', {
+        const res = await apiFetch('/api/files/upload', {
           method: 'POST',
           body: formData,
         })

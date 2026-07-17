@@ -55,6 +55,7 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
 import { NDrawer, NDrawerContent, NGrid, NGi, NCard, NTag, NSpin } from 'naive-ui'
+import { apiFetch } from '@/api/client'
 
 const props = defineProps<{ show: boolean; messageId: number | null }>()
 const emit = defineEmits<{ 'update:show': [v: boolean] }>()
@@ -113,7 +114,7 @@ watch(() => [props.show, props.messageId], async () => {
     error.value = ''
     selected.value = null
     try {
-      const resp = await fetch(`/api/tool-calls/message/${props.messageId}/trace`)
+      const resp = await apiFetch(`/api/tool-calls/message/${props.messageId}/trace`)
       if (resp.ok) trace.value = await resp.json()
       else if (resp.status === 404) error.value = '该消息未找到追踪数据'
       else error.value = '加载失败'

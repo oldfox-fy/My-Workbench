@@ -14,7 +14,7 @@ from urllib.parse import quote as _quote
 # 强制初始化 MIME 类型数据库（Windows 上注册表可能不可靠）
 mimetypes.init()
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from backend.bootstrap import logger
@@ -24,6 +24,7 @@ import backend
 from backend.utils.validators import validate_path
 from backend.system_tools.reader import file_read, FileReadError
 from backend.system_tools.writer import file_write
+from backend.auth import get_current_user
 
 router = APIRouter(prefix="/api/kb", tags=["knowledge"])
 
@@ -160,9 +161,14 @@ class SidecarSaveRequest(BaseModel):
 # ──────────────────────── 工具函数 ────────────────────────
 
 def _get_root() -> Path:
-    root = getattr(backend, "kb_path", "")
+    # 优先使用当前用户上下文的知识库路径
+    try:
+        from backend import _user_kb_path
+        root = _user_kb_path.get()
+    except (ImportError, LookupError):
+        root = ""
     if not root:
-        raise HTTPException(400, "尚未设置知识库目录")
+        raise HTTPException(400, "尚未设置知识库目录，请在设置中配置")
     p = Path(root)
     if not p.is_dir():
         raise HTTPException(400, "知识库目录不存在或不是有效目录")
@@ -221,19 +227,37 @@ def _build_tree(dir_path: Path, root: Path, depth: int = 0, max_depth: int = 12)
 # ──────────────────────── 接口 ────────────────────────
 
 @router.get("/root")
-async def get_root():
-    return {"path": getattr(backend, "kb_path", "")}
+async def get_root(request: Request):
+    user_id = request.state.user["id"]
+    db = await get_db()
+    try:
+        cursor = await db.execute("SELECT kb_path FROM users WHERE id = ?", (user_id,))
+        row = await cursor.fetchone()
+        path = row[0] if row and row[0] else ""
+        return {"path": path}
+    finally:
+        await db.close()
 
 
 @router.post("/root/set")
-async def set_root(req: RootRequest):
+async def set_root(req: RootRequest, request: Request):
     if not os.path.isdir(req.path):
         raise HTTPException(400, "提供的路径不是一个有效目录")
+    user_id = request.state.user["id"]
+    db = await get_db()
+    try:
+        await db.execute("UPDATE users SET kb_path = ? WHERE id = ?", (req.path, user_id))
+        await db.commit()
+    finally:
+        await db.close()
+    # 同时更新 context var 和全局变量
+    from backend import _user_kb_path
+    _user_kb_path.set(req.path)
     backend.kb_path = req.path
     # 确保「生成内容」目录存在
     gen_dir = os.path.join(req.path, "生成内容")
     os.makedirs(gen_dir, exist_ok=True)
-    return {"status": "ok", "path": backend.kb_path}
+    return {"status": "ok", "path": req.path}
 
 
 @router.get("/tree")

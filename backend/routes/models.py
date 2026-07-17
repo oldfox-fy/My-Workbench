@@ -1,9 +1,10 @@
 # backend/routes/models.py
 import uuid
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from typing import List, Optional
 from backend.database import get_db
+from backend.auth import get_current_user
 
 router = APIRouter(prefix="/api", tags=["models"])
 
@@ -34,10 +35,12 @@ class UpdateModelRequest(BaseModel):
 
 
 @router.get("/models", response_model=List[ModelConfigResponse])
-async def list_models():
+async def list_models(request: Request):
+    user_id = request.state.user["id"]
     db = await get_db()
     cursor = await db.execute(
-        "SELECT id, name, type, modelName, baseUrl, apiKey, role FROM models ORDER BY name"
+        "SELECT id, name, type, modelName, baseUrl, apiKey, role FROM models WHERE user_id = ? ORDER BY name",
+        (user_id,),
     )
     rows = await cursor.fetchall()
     await db.close()
@@ -56,14 +59,15 @@ async def list_models():
 
 
 @router.post("/models", response_model=ModelConfigResponse)
-async def create_model(data: ModelConfigBase):
+async def create_model(data: ModelConfigBase, request: Request):
     if data.role not in MODEL_ROLES:
         raise HTTPException(status_code=400, detail=f"无效的角色类型: {data.role}，可选值: {MODEL_ROLES}")
     model_id = str(uuid.uuid4())
+    user_id = request.state.user["id"]
     db = await get_db()
     await db.execute(
-        "INSERT INTO models (id, name, type, modelName, baseUrl, apiKey, role) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (model_id, data.name, data.type, data.modelName or "", data.baseUrl, data.apiKey, data.role)
+        "INSERT INTO models (id, name, type, modelName, baseUrl, apiKey, role, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (model_id, data.name, data.type, data.modelName or "", data.baseUrl, data.apiKey, data.role, user_id)
     )
     await db.commit()
     await db.close()
@@ -71,10 +75,20 @@ async def create_model(data: ModelConfigBase):
 
 
 @router.put("/models/{model_id}")
-async def update_model(model_id: str, data: UpdateModelRequest):
+async def update_model(model_id: str, data: UpdateModelRequest, request: Request):
     if data.role is not None and data.role not in MODEL_ROLES:
         raise HTTPException(status_code=400, detail=f"无效的角色类型: {data.role}，可选值: {MODEL_ROLES}")
+    user_id = request.state.user["id"]
     db = await get_db()
+    # 验证所有权
+    cursor = await db.execute("SELECT user_id FROM models WHERE id = ?", (model_id,))
+    row = await cursor.fetchone()
+    if not row:
+        await db.close()
+        raise HTTPException(status_code=404, detail="Model not found")
+    if row[0] is not None and row[0] != user_id:
+        await db.close()
+        raise HTTPException(status_code=403, detail="无权修改此模型")
     # 构建动态更新语句
     updates = []
     params = []
@@ -110,8 +124,18 @@ async def update_model(model_id: str, data: UpdateModelRequest):
 
 
 @router.delete("/models/{model_id}")
-async def delete_model(model_id: str):
+async def delete_model(model_id: str, request: Request):
+    user_id = request.state.user["id"]
     db = await get_db()
+    # 验证所有权
+    cursor = await db.execute("SELECT user_id FROM models WHERE id = ?", (model_id,))
+    row = await cursor.fetchone()
+    if not row:
+        await db.close()
+        raise HTTPException(status_code=404, detail="Model not found")
+    if row[0] is not None and row[0] != user_id:
+        await db.close()
+        raise HTTPException(status_code=403, detail="无权删除此模型")
     await db.execute("DELETE FROM models WHERE id = ?", (model_id,))
     await db.commit()
     await db.close()

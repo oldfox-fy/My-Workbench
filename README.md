@@ -266,9 +266,9 @@ npm install
 | 终端 | 执行目录 | 命令 | 监听端口 | 说明 |
 |------|----------|------|----------|------|
 | **后端** | 项目根目录 | `.venv\Scripts\python main.py` | `8080` | FastAPI + 自动重载（代码改动即生效） |
-| **前端** | `frontend/` | `npm run dev` | `5173` | Vite HMR 热更新，`/api` 代理到 `8080` |
+| **前端** | `frontend/` | `npm run dev` | `5175` | Vite HMR 热更新，`/api` 代理到 `8080` |
 
-> **启动顺序**：先启动后端，再启动前端。浏览器访问 <http://localhost:5173>。
+> **启动顺序**：先启动后端，再启动前端。浏览器访问 <http://localhost:5175>。
 
 **终端 1 — 启动后端：**
 
@@ -288,12 +288,12 @@ python main.py
 # 在项目根目录执行
 cd frontend
 npm run dev
-# ✅ 输出 "Local: http://localhost:5173/" 即成功
+# ✅ 输出 "Local: http://localhost:5175/" 即成功
 ```
 
-启动后浏览器访问 <http://localhost:5173>，Vite 会自动将 `/api`、`/files/uploads`、`/files/generate/` 代理到后端 `8080`。
+启动后浏览器访问 <http://localhost:5175>，Vite 会自动将 `/api`、`/files/uploads`、`/files/generate/` 代理到后端 `8080`。
 
-> 💡 **需要原生桌面窗口（PyWebView）时**：先确保前端已启动，再在根目录执行 `python main.py --gui`，它会打开原生窗口并在其中加载 `localhost:5173`。
+> 💡 **需要原生桌面窗口（PyWebView）时**：先确保前端已启动，再在根目录执行 `python main.py --gui`，它会打开原生窗口并在其中加载 `localhost:5175`。
 
 ### 4. 构建可执行文件
 
@@ -412,13 +412,6 @@ myskill.zip
 
 ---
 
-## ️ 界面预览
-
-| 深色主题 | 浅色主题 |
-|---------|---------|
-| ![深色](screenshots/dark.png) | ![浅色](screenshots/light.png) |
-
-更多截图请查看 [screenshots](screenshots/) 目录。
 
 ---
 

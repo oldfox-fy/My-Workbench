@@ -13,6 +13,7 @@
 
 import { ref, onUnmounted } from 'vue'
 import { useConfigStore } from '@/stores/config'
+import { apiFetch } from '@/api/client'
 
 // ──────────── 检测是否有 LLM 语音模型可用 ────────────
 
@@ -107,7 +108,7 @@ export function useVoiceRecorder() {
     if (audioConfig.base_url) formData.append('base_url', audioConfig.base_url)
     if (audioConfig.api_key) formData.append('api_key', audioConfig.api_key)
 
-    const res = await fetch('/api/stt', {
+    const res = await apiFetch('/api/stt', {
       method: 'POST',
       body: formData,
     })
@@ -296,7 +297,7 @@ export function useTTS() {
       throw new Error('未配置语音模型')
     }
 
-    const res = await fetch('/api/tts', {
+    const res = await apiFetch('/api/tts', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

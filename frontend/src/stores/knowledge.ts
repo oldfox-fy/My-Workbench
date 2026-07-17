@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
+import { apiFetch } from '@/api/client'
 
 export interface KbTreeNode {
   label: string
@@ -64,7 +65,7 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
   // 读取已保存的知识库根目录
   async function loadRoot() {
     try {
-      const res = await fetch('/api/kb/root')
+      const res = await apiFetch('/api/kb/root')
       const data = await res.json()
       root.value = data.path || ''
     } catch (e) {
@@ -74,7 +75,7 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
 
   // 设置知识库根目录
   async function setRoot(path: string): Promise<boolean> {
-    const res = await fetch('/api/kb/root/set', {
+    const res = await apiFetch('/api/kb/root/set', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ path })
@@ -94,7 +95,7 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
     }
     loading.value = true
     try {
-      const res = await fetch('/api/kb/tree')
+      const res = await apiFetch('/api/kb/tree')
       if (!res.ok) {
         tree.value = []
         return
@@ -111,7 +112,7 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
 
   // 读取文件
   async function readFile(path: string): Promise<KbFile> {
-    const res = await fetch(`/api/kb/file?path=${encodeURIComponent(path)}`)
+    const res = await apiFetch(`/api/kb/file?path=${encodeURIComponent(path)}`)
     if (!res.ok) {
       const err = await res.json().catch(() => ({}))
       throw new Error(err.detail || '读取文件失败')
@@ -121,7 +122,7 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
 
   // 保存文件
   async function saveFile(path: string, content: string): Promise<void> {
-    const res = await fetch('/api/kb/file/save', {
+    const res = await apiFetch('/api/kb/file/save', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ path, content })
@@ -134,7 +135,7 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
 
   // 新建笔记或文件夹
   async function createEntry(parent: string, name: string, type: 'file' | 'dir'): Promise<string> {
-    const res = await fetch('/api/kb/create', {
+    const res = await apiFetch('/api/kb/create', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ parent, name, type })
@@ -149,7 +150,7 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
 
   // 删除文件或文件夹
   async function deleteEntry(path: string): Promise<void> {
-    const res = await fetch('/api/kb/delete', {
+    const res = await apiFetch('/api/kb/delete', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ path })

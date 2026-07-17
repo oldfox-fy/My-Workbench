@@ -147,6 +147,55 @@ async def lifespan(app: FastAPI):
 # ============ FastAPI App 构建 ============
 app = FastAPI(lifespan=lifespan)
 
+# ── 用户上下文中间件：认证 + KB 路径注入 ──
+@app.middleware("http")
+async def user_context_middleware(request: Request, call_next):
+    """对 /api/* 路由（除 auth 外）进行 token 校验，并注入用户上下文变量"""
+    path = request.url.path
+
+    # 公开路由（无需登录）
+    public_prefixes = ("/api/auth/", "/api/wait-ready", "/files/", "/app/", "/ws/")
+    is_public = any(path.startswith(p) for p in public_prefixes)
+
+    if path.startswith("/api/") and not is_public:
+        auth_header = request.headers.get("Authorization", "")
+        token = None
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:]
+
+        if not token:
+            from fastapi.responses import JSONResponse
+            return JSONResponse(status_code=401, content={"detail": "请先登录"})
+
+        try:
+            from backend.auth import validate_token
+            user = await validate_token(token)
+        except Exception:
+            from fastapi.responses import JSONResponse
+            return JSONResponse(status_code=500, content={"detail": "认证服务异常"})
+
+        if not user:
+            from fastapi.responses import JSONResponse
+            return JSONResponse(status_code=401, content={"detail": "登录已过期，请重新登录"})
+
+        if user.get("status") == "disabled":
+            from fastapi.responses import JSONResponse
+            return JSONResponse(status_code=403, content={"detail": "账号已被禁用"})
+
+        request.state.user = user
+        request.state.token = token
+
+        # 注入用户 KB / Workspace 路径到 context var
+        try:
+            from backend import _user_kb_path, _user_workspace_path
+            _user_kb_path.set(user.get("kb_path", ""))
+            _user_workspace_path.set(user.get("workspace_path", "") or backend.workspace_path)
+        except Exception:
+            pass
+
+    response = await call_next(request)
+    return response
+
 # 注册API路由（必须在mount静态文件之前）
 register_all_routers(app)
 
@@ -225,7 +274,7 @@ if IS_FROZEN:
     DEBUG_MODE = False
 else:
     SERVER_PORT = 8080
-    FRONTEND_URL = "http://localhost:5173"
+    FRONTEND_URL = "http://localhost:5175"
     DEBUG_MODE = True
 
 def is_port_open(host: str, port: int, timeout: float = 0.5) -> bool:

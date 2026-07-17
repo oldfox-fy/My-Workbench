@@ -92,8 +92,8 @@
 
             <n-space align="center" :size="8">
               <n-text depth="3" style="font-size: 0.8rem">当前身份：</n-text>
-              <n-tag :type="skillStore.userRole === 'admin' ? 'success' : 'default'" size="small">
-                {{ skillStore.userRole === 'admin' ? '管理员' : '普通用户' }}
+              <n-tag :type="authStore.isAdmin ? 'success' : 'default'" size="small">
+                {{ authStore.isAdmin ? '管理员' : '普通用户' }}
               </n-tag>
             </n-space>
 
@@ -239,14 +239,6 @@
                 <n-button text @click="selectFolder">选择目录</n-button>
               </n-flex>
             </n-form-item>
-            <n-form-item label="当前身份">
-              <n-flex align="center">
-                <n-radio-group :value="skillStore.userRole" @update-value="onChangeUserRole">
-                  <n-radio value="admin">管理员</n-radio>
-                  <n-radio value="user">普通用户</n-radio>
-                </n-radio-group>
-              </n-flex>
-            </n-form-item>
             <n-form-item label=" " :show-feedback="false">
               <n-text depth="3" style="font-size: 0.72rem">
                 管理员可创建/编辑「可执行代码技能」；普通用户仅能使用与创建「提示词技能」。
@@ -313,6 +305,80 @@
             </div>
           </div>
         </n-tab-pane>
+
+        <!-- ── 个人信息 ── -->
+        <n-tab-pane name="profile" tab="个人信息">
+          <n-space vertical size="large">
+            <n-card title="账号信息" size="small">
+              <n-descriptions label-placement="left" :column="2">
+                <n-descriptions-item label="用户名">{{ authStore.user?.username }}</n-descriptions-item>
+                <n-descriptions-item label="身份">
+                  <n-tag :type="authStore.isAdmin ? 'success' : 'default'" size="small">
+                    {{ authStore.isAdmin ? '管理员' : '普通用户' }}
+                  </n-tag>
+                </n-descriptions-item>
+                <n-descriptions-item label="账号状态">
+                  <n-tag :type="authStore.user?.status === 'active' ? 'success' : 'warning'" size="small">
+                    {{ authStore.user?.status === 'active' ? '正常' : authStore.user?.status === 'pending' ? '待审批' : '已禁用' }}
+                  </n-tag>
+                </n-descriptions-item>
+              </n-descriptions>
+            </n-card>
+
+            <n-card title="修改密码" size="small">
+              <n-form :model="passwordForm" label-placement="left" label-width="100">
+                <n-form-item label="旧密码">
+                  <n-input v-model:value="passwordForm.oldPassword" type="password" show-password-on="click" />
+                </n-form-item>
+                <n-form-item label="新密码">
+                  <n-input v-model:value="passwordForm.newPassword" type="password" show-password-on="click" />
+                </n-form-item>
+                <n-form-item label="确认新密码">
+                  <n-input v-model:value="passwordForm.confirmPassword" type="password" show-password-on="click" />
+                </n-form-item>
+                <n-button type="primary" :loading="changingPassword" @click="handleChangePassword">
+                  修改密码
+                </n-button>
+              </n-form>
+            </n-card>
+          </n-space>
+        </n-tab-pane>
+
+        <!-- ── 用户管理（仅管理员可见）── -->
+        <n-tab-pane v-if="authStore.isAdmin" name="userManagement" tab="用户管理">
+          <n-space vertical size="large">
+            <!-- 操作日志 -->
+            <n-card title="操作日志" size="small">
+              <template #header-extra>
+                <n-button size="small" @click="loadAuditLogs">刷新</n-button>
+              </template>
+              <n-data-table
+                :columns="auditLogColumns"
+                :data="authStore.auditLogs"
+                :max-height="200"
+                size="small"
+                :bordered="false"
+              />
+            </n-card>
+
+            <!-- 用户列表 -->
+            <n-card title="用户列表" size="small">
+              <template #header-extra>
+                <n-badge :value="authStore.pendingCount" :max="99" v-if="authStore.pendingCount > 0">
+                  <n-tag type="warning" size="small">待审批: {{ authStore.pendingCount }}</n-tag>
+                </n-badge>
+                <n-button size="small" @click="loadUsers" style="margin-left:8px">刷新</n-button>
+              </template>
+              <n-data-table
+                :columns="userColumns"
+                :data="authStore.users"
+                :max-height="400"
+                size="small"
+              />
+            </n-card>
+          </n-space>
+        </n-tab-pane>
+
       </n-tabs>
       <div style="font-size:.6rem;color:#666;width:100%;text-align:center;position: absolute;left:0;right:10px;bottom: 6px">版本：{{ version }}</div>
     </n-drawer-content>
@@ -661,19 +727,22 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, watch, onMounted, computed } from 'vue'
+import { ref, reactive, watch, onMounted, computed, h } from 'vue'
 import {
   NDrawer, NDrawerContent, NForm, NFormItem, NInput, NPopover, NFlex,
   NRadioGroup, NRadio, NSwitch, NButton, NSpace, NDivider, NIcon,
   NTabs, NTabPane, NList, NListItem, NPopconfirm, NTag, NAlert,
   NModal, NSelect, NCheckboxGroup, NCheckbox, NText, useMessage, useDialog, NSlider,
-  NInputNumber, NCollapseItem, NCollapse, NGrid, NGi, NCard, NPagination, NColorPicker
+  NInputNumber, NCollapseItem, NCollapse, NGrid, NGi, NCard, NPagination, NColorPicker,
+  NDataTable, NBadge, NDescriptions, NDescriptionsItem,
 } from 'naive-ui'
 import { useChatStore } from '@/stores/chat'
 import { useConfigStore, MODEL_ROLES, type ModelConfig } from '@/stores/config'
 import { useProfileStore, VIRTUAL_PROFILE_ID, type Profile } from '@/stores/profiles'
 import { useMcpStore, type MCPServer } from '@/stores/mcp'
 import { useSkillStore, type Skill, type SkillType } from '@/stores/skills'
+import { useAuthStore } from '@/stores/auth'
+import { apiFetch } from '@/api/client'
 import mSvg from '@/components/mSvg.vue'
 import KbSettingsPanel from '@/components/kb/KbSettingsPanel.vue'
 
@@ -688,7 +757,134 @@ const configStore = useConfigStore()
 const profileStore = useProfileStore()
 const mcpStore = useMcpStore()
 const skillStore = useSkillStore()
+const authStore = useAuthStore()
 const version = ref(import.meta.env.VITE_APP_VERSION)
+
+// ── 个人信息：密码修改 ──
+const changingPassword = ref(false)
+const passwordForm = reactive({
+  oldPassword: '',
+  newPassword: '',
+  confirmPassword: '',
+})
+
+async function handleChangePassword() {
+  if (!passwordForm.oldPassword || !passwordForm.newPassword || !passwordForm.confirmPassword) {
+    message.warning('请填写完整的密码信息')
+    return
+  }
+  if (passwordForm.newPassword !== passwordForm.confirmPassword) {
+    message.warning('两次输入的新密码不一致')
+    return
+  }
+  if (passwordForm.newPassword.length < 6) {
+    message.warning('新密码至少 6 位')
+    return
+  }
+  changingPassword.value = true
+  try {
+    await authStore.changePassword(passwordForm.oldPassword, passwordForm.newPassword)
+    message.success('密码修改成功，下次登录时请使用新密码')
+    passwordForm.oldPassword = ''
+    passwordForm.newPassword = ''
+    passwordForm.confirmPassword = ''
+  } catch (err: any) {
+    message.error(err.message || '修改失败')
+  } finally {
+    changingPassword.value = false
+  }
+}
+
+// ── 用户管理：数据表列定义 ──
+const userColumns = [
+  { title: '用户名', key: 'username', width: 120 },
+  {
+    title: '角色', key: 'role', width: 80,
+    render(row: any) { return row.role === 'admin' ? '管理员' : '普通用户' },
+  },
+  {
+    title: '状态', key: 'status', width: 80,
+    render(row: any) {
+      const labels: Record<string, string> = { active: '正常', pending: '待审批', disabled: '已禁用' }
+      const types: Record<string, string> = { active: 'success', pending: 'warning', disabled: 'error' }
+      return h(NTag, { type: (types[row.status] || 'default') as any, size: 'small' }, () => labels[row.status] || row.status)
+    },
+  },
+  { title: '注册时间', key: 'created_at', width: 160, render(row: any) { return row.created_at?.split('T')[0] || '' } },
+  {
+    title: '操作', key: 'actions', width: 240,
+    render(row: any) {
+      if (row.id === authStore.user?.id) return h('span', { style: { color: 'var(--text-disabled)' } }, '当前用户')
+      const children: any[] = []
+      if (row.status === 'pending') {
+        children.push(h(NButton, { size: 'tiny', type: 'success', onClick: () => handleApprove(row.id) }, () => '通过'))
+      }
+      if (row.status === 'active') {
+        children.push(h(NButton, { size: 'tiny', type: 'warning', onClick: () => handleDisable(row.id) }, () => '禁用'))
+      }
+      if (row.status === 'disabled') {
+        children.push(h(NButton, { size: 'tiny', type: 'primary', onClick: () => handleEnable(row.id) }, () => '启用'))
+      }
+      children.push(
+        h(NPopconfirm, { onPositiveClick: () => handleResetPwd(row.id) }, {
+          trigger: () => h(NButton, { size: 'tiny' }, () => '重置密码'),
+          default: () => '确认重置该用户密码？',
+        })
+      )
+      children.push(
+        h(NPopconfirm, { onPositiveClick: () => handleDeleteUser(row.id) }, {
+          trigger: () => h(NButton, { size: 'tiny', type: 'error' }, () => '删除'),
+          default: () => '确认删除该用户？此操作不可撤销。',
+        })
+      )
+      return h(NSpace, { size: 'small' }, () => children)
+    },
+  },
+]
+
+const auditLogColumns = [
+  { title: '时间', key: 'created_at', width: 150, render(row: any) { return row.created_at?.replace('T', ' ').substring(0, 19) || '' } },
+  { title: '用户', key: 'username', width: 100 },
+  {
+    title: '操作', key: 'action', width: 100,
+    render(row: any) {
+      const labels: Record<string, string> = {
+        login: '登录', login_failed: '登录失败', logout: '登出', register: '注册',
+        approve_user: '审批通过', disable_user: '禁用用户', enable_user: '启用用户',
+        delete_user: '删除用户', reset_password: '重置密码', change_password: '修改密码',
+      }
+      return labels[row.action] || row.action
+    },
+  },
+  { title: '目标', key: 'target', width: 100 },
+  { title: '详情', key: 'detail', width: 140 },
+]
+
+// ── 用户管理操作 ──
+async function loadUsers() {
+  try { await authStore.loadUsers() } catch (err: any) { message.error(err.message || '加载失败') }
+}
+async function loadAuditLogs() {
+  try { await authStore.loadAuditLogs() } catch (err: any) { message.error(err.message || '加载失败') }
+}
+async function handleApprove(id: number) {
+  try { await authStore.approveUser(id); message.success('已通过审批') } catch (err: any) { message.error(err.message || '操作失败') }
+}
+async function handleDisable(id: number) {
+  try { await authStore.disableUser(id); message.success('已禁用') } catch (err: any) { message.error(err.message || '操作失败') }
+}
+async function handleEnable(id: number) {
+  try { await authStore.enableUser(id); message.success('已启用') } catch (err: any) { message.error(err.message || '操作失败') }
+}
+async function handleDeleteUser(id: number) {
+  try { await authStore.deleteUser(id); message.success('已删除') } catch (err: any) { message.error(err.message || '操作失败') }
+}
+async function handleResetPwd(id: number) {
+  try {
+    await authStore.resetUserPassword(id, '123456')
+    message.success('密码已重置为 123456')
+  } catch (err: any) { message.error(err.message || '操作失败') }
+}
 
 // ── 模型角色辅助函数 ──
 function roleLabel(role: string): string {
@@ -772,7 +968,12 @@ watch(() => props.show, (val) => {
     mcpPage.value = 1
     mcpStore.loadServers()
     skillStore.loadSkills()
-    skillStore.loadUserRole()
+    // 管理员：自动加载用户列表和审计日志
+    if (authStore.isAdmin) {
+      authStore.loadUsers()
+      authStore.fetchPendingCount()
+      authStore.loadAuditLogs()
+    }
   }
 })
 
@@ -833,7 +1034,7 @@ async function fetchModels() {
   }
   modelsLoading.value = true
   try {
-    const res = await fetch('/api/model', {
+    const res = await apiFetch('/api/model', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -913,7 +1114,7 @@ async function selectFolder() {
 
 async function getWorkspace() {
   try {
-    const res = await fetch('/api/workspace')
+    const res = await apiFetch('/api/workspace')
     const data = await res.json()
     if (data.path) {
       workspacePath.value = data.path
@@ -925,7 +1126,7 @@ async function getWorkspace() {
 }
 
 async function saveWorkspace(path: string, isMsg: boolean = true) {
-  await fetch('/api/workspace/set', {
+  await apiFetch('/api/workspace/set', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ path })
@@ -1038,7 +1239,7 @@ const allTools = ref<{ function: { name: string; title: string; description: str
 // 加载全局工具列表
 async function loadTools() {
   try {
-    const res = await fetch('/api/tools')
+    const res = await apiFetch('/api/tools')
     const data = await res.json()
     allTools.value = data.tools || []
   } catch (e) {
@@ -1153,34 +1354,7 @@ async function deleteCurrentProfile() {
   }
 }
 
-// ---------- 身份切换 ----------
-async function onChangeUserRole(role: 'admin' | 'user') {
-  try {
-    await skillStore.setUserRole(role)
-    // 切换到普通用户时，若当前选中全能助手 → 回退到第一个真实角色
-    if (role === 'user' && profileStore.activeProfileId === VIRTUAL_PROFILE_ID) {
-      const firstReal = profileStore.profiles.find(p => p.id !== VIRTUAL_PROFILE_ID)
-      profileStore.activeProfileId = firstReal?.id ?? null
-      if (profileStore.activeProfileId != null) {
-        localStorage.setItem('activeProfileId', String(profileStore.activeProfileId))
-      } else {
-        localStorage.removeItem('activeProfileId')
-      }
-    }
-    // 切换到管理员时，若无选中角色 → 默认选全能助手
-    if (role === 'admin' && (!profileStore.activeProfileId || !profileStore.profiles.find(p => p.id === profileStore.activeProfileId))) {
-      profileStore.activeProfileId = profileStore.profiles[0]?.id ?? null
-      if (profileStore.activeProfileId != null) {
-        localStorage.setItem('activeProfileId', String(profileStore.activeProfileId))
-      }
-    }
-    // 重新加载角色列表以同步全能助手的可见性
-    await profileStore.loadProfiles()
-    message.success(role === 'admin' ? '已切换为管理员' : '已切换为普通用户')
-  } catch (e: any) {
-    message.error(e.message || '切换失败')
-  }
-}
+// 身份管理已由 authStore 接管，不再提供本地切换功能
 
 // ---------- 技能管理 ----------
 const skillModalVisible = ref(false)

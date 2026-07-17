@@ -1,6 +1,8 @@
 // frontend/src/api/knowledge.ts
 // 知识库 RAG 相关接口封装（embedding/reranker 配置、索引管理、语义搜索）
 
+import { apiFetch } from '@/api/client'
+
 export interface EmbeddingConfig {
   provider: 'ollama' | 'openai'
   base_url: string
@@ -32,7 +34,7 @@ export interface RerankerTestResult {
 }
 
 export async function getRerankerConfig(): Promise<RerankerConfig> {
-  const res = await fetch('/api/kb/reranker/config')
+  const res = await apiFetch('/api/kb/reranker/config')
   if (!res.ok) throw new Error('获取 reranker 配置失败')
   return res.json()
 }
@@ -40,7 +42,7 @@ export async function getRerankerConfig(): Promise<RerankerConfig> {
 export async function saveRerankerConfig(
   cfg: Partial<RerankerConfig>
 ): Promise<RerankerConfig> {
-  const res = await fetch('/api/kb/reranker/config', {
+  const res = await apiFetch('/api/kb/reranker/config', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(cfg),
@@ -56,7 +58,7 @@ export async function saveRerankerConfig(
 export async function testRerankerConfig(
   cfg: Partial<RerankerConfig>
 ): Promise<RerankerTestResult> {
-  const res = await fetch('/api/kb/reranker/test', {
+  const res = await apiFetch('/api/kb/reranker/test', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(cfg),
@@ -71,7 +73,7 @@ export async function testRerankerConfig(
 // ---------- embedding 配置（M1） ----------
 
 export async function getEmbeddingConfig(): Promise<EmbeddingConfig> {
-  const res = await fetch('/api/kb/embedding/config')
+  const res = await apiFetch('/api/kb/embedding/config')
   if (!res.ok) throw new Error('获取 embedding 配置失败')
   return res.json()
 }
@@ -79,7 +81,7 @@ export async function getEmbeddingConfig(): Promise<EmbeddingConfig> {
 export async function saveEmbeddingConfig(
   cfg: Partial<EmbeddingConfig>
 ): Promise<EmbeddingConfig> {
-  const res = await fetch('/api/kb/embedding/config', {
+  const res = await apiFetch('/api/kb/embedding/config', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(cfg),
@@ -95,7 +97,7 @@ export async function saveEmbeddingConfig(
 export async function testEmbeddingConfig(
   cfg: Partial<EmbeddingConfig>
 ): Promise<EmbeddingTestResult> {
-  const res = await fetch('/api/kb/embedding/test', {
+  const res = await apiFetch('/api/kb/embedding/test', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(cfg),
@@ -133,13 +135,13 @@ export interface SearchHit {
 }
 
 export async function getIndexStatus(): Promise<IndexStatus> {
-  const res = await fetch('/api/kb/index/status')
+  const res = await apiFetch('/api/kb/index/status')
   if (!res.ok) throw new Error('获取索引状态失败')
   return res.json()
 }
 
 export async function rebuildIndex(full: boolean): Promise<{ status: string }> {
-  const res = await fetch('/api/kb/index/rebuild', {
+  const res = await apiFetch('/api/kb/index/rebuild', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ full }),
@@ -152,7 +154,7 @@ export async function rebuildIndex(full: boolean): Promise<{ status: string }> {
 }
 
 export async function kbSearch(query: string, topK = 8, useRerank = false): Promise<SearchHit[]> {
-  const res = await fetch('/api/kb/search', {
+  const res = await apiFetch('/api/kb/search', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ query, top_k: topK, use_rerank: useRerank }),
@@ -212,7 +214,7 @@ export async function getGraph(
   }
   if (files.length) params.set('files', files.join(','))
   if (keyword) params.set('keyword', keyword)
-  const res = await fetch(`/api/kb/graph?${params}`)
+  const res = await apiFetch(`/api/kb/graph?${params}`)
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))
     throw new Error(err.detail || '构建图谱失败')
@@ -221,14 +223,14 @@ export async function getGraph(
 }
 
 export async function getBacklinks(path: string): Promise<Backlink[]> {
-  const res = await fetch(`/api/kb/backlinks?path=${encodeURIComponent(path)}`)
+  const res = await apiFetch(`/api/kb/backlinks?path=${encodeURIComponent(path)}`)
   if (!res.ok) return []
   const data = await res.json()
   return data.backlinks || []
 }
 
 export async function getNoteNames(): Promise<string[]> {
-  const res = await fetch('/api/kb/notes')
+  const res = await apiFetch('/api/kb/notes')
   if (!res.ok) return []
   const data = await res.json()
   return data.notes || []
@@ -244,7 +246,7 @@ export interface Sidecar {
 }
 
 export async function getSidecar(path: string): Promise<Sidecar> {
-  const res = await fetch(`/api/kb/sidecar?path=${encodeURIComponent(path)}`)
+  const res = await apiFetch(`/api/kb/sidecar?path=${encodeURIComponent(path)}`)
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))
     throw new Error(err.detail || '读取附注失败')
@@ -253,7 +255,7 @@ export async function getSidecar(path: string): Promise<Sidecar> {
 }
 
 export async function saveSidecar(path: string, content: string): Promise<Sidecar> {
-  const res = await fetch('/api/kb/sidecar/save', {
+  const res = await apiFetch('/api/kb/sidecar/save', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ path, content }),

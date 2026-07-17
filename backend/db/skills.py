@@ -36,14 +36,23 @@ def _loads(raw: Optional[str], default):
         return default
 
 
-async def list_skills(only_enabled: bool = False) -> List[Dict[str, Any]]:
+async def list_skills(only_enabled: bool = False, user_id: int = None) -> List[Dict[str, Any]]:
+    """列出技能。若提供 user_id，则返回该用户的技能 + 系统级技能（user_id IS NULL）。"""
     db = await get_db()
     try:
-        sql = "SELECT * FROM skills"
-        if only_enabled:
-            sql += " WHERE enabled = 1"
-        sql += " ORDER BY id"
-        cursor = await db.execute(sql)
+        if user_id is not None:
+            if only_enabled:
+                sql = "SELECT * FROM skills WHERE enabled = 1 AND (user_id = ? OR user_id IS NULL) ORDER BY id"
+                cursor = await db.execute(sql, (user_id,))
+            else:
+                sql = "SELECT * FROM skills WHERE user_id = ? OR user_id IS NULL ORDER BY id"
+                cursor = await db.execute(sql, (user_id,))
+        else:
+            sql = "SELECT * FROM skills"
+            if only_enabled:
+                sql += " WHERE enabled = 1"
+            sql += " ORDER BY id"
+            cursor = await db.execute(sql)
         rows = await cursor.fetchall()
         return [_row_to_skill(r) for r in rows]
     finally:
@@ -75,14 +84,15 @@ async def create_skill(data: Dict[str, Any]) -> Dict[str, Any]:
     try:
         cursor = await db.execute(
             """INSERT INTO skills
-               (name, title, description, skill_type, enabled, instruction, tools, code, parameters, isolated)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               (name, title, description, skill_type, enabled, instruction, tools, code, parameters, isolated, user_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 data["name"], data["title"], data.get("description", ""),
                 data.get("skill_type", "prompt"), 1 if data.get("enabled", True) else 0,
                 data.get("instruction", ""), json.dumps(data.get("tools", []), ensure_ascii=False),
                 data.get("code", ""), json.dumps(data.get("parameters", {}), ensure_ascii=False),
                 1 if data.get("isolated", False) else 0,
+                data.get("user_id"),
             ),
         )
         await db.commit()

@@ -1,17 +1,18 @@
 // frontend/src/api/models.ts
 
 import { ModelConfig } from '@/stores/config'
+import { apiFetch } from '@/api/client'
 
 const API_BASE = '/api/models'
 
 export async function getModels(): Promise<ModelConfig[]> {
-  const res = await fetch(API_BASE)
+  const res = await apiFetch(API_BASE)
   if (!res.ok) throw new Error('Failed to fetch models')
   return res.json()
 }
 
 export async function createModel(model: Omit<ModelConfig, 'id'>): Promise<ModelConfig> {
-  const res = await fetch(API_BASE, {
+  const res = await apiFetch(API_BASE, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(model),
@@ -21,7 +22,7 @@ export async function createModel(model: Omit<ModelConfig, 'id'>): Promise<Model
 }
 
 export async function updateModel(id: string, updates: Partial<Omit<ModelConfig, 'id'>>): Promise<void> {
-  const res = await fetch(`${API_BASE}/${id}`, {
+  const res = await apiFetch(`${API_BASE}/${id}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(updates),
@@ -30,6 +31,6 @@ export async function updateModel(id: string, updates: Partial<Omit<ModelConfig,
 }
 
 export async function deleteModel(id: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/${id}`, { method: 'DELETE' })
+  const res = await apiFetch(`${API_BASE}/${id}`, { method: 'DELETE' })
   if (!res.ok) throw new Error('Failed to delete model')
 }

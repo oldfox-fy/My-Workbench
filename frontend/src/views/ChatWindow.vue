@@ -107,6 +107,20 @@
               更新可用
             </n-button>
           </div>
+
+          <!-- 5. 用户信息 -->
+          <div class="sidebar-user-section">
+            <div class="sidebar-user-info">
+              <n-tag :type="authStore.isAdmin ? 'success' : 'default'" size="small">
+                {{ authStore.isAdmin ? '管理员' : '用户' }}
+              </n-tag>
+              <span class="sidebar-username">{{ authStore.user?.username }}</span>
+            </div>
+            <n-button text size="small" @click="handleLogout">
+              <template #icon><n-icon><LogOutOutline /></n-icon></template>
+              退出
+            </n-button>
+          </div>
         </div>
       </aside>
     </Transition>
@@ -336,13 +350,15 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { NButton, NInput, NList, NListItem, NIcon, NScrollbar, NFlex, NSelect, NModal, NPopconfirm, NPopover, NQrCode } from 'naive-ui'
+import { NButton, NInput, NList, NListItem, NIcon, NScrollbar, NFlex, NSelect, NModal, NPopconfirm, NPopover, NQrCode, NTag } from 'naive-ui'
 import type { UploadFileInfo } from 'naive-ui'
-import { SettingsOutline, DocumentOutline, MenuOutline, QrCodeOutline, ConstructOutline, LibraryOutline, DownloadOutline, CloudUploadOutline, BarChartOutline, CloudDownloadOutline } from '@vicons/ionicons5'
+import { SettingsOutline, DocumentOutline, MenuOutline, QrCodeOutline, ConstructOutline, LibraryOutline, DownloadOutline, CloudUploadOutline, BarChartOutline, CloudDownloadOutline, LogOutOutline } from '@vicons/ionicons5'
 import { useChatStore, type Message } from '@/stores/chat'
 import { useConfigStore, fileConfig } from '@/stores/config'
 import { useProfileStore, VIRTUAL_PROFILE_ID } from '@/stores/profiles'
 import { useSkillStore } from '@/stores/skills'
+import { useAuthStore } from '@/stores/auth'
+import { apiFetch } from '@/api/client'
 import { useToolStore } from '@/stores/tools'
 import { useKnowledgeStore } from '@/stores/knowledge'
 import SettingsDrawer from '@/components/SettingsDrawer.vue'
@@ -586,7 +602,7 @@ const updateUrl = ref('')
 // 自动更新检查
 onMounted(async () => {
   try {
-    const resp = await fetch('/api/check-update')
+    const resp = await apiFetch('/api/check-update')
     const data = await resp.json()
     if (data.has_update) {
       hasUpdate.value = true
@@ -600,6 +616,7 @@ function openUpdateUrl() {
 }
 
 const skillStore = useSkillStore()
+const authStore = useAuthStore()
 
 const profileOptions = computed(() =>
   profileStore.profiles
@@ -649,7 +666,7 @@ async function exportChat(chatId: string, title: string) {
 // 对话分叉
 async function handleBranch(msg: any) {
   try {
-    const resp = await fetch(`/api/chats/${chatStore.activeChatId}/branch?message_id=${msg.id}`, { method: 'POST' })
+    const resp = await apiFetch(`/api/chats/${chatStore.activeChatId}/branch?message_id=${msg.id}`, { method: 'POST' })
     if (!resp.ok) throw new Error('分叉失败')
     const data = await resp.json()
     await chatStore.loadChats()
@@ -670,7 +687,7 @@ async function importChat() {
     try {
       const text = await file.text()
       const data = JSON.parse(text)
-      const resp = await fetch('/api/chats/import', {
+      const resp = await apiFetch('/api/chats/import', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ data }),
@@ -758,7 +775,7 @@ onMounted(async () => {
   })
   window.addEventListener('keydown', onKeydown)
   await profileStore.loadProfiles()
-  fetch('/api/system-info').then(async (res) => {
+  apiFetch('/api/system-info').then(async (res) => {
     const data = await res.json()
     localIP.value = data.local_ip
     uploadDir.value = data.upload_dir
@@ -771,6 +788,14 @@ onUnmounted(() => {
   window.removeEventListener('resize', checkMobile)
   window.removeEventListener('keydown', onKeydown)
 })
+
+// ── 登出 ──
+async function handleLogout() {
+  try {
+    await authStore.logout()
+    router.push('/login')
+  } catch { /* ignore */ }
+}
 </script>
 
 <style scoped>
@@ -933,6 +958,29 @@ onUnmounted(() => {
   align-items: flex-start;
   gap: 4px;
   padding: 0 8px 12px;
+}
+
+/* ========== 侧边栏用户信息 ========== */
+.sidebar-user-section {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border-color);
+  gap: 8px;
+}
+
+.sidebar-user-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sidebar-username {
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--text-primary);
 }
 
 /* ========== 工作区 ========== */

@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
+import { apiFetch } from '@/api/client'
 
 export interface Message {
   id?: number
@@ -22,7 +23,7 @@ export const useChatStore = defineStore('chat', () => {
   // 从后端加载对话列表
   async function loadChats() {
     try {
-      const res = await fetch('/api/chats/')
+      const res = await apiFetch('/api/chats/')
       const data = await res.json()
       chats.value = data.map((c: any) => ({ id: c.id, title: c.title, messages: [] }))
     } catch (e) {
@@ -36,7 +37,7 @@ export const useChatStore = defineStore('chat', () => {
 
   // 创建新对话
   async function addChat() {
-    const res = await fetch('/api/chats/', { method: 'POST' })
+    const res = await apiFetch('/api/chats/', { method: 'POST' })
     const newChat = await res.json()
     newChat.messages = []
     chats.value.unshift(newChat)
@@ -51,7 +52,7 @@ export const useChatStore = defineStore('chat', () => {
     // 本地更新
     chat.title = newTitle
     // 调用后端 PATCH API
-    await fetch(`/api/chats/${chatId}`, {
+    await apiFetch(`/api/chats/${chatId}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ title: newTitle })
@@ -60,7 +61,7 @@ export const useChatStore = defineStore('chat', () => {
 
   // 删除对话
   async function deleteChat(chatId: string) {
-    await fetch(`/api/chats/${chatId}`, { method: 'DELETE' })
+    await apiFetch(`/api/chats/${chatId}`, { method: 'DELETE' })
     chats.value = chats.value.filter(c => c.id !== chatId)
     if (activeChatId.value === chatId && chats.value.length > 0) {
       activeChatId.value = chats.value[0].id
@@ -77,7 +78,7 @@ export const useChatStore = defineStore('chat', () => {
     }
     const chat = chats.value.find(c => c.id === chatId)
     if (!chat) return
-    const res = await fetch(`/api/chats/${chatId}/messages`)
+    const res = await apiFetch(`/api/chats/${chatId}/messages`)
     const msgs = await res.json()
     
     chat.messages = msgs    
@@ -108,7 +109,7 @@ export const useChatStore = defineStore('chat', () => {
     if (msg.role === 'user' && chat.messages.filter(m => m.role === 'user').length === 1) {
       chat.title = msg.content.substring(0, 15) + (msg.content.length > 15 ? '...' : '')
       // 可选：告知后端更新标题（异步，不阻塞）
-      fetch(`/api/chats/${chat.id}`, {
+      apiFetch(`/api/chats/${chat.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ title: chat.title })
@@ -119,7 +120,7 @@ export const useChatStore = defineStore('chat', () => {
   // ---------- 新增：异步保存到后端 ----------
   async function saveMessageToBackend(msg: Message) {
     if (!activeChatId.value) return
-    const res = await fetch(`/api/chats/${activeChatId.value}/messages`, {
+    const res = await apiFetch(`/api/chats/${activeChatId.value}/messages`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ 
@@ -160,7 +161,7 @@ export const useChatStore = defineStore('chat', () => {
     const msg = chat.messages.find(m => m.id === messageId)
     if (msg) {
       msg.content = newContent
-      await fetch(`/api/chats/${activeChatId.value}/messages/${messageId}`, {
+      await apiFetch(`/api/chats/${activeChatId.value}/messages/${messageId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ role: msg.role, content: newContent })
@@ -173,7 +174,7 @@ export const useChatStore = defineStore('chat', () => {
     if (!activeChatId.value) return
 
     // 1. 先尝试删除主消息
-    const msgRes = await fetch(`/api/chats/${activeChatId.value}/messages/${messageId}?cascade=false`, {
+    const msgRes = await apiFetch(`/api/chats/${activeChatId.value}/messages/${messageId}?cascade=false`, {
       method: 'DELETE'
     }).catch(e => {
       console.warn('删除消息请求失败', e)
@@ -188,7 +189,7 @@ export const useChatStore = defineStore('chat', () => {
     }
 
     // 3. 主消息删除成功后，再删除关联的工具调用记录
-    await fetch(`/api/tool-calls/message/${messageId}`, {
+    await apiFetch(`/api/tool-calls/message/${messageId}`, {
       method: 'DELETE'
     }).catch(e => console.warn('删除关联工具调用记录失败', e))
 

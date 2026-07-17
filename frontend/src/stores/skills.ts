@@ -1,5 +1,7 @@
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
+import { useAuthStore } from '@/stores/auth'
+import { apiFetch } from '@/api/client'
 
 export type SkillType = 'prompt' | 'code'
 
@@ -22,14 +24,22 @@ export type SkillPayload = Omit<Skill, 'id'>
 export const useSkillStore = defineStore('skill', () => {
   const skills = ref<Skill[]>([])
   const loading = ref(false)
-  const userRole = ref<'admin' | 'user'>('admin')
 
-  const isAdmin = () => userRole.value === 'admin'
+  /** 当前用户身份（由 authStore 提供） */
+  const userRole = computed<'admin' | 'user'>(() => {
+    const auth = useAuthStore()
+    return auth.user?.role === 'admin' ? 'admin' : 'user'
+  })
+
+  const isAdmin = () => {
+    const auth = useAuthStore()
+    return auth.isAdmin
+  }
 
   async function loadSkills() {
     loading.value = true
     try {
-      const res = await fetch('/api/skills')
+      const res = await apiFetch('/api/skills')
       const data = await res.json()
       skills.value = data.skills || []
     } catch (e) {
@@ -39,30 +49,20 @@ export const useSkillStore = defineStore('skill', () => {
     }
   }
 
+  /** @deprecated 身份由 authStore 统一管理，保留以兼容旧代码 */
   async function loadUserRole() {
-    try {
-      const res = await fetch('/api/skills/user-role')
-      const data = await res.json()
-      userRole.value = data.role || 'admin'
-    } catch (e) {
-      console.warn('获取身份失败', e)
-    }
+    // 不再从后端获取，authStore.init() 中已处理
   }
 
-  async function setUserRole(role: 'admin' | 'user') {
-    const res = await fetch('/api/skills/user-role', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ role })
-    })
-    const data = await res.json()
-    userRole.value = data.role || role
+  /** @deprecated 身份由 authStore 统一管理，普通用户无法切换 */
+  async function setUserRole(_role: 'admin' | 'user') {
+    // 不再支持本地切换，需要通过登录系统
   }
 
   async function saveSkill(payload: SkillPayload, id?: number): Promise<Skill> {
     const url = id ? `/api/skills/${id}` : '/api/skills'
     const method = id ? 'PUT' : 'POST'
-    const res = await fetch(url, {
+    const res = await apiFetch(url, {
       method,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
@@ -74,7 +74,7 @@ export const useSkillStore = defineStore('skill', () => {
   }
 
   async function toggleSkill(id: number, enabled: boolean): Promise<void> {
-    const res = await fetch(`/api/skills/${id}/toggle`, {
+    const res = await apiFetch(`/api/skills/${id}/toggle`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ enabled })
@@ -87,7 +87,7 @@ export const useSkillStore = defineStore('skill', () => {
   }
 
   async function deleteSkill(id: number): Promise<void> {
-    const res = await fetch(`/api/skills/${id}`, { method: 'DELETE' })
+    const res = await apiFetch(`/api/skills/${id}`, { method: 'DELETE' })
     if (!res.ok) {
       const data = await res.json().catch(() => ({}))
       throw new Error(data.detail || '删除失败')
@@ -99,7 +99,7 @@ export const useSkillStore = defineStore('skill', () => {
   async function importSkillPackage(file: File, overwrite = false): Promise<Skill> {
     const form = new FormData()
     form.append('file', file)
-    const res = await fetch(`/api/skills/import?overwrite=${overwrite}`, {
+    const res = await apiFetch(`/api/skills/import?overwrite=${overwrite}`, {
       method: 'POST',
       body: form
     })

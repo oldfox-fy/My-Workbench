@@ -547,6 +547,28 @@ async def chat(
                     # 收集非标记文本用于索引
                     if chunk and not chunk.startswith("<!--"):
                         collected_text.append(chunk)
+                    # 捕获 token 用量并持久化
+                    elif chunk and chunk.startswith("<!--token_usage:"):
+                        try:
+                            import json
+                            usage_json_str = chunk.replace("<!--token_usage:", "").replace("-->", "")
+                            usage = json.loads(usage_json_str)
+                            user_id = fastapi_request.state.user.get("id") if hasattr(fastapi_request.state, "user") else None
+                            if user_id:
+                                from backend.db.token_usage import record_token_usage
+                                model_name = ""
+                                if request.llm_config:
+                                    model_name = request.llm_config.model_name or ""
+                                asyncio.create_task(record_token_usage(
+                                    user_id=user_id,
+                                    chat_id="",
+                                    model_name=model_name,
+                                    prompt_tokens=usage.get("prompt_tokens", 0) or 0,
+                                    completion_tokens=usage.get("completion_tokens", 0) or 0,
+                                    total_tokens=usage.get("total_tokens", 0) or 0,
+                                ))
+                        except Exception:
+                            pass  # token 记录失败不影响主流程
             finally:
                 # 确保 feed_task 被清理
                 if not feed_task.done():

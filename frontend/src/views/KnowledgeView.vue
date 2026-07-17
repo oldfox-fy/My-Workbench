@@ -109,6 +109,7 @@ import { useConfigStore } from '@/stores/config'
 import { useKnowledgeStore } from '@/stores/knowledge'
 import { useResizeHandle } from '@/composables/useResizeHandle'
 import { kbSearch, type SearchHit } from '@/api/knowledge'
+import { apiFetch } from '@/api/client'
 import KbTreePanel from '@/components/kb/KbTreePanel.vue'
 import KbContentPanel from '@/components/kb/KbContentPanel.vue'
 
@@ -169,7 +170,7 @@ async function runAutoTag() {
   autoTagProgress.value = { current: 0, total: 0 }
   try {
     // 启动后台任务
-    const resp = await fetch('/api/kb/tags/auto/apply', {
+    const resp = await apiFetch('/api/kb/tags/auto/apply', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ file_path: '' }),
@@ -184,7 +185,7 @@ async function runAutoTag() {
     while (!done) {
       await new Promise(r => setTimeout(r, 1000))
       try {
-        const s = await fetch('/api/kb/tags/auto/status')
+        const s = await apiFetch('/api/kb/tags/auto/status')
         const state = await s.json()
         autoTagProgress.value = { current: state.progress || 0, total: state.total || 0 }
         if (!state.running) {

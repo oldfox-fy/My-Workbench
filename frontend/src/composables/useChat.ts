@@ -3,6 +3,8 @@ import { useChatStore, type Message } from '@/stores/chat'
 import { useConfigStore } from '@/stores/config'
 import { useProfileStore, VIRTUAL_PROFILE_ID } from '@/stores/profiles'
 import { useSkillStore } from '@/stores/skills'
+import { useAuthStore } from '@/stores/auth'
+import { apiFetch } from '@/api/client'
 import { useMessage } from 'naive-ui'
 import { cleanMessages } from '@/utils/message'
 import type { UploadedFile } from '@/composables/useFileUpload'
@@ -221,7 +223,7 @@ export function useChat() {
 
       setTimeout(() => scrollToBottom(), 160)
 
-      const response = await fetch('/api/chat', {
+      const response = await apiFetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body,
@@ -317,7 +319,7 @@ export function useChat() {
 
       const body = JSON.stringify(requestBody)
 
-      const response = await fetch('/api/chat', {
+      const response = await apiFetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body,
@@ -400,7 +402,7 @@ export function useChat() {
 
       const body = JSON.stringify(requestBody)
 
-      const response = await fetch('/api/chat', {
+      const response = await apiFetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body,
@@ -411,7 +413,7 @@ export function useChat() {
 
       assistantMsg.content = fullText
       if (assistantMsg.id) {
-        fetch(`/api/chats/${chatStore.activeChatId}/messages/${assistantMsg.id}`, {
+        apiFetch(`/api/chats/${chatStore.activeChatId}/messages/${assistantMsg.id}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ role: 'assistant', content: fullText }),
@@ -427,7 +429,7 @@ export function useChat() {
         const partialContent = (streamingContent.value.trim() ? streamingContent.value.trim() + '\n\n' : '') + '[已停止]'
         assistantMsg.content = partialContent
         if (assistantMsg.id) {
-          fetch(`/api/chats/${chatStore.activeChatId}/messages/${assistantMsg.id}`, {
+          apiFetch(`/api/chats/${chatStore.activeChatId}/messages/${assistantMsg.id}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ role: 'assistant', content: partialContent }),
@@ -440,7 +442,7 @@ export function useChat() {
       const errContent = `**错误：** ${error.message}`
       assistantMsg.content = errContent
       if (assistantMsg.id) {
-        fetch(`/api/chats/${chatStore.activeChatId}/messages/${assistantMsg.id}`, {
+        apiFetch(`/api/chats/${chatStore.activeChatId}/messages/${assistantMsg.id}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ role: 'assistant', content: errContent }),
@@ -461,7 +463,9 @@ export function useChat() {
   function ensureWs(): WebSocket {
     if (!ws || ws.readyState >= WebSocket.CLOSING) {
       const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
-      ws = new WebSocket(`${protocol}//${location.host}/ws/chat`)
+      const authStore = useAuthStore()
+      const token = authStore.token || ''
+      ws = new WebSocket(`${protocol}//${location.host}/ws/chat?token=${encodeURIComponent(token)}`)
     }
     return ws
   }
