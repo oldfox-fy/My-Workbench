@@ -222,7 +222,7 @@ _INTENT_PARAMS = {
         "prompt_style": "code",
     },
     "content_create": {
-        "max_steps": 20,
+        "max_steps": 40,
         "max_tokens": 16384,
         "auto_inject_tools": ["system_generate_pptx", "system_run_command"],
         "prompt_style": "standard",

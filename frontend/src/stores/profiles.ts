@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { apiFetch } from '@/api/client'
+import { saveUserPrefs } from '@/api/userPrefs'
 
 export interface Profile {
   id: number
@@ -52,8 +53,10 @@ export const useProfileStore = defineStore('profile', () => {
     // 持久化
     if (activeProfileId.value != null) {
       localStorage.setItem('activeProfileId', String(activeProfileId.value))
+      saveUserPrefs({ activeProfileId: activeProfileId.value } as any)
     } else {
       localStorage.removeItem('activeProfileId')
+      saveUserPrefs({ activeProfileId: null } as any)
     }
   }
 
@@ -134,6 +137,7 @@ export const useProfileStore = defineStore('profile', () => {
     if (activeProfileId.value === id) {
       activeProfileId.value = profiles.value[0]?.id ?? null
       localStorage.setItem('activeProfileId', activeProfileId.value?.toString() ?? '')
+      saveUserPrefs({ activeProfileId: activeProfileId.value } as any)
     }
   }
 

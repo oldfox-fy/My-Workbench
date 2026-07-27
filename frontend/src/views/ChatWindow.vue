@@ -359,6 +359,7 @@ import { useProfileStore, VIRTUAL_PROFILE_ID } from '@/stores/profiles'
 import { useSkillStore } from '@/stores/skills'
 import { useAuthStore } from '@/stores/auth'
 import { apiFetch } from '@/api/client'
+import { saveUserPrefs } from '@/api/userPrefs'
 import { useToolStore } from '@/stores/tools'
 import { useKnowledgeStore } from '@/stores/knowledge'
 import SettingsDrawer from '@/components/SettingsDrawer.vue'
@@ -440,6 +441,7 @@ autoRead.value = localStorage.getItem('autoRead') === 'true'
 function toggleAutoRead() {
   autoRead.value = !autoRead.value
   localStorage.setItem('autoRead', String(autoRead.value))
+  saveUserPrefs({ autoRead: autoRead.value } as any)
 }
 
 function onVoiceText(text: string) {
@@ -737,6 +739,7 @@ const openChat = (chatId: string) => {
 
 watch(() => selected.value, (newVal) => {
   localStorage.setItem('thinking', newVal ? 'true' : 'false')
+  saveUserPrefs({ thinking: newVal } as any)
 })
 
 // 自动朗读：AI 回复完成后，若开启自动朗读则播放

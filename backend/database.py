@@ -362,11 +362,8 @@ async def init_db():
     await _ensure_column(db, "tool_calls", "user_id", "INTEGER DEFAULT NULL")
     await _ensure_column(db, "skills", "user_id", "INTEGER DEFAULT NULL")
 
-    # ── 为 app_settings 添加复合唯一索引（key + user_id）──
-    await db.execute("""
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_app_settings_key_user
-        ON app_settings (key, user_id)
-    """)
+    # ── 迁移 app_settings 主键：从 (key) 升级为 (key, user_id) ──
+    await _migrate_app_settings_pk(db)
 
     # ── 为 skills 添加 user_id 索引 ──
     await db.execute("""
@@ -426,6 +423,50 @@ async def _force_repair_vec() -> bool:
     finally:
         await db.commit()
         await db.close()
+
+
+async def _migrate_app_settings_pk(db):
+    """
+    将 app_settings 主键从单列 (key) 升级为复合主键 (key, user_id)，
+    以正确支持按用户隔离存储设置。
+
+    通过重建表的方式完成迁移（SQLite 不支持 ALTER TABLE 修改主键）。
+    若已是复合主键则跳过（幂等）。
+    """
+    cursor = await db.execute("PRAGMA table_info(app_settings)")
+    rows = await cursor.fetchall()
+    # row[5] > 0 表示该列是主键的一部分
+    pk_cols = [row[1] for row in rows if row[5] > 0]
+
+    if set(pk_cols) == {"key", "user_id"}:
+        return  # 已经是复合主键，跳过
+
+    logger.info("[DB] 迁移 app_settings 主键：(key) → (key, user_id) ...")
+
+    # 1. 清理上次迁移可能残留的孤儿表，然后用正确的复合主键创建新表
+    await db.execute("DROP TABLE IF EXISTS app_settings_new")
+    await db.execute("""
+        CREATE TABLE app_settings_new (
+            key TEXT NOT NULL,
+            user_id INTEGER NOT NULL DEFAULT 0,
+            value TEXT NOT NULL DEFAULT '',
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (key, user_id)
+        )
+    """)
+
+    # 2. 从旧表拷贝数据（COALESCE user_id 以处理 NULL 值）
+    await db.execute("""
+        INSERT OR IGNORE INTO app_settings_new (key, user_id, value, updated_at)
+        SELECT key, COALESCE(user_id, 0), value, updated_at
+        FROM app_settings
+    """)
+
+    # 3. 原子替换
+    await db.execute("DROP TABLE app_settings")
+    await db.execute("ALTER TABLE app_settings_new RENAME TO app_settings")
+
+    logger.info("[DB] app_settings 主键迁移完成")
 
 
 async def _backfill_null_user_ids(db):

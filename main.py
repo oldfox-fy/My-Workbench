@@ -1,6 +1,10 @@
 # main.py
-from backend.bootstrap import logger
+# 禁用 beartype 的运行时类型检查以避免 Python 3.11 兼容性问题
+# （beartype 0.22.x 在处理 key_value / fastmcp 的类型注解时会无限递归）
 import os
+os.environ.setdefault("BEARTYPE_DISABLE", "1")
+
+from backend.bootstrap import logger
 import sys
 import socket
 import time

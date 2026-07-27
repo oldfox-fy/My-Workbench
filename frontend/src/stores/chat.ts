@@ -20,6 +20,13 @@ export const useChatStore = defineStore('chat', () => {
   const activeChatId = ref<string>('')
   const enableProfile = ref(localStorage.getItem('enableProfile') === 'true')
 
+  /** 从用户偏好加载 enableProfile */
+  function applyUserPrefs(prefs: Record<string, any>) {
+    if (prefs.enableProfile !== undefined) {
+      enableProfile.value = prefs.enableProfile
+    }
+  }
+
   // 从后端加载对话列表
   async function loadChats() {
     try {
@@ -215,6 +222,7 @@ export const useChatStore = defineStore('chat', () => {
     addMessageToLocal,
     saveMessageToBackend,
     editMessage,
-    deleteMessage
+    deleteMessage,
+    applyUserPrefs,
   }
 })

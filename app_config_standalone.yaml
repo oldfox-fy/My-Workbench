@@ -1,0 +1,84 @@
+# app_config.yaml（Standalone 离线版专用配置）
+# 此文件将在打包 exe 时替换自带的 app_config.yaml。
+# 离线版特性：
+#   - 数据目录使用相对路径（跟随 exe 位置，可便携）
+#   - 工具审批默认关闭（本地单用户无需审批）
+#
+# 如需自定义，请在打包前修改此文件。
+
+# 数据存储根目录（相对路径 = exe 所在目录下的 data 文件夹）
+data_dir: "."
+
+# 子目录（相对于 data_dir）
+uploads_dir: "data/uploads"
+generate_dir: "data/generate"
+logs_dir: "logs"
+temp_dir: "temp"
+
+# 配置文件（mcp_config.json）存放路径
+mcp_config_path: "mcp_config.json"
+
+# 静态文件目录（打包时位于 _MEIPASS 内）
+static_dir: "frontend/dist"
+
+# 其他配置
+max_upload_size_mb: 100
+
+# 工具调用步数上限
+max_tool_steps: 50
+
+# 模型调用容错配置
+retry:
+  max_retries: 3
+  base_delay: 1.0
+
+# 模型降级配置
+fallback:
+  enabled: false
+  model_name: ""
+  base_url: ""
+  api_key: ""
+
+# 语音服务配置
+voice:
+  enabled: true
+  stt_model: "whisper-1"
+  tts_model: "tts-1"
+  tts_voice: "nova"
+  stt_base_url: ""
+  stt_api_key: ""
+  tts_base_url: ""
+  tts_api_key: ""
+
+# 工具审批（离线版默认关闭）
+tool_approval:
+  enabled: false
+  sensitive_tools:
+    - system_write_file
+    - system_patch_file
+    - system_run_command
+    - system_delegate_task
+  session_whitelist: true
+
+# OCR 配置
+ocr:
+  enabled: false
+  engine: "tesseract"
+  lang: "chi_sim+eng"
+
+# Skill 智能选择配置
+skill_selection:
+  enabled: true
+  top_k: 5
+  min_similarity: 0.3
+
+# Skill 优先模式配置
+skill_first:
+  enabled: true
+  threshold: 0.4
+
+# 意图识别路由配置
+intent_router:
+  enabled: true
+  llm_classify: true
+  llm_threshold: 0.7

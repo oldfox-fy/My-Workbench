@@ -104,7 +104,7 @@ export function useVoiceRecorder() {
 
     const formData = new FormData()
     formData.append('file', audioBlob, 'recording.webm')
-    formData.append('model', audioConfig.model_name)
+    formData.append('model', audioConfig.model_name ?? '')
     if (audioConfig.base_url) formData.append('base_url', audioConfig.base_url)
     if (audioConfig.api_key) formData.append('api_key', audioConfig.api_key)
 

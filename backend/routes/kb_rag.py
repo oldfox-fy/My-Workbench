@@ -177,7 +177,7 @@ async def index_status():
 
 
 @router.post("/search")
-async def semantic_search(req: SearchIn):
+async def semantic_search(req: SearchIn, request: Request):
     """界面内语义搜索（可选 reranker 精排）。"""
     if not req.query or not req.query.strip():
         raise HTTPException(400, "检索内容不能为空。")
@@ -186,6 +186,7 @@ async def semantic_search(req: SearchIn):
         hits = await kb_indexer.search(
             req.query.strip(), top_k,
             use_rerank=req.use_rerank,
+            user_id=request.state.user["id"],
         )
     except KbNotConfiguredError as e:
         raise HTTPException(400, str(e))

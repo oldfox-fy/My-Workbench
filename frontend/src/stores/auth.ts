@@ -11,6 +11,7 @@ export interface UserInfo {
   status: 'active' | 'pending' | 'disabled'
   kb_path: string
   workspace_path: string
+  standalone?: boolean
 }
 
 export interface AuditLogEntry {

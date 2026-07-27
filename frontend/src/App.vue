@@ -19,10 +19,13 @@ import { NConfigProvider, NMessageProvider, NDialogProvider, NSpin, zhCN, dateZh
 import { useTheme } from '@/composables/useTheme'
 import { useConfigStore } from '@/stores/config'
 import { useAuthStore } from '@/stores/auth'
+import { loadUserPrefs } from '@/api/userPrefs'
+import { useChatStore } from '@/stores/chat'
 
 const { naiveTheme, themeOverrides } = useTheme()
 const configStore = useConfigStore()
 const authStore = useAuthStore()
+const chatStore = useChatStore()
 const router = useRouter()
 
 const appReady = ref(false)
@@ -49,6 +52,14 @@ onMounted(async () => {
   if (authStore.token) {
     try {
       await authStore.init()
+      // 登录后加载用户偏好（替代 localStorage）
+      if (authStore.isLoggedIn) {
+        const prefs = await loadUserPrefs().catch(() => null)
+        if (prefs) {
+          configStore.applyUserPrefs(prefs)
+          chatStore.applyUserPrefs(prefs)
+        }
+      }
     } catch {
       // 初始化失败，token 无效
     }

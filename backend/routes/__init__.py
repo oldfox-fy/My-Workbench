@@ -11,8 +11,8 @@ def register_all_routers(app: FastAPI):
     # ── 受保护的路由（需登录）──
     # 认证由 user_context_middleware（main.py）统一处理，
     # 路由处理函数通过 request.state.user 获取当前用户。
-    from . import chat, chats, files, model, models, profiles, workspace, toolcalls, mcp, knowledge, kb_rag, skills, voice, crew
-    modules = [chat, chats, files, model, models, profiles, workspace, toolcalls, mcp, knowledge, kb_rag, skills, voice, crew]
+    from . import chat, chats, files, model, models, profiles, workspace, toolcalls, mcp, knowledge, kb_rag, skills, voice, crew, user_prefs
+    modules = [chat, chats, files, model, models, profiles, workspace, toolcalls, mcp, knowledge, kb_rag, skills, voice, crew, user_prefs]
     for mod in modules:
         router = getattr(mod, "router", None)
         if router is not None:

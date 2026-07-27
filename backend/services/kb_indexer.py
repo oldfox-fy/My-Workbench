@@ -324,7 +324,8 @@ async def rebuild(full: bool = False) -> Dict[str, Any]:
 
 
 async def search(query: str, top_k: int = 8,
-                use_rerank: bool = False) -> List[Dict[str, Any]]:
+                use_rerank: bool = False,
+                user_id: int = 0) -> List[Dict[str, Any]]:
     """
     语义检索：query 向量化 → 向量库 KNN → 回填分片内容。
     当 use_rerank=True 时：先召回 top_k × 5 候选 → Reranker 精排 → 返回 top_k。
@@ -378,7 +379,7 @@ async def search(query: str, top_k: int = 8,
     if use_rerank and results:
         try:
             from backend.services.reranker import get_reranker
-            reranker = await get_reranker()
+            reranker = await get_reranker(user_id)
             if reranker:
                 # 用 reranker 对候选文档重新打分
                 contents = [r["content"] for r in results]

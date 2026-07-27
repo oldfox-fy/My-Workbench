@@ -29,7 +29,9 @@ DEFAULT_EMBEDDING_CONFIG: Dict[str, Any] = {
 # 重排序（Reranker）默认配置：默认关闭，用户手动开启
 DEFAULT_RERANKER_CONFIG: Dict[str, Any] = {
     "enabled": False,
-    "provider": "openai",   # 与 embedding 共用 base_url / api_key
+    "provider": "openai",
+    "base_url": "",
+    "api_key": "",
     "model": "BAAI/bge-reranker-v2-m3",
 }
 

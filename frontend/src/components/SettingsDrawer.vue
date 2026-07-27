@@ -325,7 +325,7 @@
               </n-descriptions>
             </n-card>
 
-            <n-card title="修改密码" size="small">
+            <n-card v-if="!authStore.user?.standalone" title="修改密码" size="small">
               <n-form :model="passwordForm" label-placement="left" label-width="100">
                 <n-form-item label="旧密码">
                   <n-input v-model:value="passwordForm.oldPassword" type="password" show-password-on="click" />
@@ -344,8 +344,8 @@
           </n-space>
         </n-tab-pane>
 
-        <!-- ── 用户管理（仅管理员可见）── -->
-        <n-tab-pane v-if="authStore.isAdmin" name="userManagement" tab="用户管理">
+        <!-- ── 用户管理（仅管理员可见，且非 standalone 模式）── -->
+        <n-tab-pane v-if="authStore.isAdmin && !authStore.user?.standalone" name="userManagement" tab="用户管理">
           <n-space vertical size="large">
             <!-- 操作日志 -->
             <n-card title="操作日志" size="small">
@@ -909,6 +909,8 @@ function onAutoSwitchChange(val: boolean) {
 }
 
 // ── 主题自定义 ──
+import { saveUserPrefs } from '@/api/userPrefs'
+
 const presetColors = ['#6366f1', '#ec4899', '#14b8a6', '#f59e0b', '#ef4444', '#8b5cf6']
 const themeAccent = ref(localStorage.getItem('themeAccent') || '')
 const themeRadius = ref(Number(localStorage.getItem('themeRadius') || '8'))
@@ -917,17 +919,20 @@ const themeFontSize = ref(localStorage.getItem('themeFontSize') || '16px')
 function setAccent(color: string) {
   themeAccent.value = color
   localStorage.setItem('themeAccent', color)
+  saveUserPrefs({ themeAccent: color } as any)
   document.documentElement.style.setProperty('--accent', color)
   document.documentElement.style.setProperty('--accent-gradient', `linear-gradient(120deg, ${color}, ${color}cc)`)
 }
 
 function applyRadius(v: number) {
   localStorage.setItem('themeRadius', String(v))
+  saveUserPrefs({ themeRadius: v } as any)
   document.documentElement.style.setProperty('--border-radius', v + 'px')
 }
 
 function applyFontSize(v: string) {
   localStorage.setItem('themeFontSize', v)
+  saveUserPrefs({ themeFontSize: v } as any)
   document.documentElement.style.fontSize = v
 }
 
@@ -999,6 +1004,7 @@ const modelForm = reactive<{
 
 function handleProfile(val: boolean) {
   localStorage.setItem('enableProfile', val.toString())
+  saveUserPrefs({ enableProfile: val } as any)
 }
 
 function openAddModelDialog() {

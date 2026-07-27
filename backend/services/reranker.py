@@ -116,7 +116,7 @@ class Reranker:
         raise RerankerError(f"rerank 调用失败：{last_err}")
 
 
-async def get_reranker() -> Optional[Reranker]:
+async def get_reranker(user_id: int = 0) -> Optional[Reranker]:
     """
     依据已保存的配置构建 Reranker。
     若未启用或模型未配置则返回 None。
@@ -124,7 +124,7 @@ async def get_reranker() -> Optional[Reranker]:
     reranker 的 base_url / api_key 优先使用自身配置，
     未填写时自动继承 embedding 配置。
     """
-    cfg_dict = await get_reranker_config()
+    cfg_dict = await get_reranker_config(user_id)
     if not cfg_dict.get("enabled"):
         return None
     if not cfg_dict.get("model"):
@@ -132,7 +132,7 @@ async def get_reranker() -> Optional[Reranker]:
 
     # 尝试从 embedding 配置继承 base_url / api_key
     from backend.db.kb_settings import get_embedding_config
-    emb_cfg = await get_embedding_config()
+    emb_cfg = await get_embedding_config(user_id)
 
     base_url = cfg_dict.get("base_url", "") or emb_cfg.get("base_url", "")
     api_key = cfg_dict.get("api_key", "") or emb_cfg.get("api_key", "")
