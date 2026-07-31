@@ -4,7 +4,7 @@
 # 数据存储根目录（可写，支持绝对路径或相对路径）
 # 绝对路径示例：C:\ProgramData\.MyWorkbench
 # 相对路径示例：./data（相对于可执行文件所在目录）
-data_dir: "C:\\ProgramData\\.MyWorkbench"
+data_dir: "."
 
 # 子目录（相对于 data_dir）
 uploads_dir: "data/uploads"
@@ -18,7 +18,7 @@ mcp_config_path: "mcp_config.json"
 
 # 静态文件目录（只读，打包时位于 _MEIPASS 内）
 # 此路径相对于项目根目录（开发时）或 _MEIPASS（打包后）
-static_dir: "html"
+static_dir: "frontend/dist"
 
 # 其他配置
 max_upload_size_mb: 100
@@ -64,7 +64,7 @@ auto_switch:
     vision: "图片/多模态输入"
     audio: "语音输入/输出"
     reasoning: "深度推理/分析/代码审查"
-    fast: "简单快速对话"
+    video: "视频理解/生成"
     default: "以上均不匹配时的默认模型"
 
 # 工具审批配置（可选，默认启用）

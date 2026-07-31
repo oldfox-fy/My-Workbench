@@ -175,7 +175,7 @@ async def chat(
                     request.llm_config.base_url = routed_model.get("baseUrl")
                     request.llm_config.api_key = routed_model.get("apiKey", "")
                     request.llm_config.role = routed_model.get("role", "default")  # 传递角色给 LLMService
-                    role_labels = {"vision": "视觉", "audio": "语音", "reasoning": "推理", "fast": "快速", "image_gen": "生图"}
+                    role_labels = {"vision": "视觉", "audio": "语音", "reasoning": "推理", "video": "视频", "image_gen": "生图"}
                     label = role_labels.get(detected_role, detected_role)
                     route_notice = f"\n🔄 智能切换：检测到{label}需求，从 `{old_name}` 切换到 `{routed_model['modelName']}`\n"
                 elif detected_role != "default":

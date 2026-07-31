@@ -168,11 +168,13 @@ async def _handle_chat(ws: WebSocket, data: dict, cancel_event: asyncio.Event,
                 need_switch = False
             elif detected_role == "image_gen":
                 need_switch = True  # 生图总是需要切到专门的生图模型
+            elif detected_role == "video":
+                need_switch = True  # 视频生成总是需要切到专门的视频生成模型
 
             if need_switch:
                 routed_model = await get_model_by_role(detected_role)
                 if routed_model and routed_model.get("modelName") != current_model:
-                    role_labels = {"vision": "视觉", "audio": "语音", "reasoning": "推理", "fast": "快速", "image_gen": "生图"}
+                    role_labels = {"vision": "视觉", "audio": "语音", "reasoning": "推理", "video": "视频", "image_gen": "生图"}
                     label = role_labels.get(detected_role, detected_role)
                     await ws.send_json({"type": "chunk", "content": f"\n🔄 智能切换：检测到{label}需求 → `{routed_model['modelName']}`\n"})
                     llm_cfg = {
@@ -184,7 +186,7 @@ async def _handle_chat(ws: WebSocket, data: dict, cancel_event: asyncio.Event,
                         "role": routed_model.get("role", "default"),
                     }
                 elif detected_role != "default":
-                    role_labels = {"vision": "视觉", "audio": "语音", "reasoning": "推理", "image_gen": "生图"}
+                    role_labels = {"vision": "视觉", "audio": "语音", "reasoning": "推理", "video": "视频", "image_gen": "生图"}
                     label = role_labels.get(detected_role, detected_role)
                     await ws.send_json({"type": "chunk", "content": f"\n💡 检测到{label}输入，未配置对应角色模型，继续使用当前模型。\n"})
 

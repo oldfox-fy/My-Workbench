@@ -72,14 +72,16 @@ class LLMService:
                  role: str = 'default'):
         self.model_type = model_type
         self.model_name = model_name
-        self.role = role  # 模型角色：image_gen → 走 images.generate 而非 chat.completions
+        self.role = role  # 模型角色：image_gen → images.generate, video → /v1/videos 异步 API
         self.thinking = thinking
         self.max_retries = max_retries
         self.base_delay = base_delay
         self.fallback_config = fallback_config
+        self._api_key = api_key or ""
+        self._base_url_raw = normalize_base_url(base_url or "")
         self.client = AsyncOpenAI(
             api_key=api_key or None,
-            base_url=normalize_base_url(base_url or ""),
+            base_url=self._base_url_raw,
             timeout=_CLIENT_TIMEOUT,
         )
         # 备用客户端（惰性创建，仅在触发降级时初始化）
@@ -173,6 +175,163 @@ class LLMService:
                 yield f"❌ 图像生成失败：{str(e)}"
             return
 
+        # ---------- 视频生成分支 ----------
+        # 使用模型角色判断，因为视频生成模型（如 agnes-video-v2.0）不是 Chat 模型，
+        # 而是异步任务 API：POST /v1/videos 创建 → GET /agnesapi?video_id=... 轮询。
+        if self.role == "video":
+            prompt = ""
+            for msg in reversed(messages):
+                if msg.get("role") == "user":
+                    prompt = msg.get("content", "")
+                    break
+
+            if not prompt:
+                yield "❌ 未找到有效的用户提示词，无法生成视频。"
+                return
+
+            # 检测用户是否上传了参考图片（用于图生视频）
+            image_url = None
+            for msg in messages:
+                if msg.get("role") != "user":
+                    continue
+                content = msg.get("content")
+                if isinstance(content, list):
+                    for part in content:
+                        if isinstance(part, dict) and part.get("type") == "image_url":
+                            img = part.get("image_url", {})
+                            image_url = img.get("url") if isinstance(img, dict) else str(img)
+                            break
+                elif isinstance(content, str) and content.startswith(("http://", "https://")) and any(
+                    content.lower().endswith(ext) for ext in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")
+                ):
+                    image_url = content
+                if image_url:
+                    break
+
+            # 提取视频参数
+            width = params.get("width", 1152)
+            height = params.get("height", 768)
+            num_frames = params.get("num_frames", 121)
+            frame_rate = params.get("frame_rate", 24)
+            seed = params.get("seed")
+            negative_prompt = params.get("negative_prompt")
+
+            # 从 baseUrl 推导 API 根地址（去掉 /v1 等版本路径）
+            # 例如 https://api.agnes-ai.cn/v1 → https://api.agnes-ai.cn
+            import re as _re
+            _raw = self._base_url_raw.rstrip("/")
+            _api_root = _re.sub(r'/v\d+$', '', _raw)
+            # POST /v1/videos 即 {baseUrl}/videos
+            _create_url = f"{_raw}/videos"
+            _headers = {
+                "Authorization": f"Bearer {self._api_key}",
+                "Content-Type": "application/json",
+            }
+
+            import httpx as _httpx
+            try:
+                async with _httpx.AsyncClient(timeout=_httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0)) as _http:
+                    # ── Step 1: 创建视频任务 ──
+                    _payload = {
+                        "model": self.model_name,
+                        "prompt": prompt,
+                        "width": width,
+                        "height": height,
+                        "num_frames": num_frames,
+                        "frame_rate": frame_rate,
+                    }
+                    if image_url:
+                        _payload["image"] = image_url
+                    if seed is not None:
+                        _payload["seed"] = seed
+                    if negative_prompt:
+                        _payload["negative_prompt"] = negative_prompt
+
+                    yield f"🎬 正在创建视频生成任务（模型：{self.model_name}）...\n"
+                    if image_url:
+                        yield f"🖼️ 参考图片：{image_url}\n"
+
+                    _create_resp = await _http.post(_create_url, json=_payload, headers=_headers)
+
+                    if _create_resp.status_code != 200:
+                        _detail = ""
+                        try:
+                            _detail = _create_resp.text[:500]
+                        except Exception:
+                            pass
+                        hint = ""
+                        if _create_resp.status_code == 404:
+                            hint = (
+                                f"\n\n💡 **视频生成端点 `/v1/videos` 不存在。**\n"
+                                "请确认 Base URL 指向的是 Agnes AI（https://api.agnes-ai.cn/v1）或其他支持视频生成 API 的服务。\n"
+                                f"当前 Base URL：{self._base_url_raw}"
+                            )
+                        elif _create_resp.status_code == 401:
+                            hint = "\n\n💡 API Key 无效或未配置，请检查模型设置。"
+                        yield f"❌ 创建视频任务失败（HTTP {_create_resp.status_code}）：{_detail}{hint}"
+                        return
+
+                    _task = _create_resp.json()
+                    _video_id = _task.get("video_id") or _task.get("id", "")
+                    _task_id = _task.get("task_id") or _task.get("id", "")
+
+                    if not _video_id:
+                        yield f"❌ 未获取到 video_id，响应内容：\n```json\n{json.dumps(_task, ensure_ascii=False, indent=2)[:1000]}\n```"
+                        return
+
+                    _seconds = _task.get("seconds", "?")
+                    _size = _task.get("size", "?")
+                    yield f"📋 任务已创建 | video_id: `{_video_id}` | 预计时长: {_seconds}s | 分辨率: {_size}\n"
+                    yield "⏳ 正在等待视频生成完成（异步任务，约需 1-5 分钟）...\n"
+
+                    # ── Step 2: 轮询获取结果 ──
+                    _query_url = f"{_api_root}/agnesapi?video_id={_video_id}"
+                    _max_wait = 600  # 最长等待 10 分钟
+                    _poll_interval = 5  # 每 5 秒轮询一次
+                    _elapsed = 0
+                    _last_progress = -1
+
+                    while _elapsed < _max_wait:
+                        await asyncio.sleep(_poll_interval)
+                        _elapsed += _poll_interval
+
+                        _query_resp = await _http.get(_query_url, headers=_headers)
+                        if _query_resp.status_code != 200:
+                            yield f"⚠️ 查询状态失败（HTTP {_query_resp.status_code}），{_poll_interval}s 后重试...\n"
+                            continue
+
+                        _result = _query_resp.json()
+                        _status = _result.get("status", "")
+
+                        if _status == "completed":
+                            _video_url = _result.get("metadata", {}).get("url", "")
+                            _completed_seconds = _result.get("seconds", _seconds)
+                            if _video_url:
+                                yield f"\n✅ **视频生成完成！**（耗时 {_elapsed}s，时长 {_completed_seconds}s）\n\n"
+                                yield f"<video controls width=\"100%\" style=\"max-width:720px;border-radius:8px\" src=\"{_video_url}\"></video>\n\n"
+                                yield f"[📥 下载视频]({_video_url})"
+                            else:
+                                yield "⚠️ 视频生成完成但未获取到下载链接，请检查 API 响应。"
+                            return
+                        elif _status == "failed":
+                            _error = _result.get("error", {})
+                            _error_msg = _error if isinstance(_error, str) else _error.get("message", str(_error))
+                            yield f"❌ 视频生成失败：{_error_msg}"
+                            return
+                        else:
+                            _progress = _result.get("progress", 0)
+                            if _progress != _last_progress:
+                                yield f"⏳ 生成中... 进度：{_progress}%（已等待 {_elapsed}s）\n"
+                                _last_progress = _progress
+
+                    yield f"⏰ 等待超时（{_max_wait}s）。请稍后通过以下信息手动查询：\n- video_id: `{_video_id}`\n- 查询接口: `GET {_query_url}`"
+
+            except _httpx.ConnectError as e:
+                yield f"❌ 无法连接到视频生成服务：{str(e)}\n请检查 Base URL 是否正确：{self._base_url_raw}"
+            except Exception as e:
+                yield f"❌ 视频生成失败：{str(e)}"
+            return
+
         # ---------- 原有文本生成 + 工具调用分支 ----------
         current_messages = messages.copy()
 
@@ -234,7 +393,9 @@ class LLMService:
             extra_body = {
                 "top_k": params.get('top_k', 20),
                 "chat_template_kwargs": {
-                    "add_generation_prompt": True,
+                    # 注意：不要在 chat_template_kwargs 中设置 add_generation_prompt。
+                    # vLLM / SGLang 等推理框架内部已自动传入该参数，重复传入会导致
+                    # "got multiple values for keyword argument 'add_generation_prompt'" 500 错误。
                 }
             }
 

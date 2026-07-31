@@ -431,6 +431,15 @@
         <n-text depth="3" style="font-size: 0.7rem; margin-top: 4px">
           用于智能模型切换：系统根据输入类型自动选择对应角色的模型
         </n-text>
+        <!-- 角色能力提示：根据模型类别判别模型能力 -->
+        <n-alert
+          v-if="roleCapabilityHint"
+          :type="roleCapabilityHint.includes('⚠️') ? 'warning' : 'info'"
+          size="small"
+          style="margin-top: 8px; white-space: pre-line;"
+        >
+          {{ roleCapabilityHint }}
+        </n-alert>
       </n-form-item>
     </n-form>
   </n-modal>
@@ -737,7 +746,7 @@ import {
   NDataTable, NBadge, NDescriptions, NDescriptionsItem,
 } from 'naive-ui'
 import { useChatStore } from '@/stores/chat'
-import { useConfigStore, MODEL_ROLES, type ModelConfig } from '@/stores/config'
+import { useConfigStore, MODEL_ROLES, ROLE_CAPABILITY, type ModelConfig } from '@/stores/config'
 import { useProfileStore, VIRTUAL_PROFILE_ID, type Profile } from '@/stores/profiles'
 import { useMcpStore, type MCPServer } from '@/stores/mcp'
 import { useSkillStore, type Skill, type SkillType } from '@/stores/skills'
@@ -896,10 +905,24 @@ function roleTagType(role: string): 'info' | 'success' | 'warning' | 'error' | '
     vision: 'success',
     reasoning: 'warning',
     audio: 'info',
-    fast: 'default',
+    video: 'error',
+    image_gen: 'error',
   }
   return map[role] || 'default'
 }
+
+// 根据所选模型角色显示能力提示
+const roleCapabilityHint = computed(() => {
+  const cap = ROLE_CAPABILITY[modelForm.role]
+  if (!cap) return ''
+  let hint = cap.hint
+  hint += `\n📡 API 类型：${cap.apiType}`
+  hint += `\n🔗 端点：${cap.endpoint}`
+  if (cap.isAsync) {
+    hint += `\n⏳ 异步任务模式：创建任务 → 轮询等待 → 获取结果`
+  }
+  return hint
+})
 function onAutoSwitchChange(val: boolean) {
   if (val) {
     message.success('智能模型切换已开启')

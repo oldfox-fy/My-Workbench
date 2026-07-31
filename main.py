@@ -406,6 +406,19 @@ def start_gui():
     # 允许在 WebView 中进行文件下载
     webview.settings['ALLOW_DOWNLOADS'] = True
 
+    # 查找 favicon.ico（必须在项目根目录，且是真正的 ICO 格式）
+    # 注意：frontend/public/favicon.ico 实际是 PNG 格式，不能用于 WinForms Icon
+    icon_path = None
+    root_ico = 'favicon.ico'
+    if os.path.exists(root_ico):
+        icon_path = root_ico
+
+    # 使用私有的 WebView2 用户数据目录，避免与其他 Edge/WebView2 进程冲突
+    # （private_mode=True 会在临时目录创建独立的数据目录，不会锁住共享目录）
+    import tempfile as _tempfile
+    _storage_dir = os.path.join(_tempfile.gettempdir(), 'MyWorkbench_WebView2')
+    os.makedirs(_storage_dir, exist_ok=True)
+
     webview.create_window(
         title="My Workbench",
         url=FRONTEND_URL,
@@ -415,7 +428,13 @@ def start_gui():
         text_select=True,
         js_api=Api(),
     )
-    webview.start(debug=DEBUG_MODE, http_server=True, private_mode=False, icon='favicon.ico')
+    webview.start(
+        debug=DEBUG_MODE,
+        http_server=True,
+        private_mode=True,
+        storage_path=_storage_dir,
+        icon=icon_path,
+    )
 
 
 # ============ 入口 ============

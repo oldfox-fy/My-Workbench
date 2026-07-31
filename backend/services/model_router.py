@@ -6,8 +6,9 @@
   1. 图片/多模态内容 → role=vision
   2. 音频内容 → role=audio
   3. 图像生成请求 → role=image_gen
-  4. 深度推理关键词 → role=reasoning
-  5. 其余 → role=default
+  4. 视频生成请求 → role=video
+  5. 深度推理关键词 → role=reasoning
+  6. 其余 → role=default
 
 如果目标角色没有配置模型，不切换（保留用户当前模型）。
 """
@@ -30,6 +31,26 @@ IMAGE_GEN_KEYWORDS = [
     "create an image", "create a picture", "create a photo",
     "make an image", "make a picture", "make a photo",
     "draw an image", "draw a picture", "draw a photo",
+]
+
+# 视频生成触发关键词（中英文）
+VIDEO_GEN_KEYWORDS = [
+    # 中文 — 明确包含"视频""短片""动画"等视频产物的词
+    "生成视频", "生成一个视频", "生成一段视频",
+    "制作视频", "制作一个视频", "制作一段视频",
+    "创建视频", "创建一个视频", "创建一段视频",
+    "做视频", "做个视频", "做一段视频",
+    "生成短片", "制作短片", "创建短片",
+    "生成动画", "制作动画",
+    "来段视频", "来一段视频",
+    "生成宣传片", "生成短视频",
+    # 英文
+    "generate a video", "generate video",
+    "create a video", "create video",
+    "make a video", "make video",
+    "generate a short film", "create a short film",
+    "animate this", "generate animation",
+    "text to video", "image to video",
 ]
 
 # 深度推理触发关键词（中英文）
@@ -118,6 +139,30 @@ def _needs_image_gen(messages: List[Dict[str, Any]]) -> bool:
     return any(kw.lower() in last_user_text for kw in IMAGE_GEN_KEYWORDS)
 
 
+def _needs_video_gen(messages: List[Dict[str, Any]]) -> bool:
+    """检测用户是否在请求视频生成。
+
+    只检查最后一条用户消息的关键词。
+    """
+    if not messages:
+        return False
+
+    last_user_text = ""
+    for msg in reversed(messages):
+        if msg.get("role") == "user":
+            content = msg.get("content", "")
+            if isinstance(content, str):
+                last_user_text = content.lower()
+            elif isinstance(content, list):
+                for part in reversed(content):
+                    if isinstance(part, dict) and part.get("type") == "text":
+                        last_user_text = part.get("text", "").lower()
+                        break
+            break
+
+    return any(kw.lower() in last_user_text for kw in VIDEO_GEN_KEYWORDS)
+
+
 def _needs_reasoning(messages: List[Dict[str, Any]], enable_tools: bool = False) -> bool:
     """检测是否需要深度推理。
 
@@ -169,14 +214,16 @@ def _needs_reasoning(messages: List[Dict[str, Any]], enable_tools: bool = False)
 def detect_input_role(messages: List[Dict[str, Any]], enable_tools: bool = False) -> str:
     """检测输入内容类型，返回应使用的模型角色名。
 
-    优先级: image_gen > vision > audio > reasoning > default
+    优先级: image_gen > video > vision > audio > reasoning > default
 
-    注意: image_gen 优先级最高，因为用户可能在对话中上传了参考图片后
-    再说"生成一张类似的"，此时关键词检测命中 → 应优先走生图模型；
-    而仅上传图片但未触发生图关键词时仍走 vision。
+    注意: image_gen 和 video 优先级最高，因为用户可能在对话中上传了参考图片后
+    说"生成一张图/视频"，此时关键词检测命中 → 应优先走对应的生成模型；
+    而仅上传图片但未触发关键词时仍走 vision。
     """
     if _needs_image_gen(messages):
         return "image_gen"
+    if _needs_video_gen(messages):
+        return "video"
     if _has_image_content(messages):
         return "vision"
     if _has_audio_content(messages):

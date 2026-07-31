@@ -8,8 +8,7 @@ from pathlib import Path
 workspace_dir = Path.cwd() / 'workspace'
 workspace_path = str(workspace_dir)
 
-_DEV_DEFAULT_KB = r"E:\fuyu\LearnAI\MyKg"
-_DEFAULT_KB = _DEV_DEFAULT_KB if (not getattr(sys, "frozen", False) and Path(_DEV_DEFAULT_KB).is_dir()) else ""
+_DEFAULT_KB = ""
 
 # ── 用户级路径（contextvars，按请求注入）──
 _user_kb_path: contextvars.ContextVar[str] = contextvars.ContextVar("user_kb_path", default=_DEFAULT_KB)

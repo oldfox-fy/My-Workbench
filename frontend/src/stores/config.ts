@@ -11,18 +11,33 @@ export interface ModelConfig {
   modelName?: string   // 模型 ID
   baseUrl: string     // 本地模型需要，线上可为空
   apiKey: string      // 线上模型需要，本地可为空
-  role: string        // 模型角色：default/vision/reasoning/audio/fast
+  role: string        // 模型角色：default/vision/reasoning/audio/video/image_gen
 }
 
 // 模型角色定义
 export const MODEL_ROLES = [
-  { value: 'default', label: '默认', desc: '通用对话' },
+  { value: 'default', label: '默认', desc: '通用对话（Chat）' },
   { value: 'vision', label: '视觉', desc: '图片/多模态理解' },
   { value: 'reasoning', label: '推理', desc: '深度推理分析' },
   { value: 'audio', label: '语音', desc: '语音输入/输出' },
-  { value: 'fast', label: '快速', desc: '轻量快速对话' },
-  { value: 'image_gen', label: '生图', desc: '图像生成' },
+  { value: 'video', label: '视频', desc: '视频生成（异步任务 API，非 Chat）' },
+  { value: 'image_gen', label: '生图', desc: '图像生成（Images API，非 Chat）' },
 ] as const
+
+// 模型角色能力映射：标记各角色使用的 API 类型
+export const ROLE_CAPABILITY: Record<string, {
+  apiType: string           // API 类型标识
+  endpoint: string          // 使用的端点
+  isAsync: boolean          // 是否异步任务
+  hint: string              // 配置时的提示
+}> = {
+  default:    { apiType: 'chat',   endpoint: '/v1/chat/completions',    isAsync: false, hint: '此角色调用标准 Chat Completions API，适用于通用对话场景。' },
+  vision:     { apiType: 'chat',   endpoint: '/v1/chat/completions',    isAsync: false, hint: '此角色调用标准 Chat Completions API，模型需支持图片/多模态输入。' },
+  reasoning:  { apiType: 'chat',   endpoint: '/v1/chat/completions',    isAsync: false, hint: '此角色调用标准 Chat Completions API，适用于需要深度推理分析的场景。' },
+  audio:      { apiType: 'chat',   endpoint: '/v1/chat/completions',    isAsync: false, hint: '此角色调用标准 Chat Completions API，模型需支持语音输入/输出。' },
+  video:      { apiType: 'video',  endpoint: 'POST /v1/videos（异步轮询）',  isAsync: true,  hint: '⚠️ 此角色使用视频生成异步 API，非 Chat 模型。需确保 Base URL 指向支持 /v1/videos 端点的服务（如 Agnes AI）。模型需填入视频生成模型名（如 agnes-video-v2.0）。' },
+  image_gen:  { apiType: 'image',  endpoint: 'POST /v1/images/generations', isAsync: false, hint: '⚠️ 此角色使用图像生成 API（Images.generate），非 Chat 模型。需确保 Base URL 指向支持图像生成的服务。' },
+}
 
 const fileAcceptedSuffixes = [
   '.txt', '.md', '.markdown', '.rst', '.py', '.js', '.ts', '.jsx', '.vue',

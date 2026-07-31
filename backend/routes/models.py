@@ -8,8 +8,8 @@ from backend.auth import get_current_user
 
 router = APIRouter(prefix="/api", tags=["models"])
 
-# 模型角色：default(通用) / vision(视觉) / reasoning(推理) / audio(语音) / fast(快速) / image_gen(生图)
-MODEL_ROLES = ["default", "vision", "reasoning", "audio", "fast", "image_gen"]
+# 模型角色：default(通用) / vision(视觉) / reasoning(推理) / audio(语音) / video(视频) / image_gen(生图)
+MODEL_ROLES = ["default", "vision", "reasoning", "audio", "video", "image_gen"]
 
 
 class ModelConfigBase(BaseModel):
@@ -151,7 +151,7 @@ async def get_model_roles():
             {"value": "vision", "label": "视觉", "desc": "支持图片/多模态理解（如 gpt-4o, claude-sonnet）"},
             {"value": "reasoning", "label": "推理", "desc": "深度推理模型（如 deepseek-r1, o1, o3）"},
             {"value": "audio", "label": "语音", "desc": "支持语音输入/输出（如 gpt-4o-audio-preview）"},
-            {"value": "fast", "label": "快速", "desc": "轻量快速模型，用于简单对话（如 gpt-4o-mini）"},
-            {"value": "image_gen", "label": "生图", "desc": "图像生成模型（如 DALL-E 3, stable-diffusion）"},
+            {"value": "video", "label": "视频", "desc": "视频生成模型（异步任务 API，如 agnes-video-v2.0）"},
+            {"value": "image_gen", "label": "生图", "desc": "图像生成模型（Images API，如 DALL-E 3, stable-diffusion）"},
         ]
     }
