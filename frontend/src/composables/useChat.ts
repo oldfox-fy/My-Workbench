@@ -509,6 +509,7 @@ export function useChat() {
         model_name: currentModel.modelName,
         base_url: currentModel.baseUrl,
         api_key: currentModel.apiKey,
+        role: currentModel.role || 'default',  // 传递模型角色，确保视频/生图模型正确路由
       } : undefined,
       auto_switch: configStore.autoSwitch,  // 智能切换开关
       message_id: Date.now() + 1,  // 用于工具调用 DB 记录

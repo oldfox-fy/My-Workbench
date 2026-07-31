@@ -179,6 +179,10 @@ class LLMService:
         # 使用模型角色判断，因为视频生成模型（如 agnes-video-v2.0）不是 Chat 模型，
         # 而是异步任务 API：POST /v1/videos 创建 → GET /agnesapi?video_id=... 轮询。
         if self.role == "video":
+            import logging as _vlog
+            _vlog = _vlog.getLogger("My Workbench")
+            _vlog.info(f"[VIDEO] 进入视频生成分支, model={self.model_name}, base_url={self._base_url_raw}")
+
             prompt = ""
             for msg in reversed(messages):
                 if msg.get("role") == "user":
@@ -223,6 +227,8 @@ class LLMService:
             _api_root = _re.sub(r'/v\d+$', '', _raw)
             # POST /v1/videos 即 {baseUrl}/videos
             _create_url = f"{_raw}/videos"
+            _vlog.info(f"[VIDEO] 创建任务 URL: {_create_url}")
+            _vlog.info(f"[VIDEO] API Key 前缀: {self._api_key[:8]}... (长度: {len(self._api_key)})")
             _headers = {
                 "Authorization": f"Bearer {self._api_key}",
                 "Content-Type": "application/json",
@@ -252,6 +258,7 @@ class LLMService:
                         yield f"🖼️ 参考图片：{image_url}\n"
 
                     _create_resp = await _http.post(_create_url, json=_payload, headers=_headers)
+                    _vlog.info(f"[VIDEO] 创建任务响应: HTTP {_create_resp.status_code}, body前200字符: {_create_resp.text[:200]}")
 
                     if _create_resp.status_code != 200:
                         _detail = ""
@@ -259,6 +266,7 @@ class LLMService:
                             _detail = _create_resp.text[:500]
                         except Exception:
                             pass
+                        _vlog.error(f"[VIDEO] 创建任务失败! status={_create_resp.status_code}, detail={_detail}")
                         hint = ""
                         if _create_resp.status_code == 404:
                             hint = (
@@ -289,6 +297,7 @@ class LLMService:
                     _max_wait = 600  # 最长等待 10 分钟
                     _poll_interval = 5  # 每 5 秒轮询一次
                     _elapsed = 0
+                    _vlog.info(f"[VIDEO] 开始轮询, query_url={_query_url}, video_id={_video_id}")
                     _last_progress = -1
 
                     while _elapsed < _max_wait:
@@ -327,8 +336,10 @@ class LLMService:
                     yield f"⏰ 等待超时（{_max_wait}s）。请稍后通过以下信息手动查询：\n- video_id: `{_video_id}`\n- 查询接口: `GET {_query_url}`"
 
             except _httpx.ConnectError as e:
+                _vlog.error(f"[VIDEO] 连接失败: {str(e)}")
                 yield f"❌ 无法连接到视频生成服务：{str(e)}\n请检查 Base URL 是否正确：{self._base_url_raw}"
             except Exception as e:
+                _vlog.error(f"[VIDEO] 未知错误: {type(e).__name__}: {str(e)}")
                 yield f"❌ 视频生成失败：{str(e)}"
             return
 

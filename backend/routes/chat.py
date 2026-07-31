@@ -164,6 +164,8 @@ async def chat(
                 need_switch = False  # 无需特殊能力，不切换
             elif detected_role == "image_gen":
                 need_switch = True  # 生图总是需要切到专门的生图模型
+            elif detected_role == "video":
+                need_switch = True  # 视频生成总是需要切到专门的视频模型
 
             if need_switch:
                 routed_model = await get_model_by_role(detected_role)
@@ -179,7 +181,7 @@ async def chat(
                     label = role_labels.get(detected_role, detected_role)
                     route_notice = f"\n🔄 智能切换：检测到{label}需求，从 `{old_name}` 切换到 `{routed_model['modelName']}`\n"
                 elif detected_role != "default":
-                    role_labels = {"vision": "视觉", "audio": "语音", "reasoning": "推理", "image_gen": "生图"}
+                    role_labels = {"vision": "视觉", "audio": "语音", "reasoning": "推理", "video": "视频", "image_gen": "生图"}
                     label = role_labels.get(detected_role, detected_role)
                     route_notice = (f"\n💡 检测到{label}输入，但未配置对应角色模型。"
                                     f"请在设置中为模型添加「{label}」角色后即可自动切换。"
