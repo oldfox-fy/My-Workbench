@@ -413,8 +413,6 @@ myskill.zip
 ---
 
 
----
-
 ##  参与贡献
 
 欢迎提 Issue、Pull Request，或分享你的角色配置与 MCP 工具。  
