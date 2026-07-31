@@ -313,14 +313,23 @@ class LLMService:
                         _status = _result.get("status", "")
 
                         if _status == "completed":
-                            _video_url = _result.get("metadata", {}).get("url", "")
+                            # 尝试多个可能的 URL 字段（兼容不同 API 版本）
+                            _video_url = (
+                                _result.get("metadata", {}).get("url", "") or
+                                _result.get("remixed_from_video_id", "") or
+                                _result.get("url", "") or
+                                _result.get("video_url", "")
+                            )
                             _completed_seconds = _result.get("seconds", _seconds)
+                            _vlog.info(f"[VIDEO] 任务完成! status=completed, url={_video_url[:100] if _video_url else '(空)'}, 完整响应keys: {list(_result.keys())}")
                             if _video_url:
                                 yield f"\n✅ **视频生成完成！**（耗时 {_elapsed}s，时长 {_completed_seconds}s）\n\n"
                                 yield f"<video controls width=\"100%\" style=\"max-width:720px;border-radius:8px\" src=\"{_video_url}\"></video>\n\n"
                                 yield f"[📥 下载视频]({_video_url})"
                             else:
-                                yield "⚠️ 视频生成完成但未获取到下载链接，请检查 API 响应。"
+                                # 打印完整响应用于调试
+                                _vlog.error(f"[VIDEO] URL为空! 完整响应: {json.dumps(_result, ensure_ascii=False)[:2000]}")
+                                yield f"⚠️ 视频生成完成但未获取到下载链接。\n\n调试信息：响应字段 = {list(_result.keys())}\n```json\n{json.dumps(_result, ensure_ascii=False, indent=2)[:1500]}\n```"
                             return
                         elif _status == "failed":
                             _error = _result.get("error", {})
