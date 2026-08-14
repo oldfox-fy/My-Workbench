@@ -84,6 +84,9 @@ intent_router:
   enabled: true
   llm_classify: true
   llm_threshold: 0.7
+kb_index:
+  embedding_concurrency: 1   # embedding 请求并发数（云端 TPM 限流，调低避免 429）
+  file_concurrency: 2        # 同时处理的文件数
 """, encoding="utf-8")
 
     # ── tools_config.yaml（嵌入，不从 _MEIPASS 读）──

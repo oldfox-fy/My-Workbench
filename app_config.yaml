@@ -110,5 +110,5 @@ intent_router:
 # 云端 embedding（硅基流动等）受 RPM 限流，本地 Ollama 受 GPU 算力限制，
 # 两者默认 8 较稳妥，可按机器/服务商情况调高。
 kb_index:
-  embedding_concurrency: 8   # embedding 请求并发数（同时发起的 /embeddings 请求数）
-  file_concurrency: 8        # 同时处理的文件数
+  embedding_concurrency: 1   # embedding 请求并发数（云端 TPM 限流，调低避免 429）
+  file_concurrency: 2        # 同时处理的文件数（配合 embedding 并发控制总吞吐）

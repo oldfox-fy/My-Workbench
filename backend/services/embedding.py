@@ -26,8 +26,8 @@ _BATCH_SIZE = 32
 # 并发请求数默认值（fallback）：同时发起的 /embeddings 请求数。
 # 实际值优先取 app_config.yaml 的 kb_index.embedding_concurrency。
 _MAX_CONCURRENCY = 8
-# 失败重试次数
-_MAX_RETRIES = 2
+# 失败重试次数（429 限流需跨分钟等待，比 5xx 给更多重试机会）
+_MAX_RETRIES = 3
 # 可重试的 HTTP 状态码
 _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 # httpx 超时
@@ -41,6 +41,29 @@ def _get_max_concurrency() -> int:
         return v if v > 0 else _MAX_CONCURRENCY
     except Exception:
         return _MAX_CONCURRENCY
+
+
+# 全局 embedding 请求并发信号量：跨所有文件、所有 embed() 调用共享，
+# 避免「file_concurrency × embedding_concurrency」相乘导致瞬时并发请求数爆炸，
+# 触发服务商 TPM/RPM 限流（429）。embedding_concurrency 现在是全局上限。
+_embed_semaphore = asyncio.Semaphore(_get_max_concurrency())
+
+
+def _backoff_seconds(status_code: int, attempt: int, retry_after: "str | None") -> float:
+    """计算重试前等待秒数。
+
+    - 429（限流）：优先读 Retry-After 头（按秒，封顶 60s）；否则指数退避
+      （10s、20s、40s…），因为 TPM/RPM 限额通常按分钟重置，短退避无效。
+    - 其他可重试状态码（5xx）：沿用较短的指数退避。
+    """
+    if status_code == 429:
+        if retry_after:
+            try:
+                return max(0.0, min(float(retry_after), 60.0))
+            except (TypeError, ValueError):
+                pass
+        return min(10.0 * (2 ** attempt), 60.0)
+    return 0.5 * (attempt + 1)
 
 
 class EmbeddingError(Exception):
@@ -178,11 +201,13 @@ class Embedder:
                     last_err = EmbeddingError(
                         f"HTTP {resp.status_code}: {err_msg or resp.text[:200]}"
                     )
+                    retry_after = resp.headers.get("Retry-After")
+                    delay = _backoff_seconds(resp.status_code, attempt, retry_after)
                     logger.warning(
                         f"[embedding] 第 {attempt + 1} 次调用失败"
-                        f"（HTTP {resp.status_code}），{0.5 * (attempt + 1):.1f}s 后重试..."
+                        f"（HTTP {resp.status_code}），{delay:.1f}s 后重试..."
                     )
-                    await asyncio.sleep(0.5 * (attempt + 1))
+                    await asyncio.sleep(delay)
                     continue
 
                 # 不可重试的错误
@@ -230,10 +255,9 @@ class Embedder:
             return []
         batches = [texts[i:i + _BATCH_SIZE] for i in range(0, len(texts), _BATCH_SIZE)]
 
-        sem = asyncio.Semaphore(_get_max_concurrency())
-
         async def _run(batch: List[str]) -> List[List[float]]:
-            async with sem:
+            # 全局共享信号量：总并发 = embedding_concurrency，不再与文件并发相乘。
+            async with _embed_semaphore:
                 return await self._embed_batch(batch)
 
         # 并发发起；return_exceptions=True 确保无孤儿任务，错误统一在下面抛。
