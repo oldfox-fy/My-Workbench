@@ -9,7 +9,8 @@ from typing import List, Dict, Optional, Any
 from backend.services.llm_service import LLMService
 from backend.services.tools import get_local_tools, get_mcp_tools, get_all_tools
 from backend.services.context_compressor import compress_messages
-from backend.services.session_memory import search_relevant_memories, index_assistant_message
+from backend.services.session_memory import search_relevant_memories, index_memory
+from backend.services.memory_extractor import extract_memories_from_turn, get_user_profile, CATEGORY_LABELS
 from backend.services.model_router import (
     detect_input_role, get_model_by_role, get_default_model,
     should_switch_for_images, _looks_vision_capable,
@@ -437,15 +438,36 @@ async def chat(
         dynamic_suffix_parts = [f"当前时间：{get_current_time()}"]
         dynamic_suffix_parts.append(f"工作区路径：{backend.workspace_path}")
 
-        # 注入相关历史记忆（跨对话语义检索，随查询变化）
+        # 当前用户 ID（记忆按用户隔离）
+        _mem_user_id = fastapi_request.state.user.get("id") if hasattr(fastapi_request.state, "user") else None
+
+        # 注入结构化用户画像（长期记忆）+ 相关历史记忆（跨对话语义检索，随查询变化）
         if request.enable_tools:
+            # ── 结构化长期记忆：用户画像 ──
+            profile = await get_user_profile(_mem_user_id, limit=20)
+            if profile:
+                profile_lines = []
+                for mem in profile:
+                    label = CATEGORY_LABELS.get(mem["category"], mem["category"])
+                    profile_lines.append(f"- [{label}] {mem['content']}")
+                profile_section = (
+                    "\n\n### 用户长期记忆\n"
+                    "以下是关于用户的已知信息，请在回答时自然地结合这些背景（不要逐条复述）：\n"
+                    + "\n".join(profile_lines)
+                )
+                dynamic_suffix_parts.append(profile_section)
+
+            # ── 相关历史记忆：语义检索（用户输入 + AI 回复双向记忆） ──
             last_user_msg = ""
             for m in reversed(messages):
                 if m.get("role") == "user":
-                    last_user_msg = m.get("content", "")
+                    c = m.get("content", "")
+                    if isinstance(c, list):
+                        c = " ".join(p.get("text", "") for p in c if isinstance(p, dict) and p.get("type") == "text")
+                    last_user_msg = (c or "").strip()
                     break
             if last_user_msg:
-                memories = await search_relevant_memories(last_user_msg, k=3)
+                memories = await search_relevant_memories(last_user_msg, k=3, user_id=_mem_user_id)
                 if memories:
                     memory_lines = []
                     for mem in memories:
@@ -580,16 +602,24 @@ async def chat(
                     except asyncio.CancelledError:
                         pass
 
-            # 流结束后：后台索引当前 AI 回复
-            if request.enable_tools and collected_text:
-                full_text = "".join(collected_text).strip()
-                # 查找当前对话的 chat_id（从消息中推断）
+            # 流结束后：后台双向索引（用户输入 + AI 回复）并抽取结构化长期记忆
+            if request.enable_tools:
+                full_text = "".join(collected_text).strip() if collected_text else ""
+                _mem_uid = fastapi_request.state.user.get("id") if hasattr(fastapi_request.state, "user") else None
+
+                # 提取最后一条用户消息（用于索引 + 记忆抽取）
+                last_user_text = ""
+                for m in reversed(messages):
+                    if m.get("role") == "user":
+                        c = m.get("content", "")
+                        if isinstance(c, list):
+                            c = " ".join(p.get("text", "") for p in c if isinstance(p, dict) and p.get("type") == "text")
+                        last_user_text = (c or "").strip()
+                        break
+
+                # 通过 message_id 查找 chat_id
                 chat_id = None
-                for m in messages:
-                    # chat_id 不在消息中，我们用 message_id 查找
-                    pass
-                if request.message_id and full_text:
-                    # 通过 message_id 查找 chat_id
+                if request.message_id:
                     try:
                         db = await get_db()
                         cursor = await db.execute(
@@ -599,13 +629,33 @@ async def chat(
                         row = await cursor.fetchone()
                         await db.close()
                         if row:
-                            asyncio.create_task(index_assistant_message(
-                                chat_id=row[0],
-                                message_id=request.message_id,
-                                content=full_text,
-                            ))
+                            chat_id = row[0]
                     except Exception:
                         pass  # 索引失败不影响主流程
+
+                if chat_id:
+                    # 索引用户输入（短句也有信息量，阈值 8 字符）
+                    if last_user_text and len(last_user_text) >= 8:
+                        asyncio.create_task(index_memory(
+                            chat_id=chat_id, message_id=request.message_id,
+                            content=last_user_text, role="user", user_id=_mem_uid,
+                        ))
+                    # 索引 AI 回复（阈值 200 字符，沿用旧逻辑）
+                    if full_text:
+                        asyncio.create_task(index_memory(
+                            chat_id=chat_id, message_id=request.message_id,
+                            content=full_text, role="assistant", user_id=_mem_uid,
+                        ))
+                    # 抽取结构化长期记忆
+                    if last_user_text and full_text:
+                        asyncio.create_task(extract_memories_from_turn(
+                            service=service,
+                            user_message=last_user_text,
+                            assistant_message=full_text,
+                            user_id=_mem_uid,
+                            chat_id=chat_id,
+                            message_id=request.message_id,
+                        ))
 
         return StreamingResponse(
             stream_with_memory(),

@@ -20,7 +20,7 @@ from typing import List, Dict, Any, Optional
 
 import httpx
 
-from backend.db.kb_settings import get_reranker_config
+from backend.db.kb_settings import get_reranker_config, DEFAULT_USER_ID
 from backend.bootstrap import logger
 
 # 单次 rerank 最大候选文档数（超量自动截断）
@@ -116,7 +116,7 @@ class Reranker:
         raise RerankerError(f"rerank 调用失败：{last_err}")
 
 
-async def get_reranker(user_id: int = 0) -> Optional[Reranker]:
+async def get_reranker(user_id: int = DEFAULT_USER_ID) -> Optional[Reranker]:
     """
     依据已保存的配置构建 Reranker。
     若未启用或模型未配置则返回 None。

@@ -24,7 +24,7 @@ from backend.services.embedding import probe_config
 from backend.services.reranker import probe_reranker_config
 from backend.db import kb_chunks, vec_store
 from backend.services import kb_indexer, kb_graph
-from backend.services.kb_indexer import KbNotConfiguredError
+from backend.services.kb_indexer import KbNotConfiguredError, IndexInProgressError
 from backend.bootstrap import logger
 
 router = APIRouter(prefix="/api/kb", tags=["kb-rag"])
@@ -87,7 +87,7 @@ async def test_embedding_cfg(cfg: EmbeddingConfigIn, request: Request):
     for k, v in cfg.dict().items():
         if v is not None:
             merged[k] = v
-    result = await probe_config(merged)
+    result = await probe_config(merged, request.state.user["id"])
     return result
 
 
@@ -124,13 +124,16 @@ async def test_reranker_cfg(cfg: RerankerConfigIn, request: Request):
 
 # ──────────────────────── 索引管理（M2） ────────────────────────
 
-async def _run_rebuild(full: bool):
+async def _run_rebuild(full: bool, user_id: int, kb_path: str):
     _index_state["running"] = True
     _index_state["last_error"] = None
     try:
-        result = await kb_indexer.rebuild(full=full)
+        result = await kb_indexer.rebuild(full=full, user_id=user_id, kb_path=kb_path)
         _index_state["last_result"] = result
         logger.info(f"[kb_index] 索引完成：{result}")
+    except IndexInProgressError:
+        # 已有重建任务在跑（如 watcher 自动增量），本次跳过，不算失败。
+        logger.info(f"[kb_index] 已有索引任务在进行中，本次重建跳过：{e}")
     except Exception as e:
         _index_state["last_error"] = str(e)
         logger.warning(f"[kb_index] 索引失败：{e}")
@@ -139,28 +142,30 @@ async def _run_rebuild(full: bool):
 
 
 @router.post("/index/rebuild")
-async def rebuild_index(req: RebuildIn):
+async def rebuild_index(req: RebuildIn, request: Request):
     """启动后台索引任务（增量或全量）。立即返回，进度通过 /index/status 查询。"""
-    if _index_state["running"]:
+    if _index_state["running"] or kb_indexer.is_rebuilding():
         raise HTTPException(409, "索引任务正在进行中，请稍候。")
     # 预检查：配置与向量扩展
     available, msg = vec_store.check_available()
     if not available:
         raise HTTPException(400, msg)
-    cfg = await get_embedding_config()
+    user_id = request.state.user["id"]
+    kb_path = request.state.user.get("kb_path", "")
+    cfg = await get_embedding_config(user_id)
     if not cfg.get("model"):
         raise HTTPException(400, "尚未配置 embedding 模型。")
 
-    asyncio.create_task(_run_rebuild(req.full))
+    asyncio.create_task(_run_rebuild(req.full, user_id, kb_path))
     return {"status": "started", "full": req.full}
 
 
 @router.get("/index/status")
-async def index_status():
+async def index_status(request: Request):
     """返回索引状态：文件数、片段数、模型、维度、上次索引时间、向量扩展可用性。"""
     available, msg = vec_store.check_available()
     files, chunks_total, model = await kb_chunks.stats()
-    cfg = await get_embedding_config()
+    cfg = await get_embedding_config(request.state.user["id"])
     last = await kb_chunks.last_indexed_at()
     return {
         "configured": bool(cfg.get("model")),

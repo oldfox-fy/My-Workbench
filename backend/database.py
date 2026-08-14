@@ -10,8 +10,8 @@ async def get_db():
     db.row_factory = aiosqlite.Row
     # WAL 模式是数据库级设置，只要任一连接打开过就会持久化。
     await db.execute("PRAGMA journal_mode=WAL")
-    # busy_timeout：写锁冲突时等待最多 5 秒而非立即报 SQLITE_BUSY
-    await db.execute("PRAGMA busy_timeout=5000")
+    # busy_timeout：写锁冲突时等待最多 30 秒而非立即报 SQLITE_BUSY
+    await db.execute("PRAGMA busy_timeout=30000")
     return db
 
 async def init_db():
@@ -222,6 +222,9 @@ async def init_db():
     # OCR 缓存
     await _ensure_column(db, "kb_index_meta", "ocr_text", "TEXT DEFAULT ''")
     await _ensure_column(db, "kb_index_meta", "image_description", "TEXT DEFAULT ''")
+    # 会话记忆：双向索引（用户输入 + AI 回复）与按用户隔离
+    await _ensure_column(db, "session_memories", "role", "TEXT NOT NULL DEFAULT 'assistant'")
+    await _ensure_column(db, "session_memories", "user_id", "INTEGER DEFAULT NULL")
 
     # Feature 3: Agent 追踪
     await db.execute("""
@@ -308,6 +311,25 @@ async def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+
+    # ── 结构化用户长期记忆（豆包式记忆）：事实/偏好/项目/关系 ──
+    # 由 memory_extractor 从对话中抽取，按用户隔离，支持查看/编辑/删除。
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS user_memories (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            category TEXT NOT NULL DEFAULT 'fact',
+            content TEXT NOT NULL,
+            source_chat_id TEXT DEFAULT '',
+            source_message_id INTEGER DEFAULT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        )
+    """)
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_user_memories_user ON user_memories(user_id)"
+    )
 
     # ── 用户管理：认证令牌表 ──
     await db.execute("""

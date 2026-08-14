@@ -17,17 +17,30 @@ from typing import List, Dict, Any
 
 import httpx
 
-from backend.db.kb_settings import get_embedding_config, update_embedding_dim
+from config_loader import config
+from backend.db.kb_settings import get_embedding_config, update_embedding_dim, DEFAULT_USER_ID
 from backend.bootstrap import logger
 
 # 单次请求的最大文本条数，防止请求体过大 / 超时
 _BATCH_SIZE = 32
+# 并发请求数默认值（fallback）：同时发起的 /embeddings 请求数。
+# 实际值优先取 app_config.yaml 的 kb_index.embedding_concurrency。
+_MAX_CONCURRENCY = 8
 # 失败重试次数
 _MAX_RETRIES = 2
 # 可重试的 HTTP 状态码
 _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 # httpx 超时
 _TIMEOUT = httpx.Timeout(connect=10.0, read=60.0, write=10.0, pool=10.0)
+
+
+def _get_max_concurrency() -> int:
+    """读取 embedding 并发数，优先取 app_config.yaml 的 kb_index.embedding_concurrency。"""
+    try:
+        v = int(getattr(config, "kb_embedding_concurrency", _MAX_CONCURRENCY))
+        return v if v > 0 else _MAX_CONCURRENCY
+    except Exception:
+        return _MAX_CONCURRENCY
 
 
 class EmbeddingError(Exception):
@@ -69,18 +82,21 @@ class Embedder:
         self._base_url = cfg.base_url.rstrip("/")
         self._api_key = cfg.api_key or "ollama"
         self._client: httpx.AsyncClient | None = None
+        self._client_lock = asyncio.Lock()
 
-    def _get_client(self) -> httpx.AsyncClient:
-        """惰性创建 httpx 客户端（复用连接池）。"""
+    async def _get_client(self) -> httpx.AsyncClient:
+        """惰性创建 httpx 客户端（复用连接池，并发安全）。"""
         if self._client is None:
-            self._client = httpx.AsyncClient(
-                base_url=self._base_url,
-                headers={
-                    "Authorization": f"Bearer {self._api_key}",
-                    "Content-Type": "application/json",
-                },
-                timeout=_TIMEOUT,
-            )
+            async with self._client_lock:
+                if self._client is None:
+                    self._client = httpx.AsyncClient(
+                        base_url=self._base_url,
+                        headers={
+                            "Authorization": f"Bearer {self._api_key}",
+                            "Content-Type": "application/json",
+                        },
+                        timeout=_TIMEOUT,
+                    )
         return self._client
 
     async def close(self):
@@ -125,7 +141,7 @@ class Embedder:
         last_err = None
         for attempt in range(_MAX_RETRIES + 1):
             try:
-                client = self._get_client()
+                client = await self._get_client()
                 resp = await client.post("/embeddings", json=body)
 
                 if resp.status_code == 200:
@@ -205,27 +221,48 @@ class Embedder:
         raise EmbeddingError(f"embedding 调用失败（已重试 {_MAX_RETRIES} 次）: {last_err}")
 
     async def embed(self, texts: List[str]) -> List[List[float]]:
-        """对一组文本做向量化，自动分批。返回与输入等长的向量列表。"""
+        """对一组文本做向量化，自动分批并发执行。返回与输入等长的向量列表。
+
+        用 asyncio.Semaphore 限制并发请求数，避免打满服务商限流；
+        结果按批次顺序拼接，保证返回向量与输入文本一一对应。
+        """
         if not texts:
             return []
-        results: List[List[float]] = []
-        for i in range(0, len(texts), _BATCH_SIZE):
-            batch = texts[i:i + _BATCH_SIZE]
-            results.extend(await self._embed_batch(batch))
-        return results
+        batches = [texts[i:i + _BATCH_SIZE] for i in range(0, len(texts), _BATCH_SIZE)]
+
+        sem = asyncio.Semaphore(_get_max_concurrency())
+
+        async def _run(batch: List[str]) -> List[List[float]]:
+            async with sem:
+                return await self._embed_batch(batch)
+
+        # 并发发起；return_exceptions=True 确保无孤儿任务，错误统一在下面抛。
+        results = await asyncio.gather(*(_run(b) for b in batches), return_exceptions=True)
+
+        flat: List[List[float]] = []
+        first_err: BaseException | None = None
+        for r in results:
+            if isinstance(r, BaseException):
+                if first_err is None:
+                    first_err = r
+            else:
+                flat.extend(r)
+        if first_err is not None:
+            raise first_err
+        return flat
 
     async def embed_one(self, text: str) -> List[float]:
         vecs = await self.embed([text])
         return vecs[0] if vecs else []
 
 
-async def get_embedder() -> Embedder:
+async def get_embedder(user_id: int = DEFAULT_USER_ID) -> Embedder:
     """依据已保存的配置构建 Embedder。"""
-    cfg = EmbeddingConfig.from_dict(await get_embedding_config())
+    cfg = EmbeddingConfig.from_dict(await get_embedding_config(user_id))
     return Embedder(cfg)
 
 
-async def probe_config(cfg_dict: Dict[str, Any]) -> Dict[str, Any]:
+async def probe_config(cfg_dict: Dict[str, Any], user_id: int = DEFAULT_USER_ID) -> Dict[str, Any]:
     """
     用给定配置发一条测试文本，验证连通性并返回实际向量维度。
     成功时将维度持久化到 app_settings（若与当前保存的配置为同一模型）。
@@ -242,7 +279,7 @@ async def probe_config(cfg_dict: Dict[str, Any]) -> Dict[str, Any]:
             return {"success": False, "dim": 0, "error": "服务返回了空向量。"}
         # 仅当探测配置与已保存配置的模型一致时才写回维度
         try:
-            await update_embedding_dim(dim)
+            await update_embedding_dim(dim, user_id)
         except Exception:
             pass
         return {"success": True, "dim": dim, "error": ""}

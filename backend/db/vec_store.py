@@ -41,6 +41,8 @@ def _open_vec_conn() -> sqlite3.Connection:
         raise VecUnavailableError("未安装 sqlite-vec，请执行 pip install sqlite-vec。")
     try:
         conn = sqlite3.connect(_DB_PATH)
+        # busy_timeout：与 aiosqlite 连接对齐并放宽到 30s，写锁冲突时等待而非立即 SQLITE_BUSY
+        conn.execute("PRAGMA busy_timeout=30000")
         conn.enable_load_extension(True)
         sqlite_vec.load(conn)
         conn.enable_load_extension(False)
@@ -256,6 +258,25 @@ def _search_sessions(query: List[float], k: int) -> "List[Tuple[int, float]]":
         conn.close()
 
 
+def _delete_session_ids(ids: List[int]):
+    if not ids:
+        return
+    conn = _open_vec_conn()
+    try:
+        row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+            (_SESSION_MEM_TABLE,)
+        ).fetchone()
+        if not row or not row[0]:
+            return
+        conn.executemany(
+            f"DELETE FROM {_SESSION_MEM_TABLE} WHERE rowid = ?", [(i,) for i in ids]
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 # ──────────── 会话记忆异步接口 ────────────
 
 async def ensure_session_table(dim: int):
@@ -268,3 +289,7 @@ async def upsert_session(rows: "List[Tuple[int, List[float]]]"):
 
 async def search_sessions(query: List[float], k: int) -> "List[Tuple[int, float]]":
     return await asyncio.to_thread(_search_sessions, query, k)
+
+
+async def delete_session_ids(ids: List[int]):
+    await asyncio.to_thread(_delete_session_ids, ids)

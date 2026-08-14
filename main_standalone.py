@@ -469,19 +469,50 @@ intent_router:
 """, encoding="utf-8")
 
     # ── sqlite-vec DLL ──
+    # 策略：将 vec0.dll 复制到 EXE 所在目录（而非 _MEIPASS 或 %TEMP%），
+    # 因为部分 Windows 安全策略会阻止从临时目录加载 DLL（"拒绝访问"）。
+    # EXE 所在目录与数据库同目录，保证可写且不受 DLL 加载限制。
     try:
-        from importlib.resources import files as _res_files
-        _sv_pkg = _res_files("sqlite_vec")
-        _SV_DLL = _sv_pkg.joinpath("vec0.dll").read_bytes()
-        _SV_DIR = _RSC_DIR / "sqlite_vec"
-        _SV_DIR.mkdir(parents=True, exist_ok=True)
-        (_SV_DIR / "vec0.dll").write_bytes(_SV_DLL)
         import sqlite_vec as _sv_mod
-        def _patched_loadable_path():
-            return str(_SV_DIR / "vec0")
-        _sv_mod.loadable_path = _patched_loadable_path
-    except Exception:
-        pass
+        _SV_EXE_DIR = Path(sys.executable).parent / "sqlite_vec"
+        _SV_EXE_DIR.mkdir(parents=True, exist_ok=True)
+        _SV_DLL_DEST = _SV_EXE_DIR / "vec0.dll"
+
+        # 优先从包内读取 DLL（打包后位于 _MEIPASS），fallback 到安装目录
+        _SV_DLL_SRC = None
+        try:
+            from importlib.resources import files as _res_files
+            _sv_pkg = _res_files("sqlite_vec")
+            _candidate = _sv_pkg.joinpath("vec0.dll")
+            if _candidate.is_file():
+                _SV_DLL_SRC = _candidate
+        except Exception:
+            pass
+        if _SV_DLL_SRC is None:
+            # fallback: 从安装目录读取
+            _candidate = Path(_sv_mod.__file__).parent / "vec0.dll"
+            if _candidate.is_file():
+                _SV_DLL_SRC = _candidate
+
+        if _SV_DLL_SRC is not None and (not _SV_DLL_DEST.exists() or
+                                         _SV_DLL_SRC.stat().st_size != _SV_DLL_DEST.stat().st_size):
+            _SV_DLL_DEST.write_bytes(_SV_DLL_SRC.read_bytes())
+
+        if _SV_DLL_DEST.exists():
+            def _patched_loadable_path():
+                return str(_SV_DLL_DEST)
+            _sv_mod.loadable_path = _patched_loadable_path
+        else:
+            # DLL 不存在时回退到原始 loadable_path（指向 _MEIPASS/sqlite_vec/vec0）
+            pass
+    except Exception as _sv_exc:
+        # 不能静默吞掉——记录到启动日志便于排查
+        try:
+            import logging
+            _sv_log = logging.getLogger("My Workbench")
+            _sv_log.warning(f"[Standalone] sqlite-vec DLL 准备失败: {_sv_exc}")
+        except Exception:
+            pass
 
     # ── CWD 技巧：config_loader 首条搜索 CWD ──
     _SAVED_CWD = os.getcwd()
@@ -522,6 +553,65 @@ from config_loader import config
 #  Standalone 常量
 # ═══════════════════════════════════════════
 STANDALONE_USER_ID = 1
+
+# ═══════════════════════════════════════════
+#  Standalone 兼容补丁（仅修补独立版行为，不触碰主程序代码）
+# ═══════════════════════════════════════════
+
+# ── 补丁 1: embedding 配置读写统一使用 STANDALONE_USER_ID ──
+# 问题：backend/db/kb_settings.py 中 get_embedding_config / update_embedding_dim
+# 默认 user_id=0，但独立版用户 ID 为 1。probe_config() 调 update_embedding_dim
+# 不传 user_id → 写入 user_id=0 行；而 set_embedding_cfg 路由传 user_id=1 →
+# 写入不同行。导致"测试连接正常但保存后配置丢失"。
+# 修复：将默认值从 0 改为 STANDALONE_USER_ID（1），保证所有调用写入同一行。
+def _standalone_patch_embedding_config():
+    import backend.db.kb_settings as _kbs
+
+    _orig_get_embedding = _kbs.get_embedding_config
+    async def _patched_get_embedding(user_id: int = None):
+        if user_id is None:
+            user_id = STANDALONE_USER_ID
+        return await _orig_get_embedding(user_id)
+
+    _orig_update_dim = _kbs.update_embedding_dim
+    async def _patched_update_dim(dim: int, user_id: int = None):
+        if user_id is None:
+            user_id = STANDALONE_USER_ID
+        return await _orig_update_dim(dim, user_id)
+
+    _kbs.get_embedding_config = _patched_get_embedding
+    _kbs.update_embedding_dim = _patched_update_dim
+
+_standalone_patch_embedding_config()
+
+# ── 补丁 2: SkillRegistry.reload() 失败时不清空已有注册表 ──
+# 问题：backend/services/skills.py 中 SkillRegistry.reload() 在 list_skills
+# 抛异常时执行 self._skills = {}，导致导入压缩包后 reload 若遇 DB 波动就清空
+# 全部技能（前端列表显示正确因为直接从 DB 读，但对话中找不到）。
+# 修复：失败时保留现有注册表，只记录日志。
+def _standalone_patch_skill_reload():
+    import backend.services.skills as _skmod
+    import backend.db.skills as _skdb
+
+    _orig_reload = _skmod.SkillRegistry.reload
+    async def _patched_reload(self):
+        try:
+            enabled = await _skdb.list_skills(only_enabled=True)
+            self._skills = {s["name"]: s for s in enabled}
+            self._skill_embeddings = {}
+            from backend.bootstrap import logger as _log
+            _log.info(f"Skill 注册表已加载，共 {len(self._skills)} 个启用技能。")
+        except Exception as e:
+            from backend.bootstrap import logger as _log
+            _log.error(
+                f"Skill 注册表重载失败（保留现有 {len(self._skills)} 个技能）: {e}",
+                exc_info=True,
+            )
+            # 关键：不清空 self._skills，保留上次成功加载的注册表
+
+    _skmod.SkillRegistry.reload = _patched_reload
+
+_standalone_patch_skill_reload()
 STANDALONE_USERNAME = "local"
 STANDALONE_TOKEN = "mywb-standalone-permanent-token-20250718"
 
@@ -659,7 +749,7 @@ async def lifespan(app: FastAPI):
             app.state.skill_registry = skill_registry
 
             import backend as _be
-            kb_watcher = KbFileWatcher(lambda: getattr(_be, "kb_path", ""))
+            kb_watcher = KbFileWatcher(lambda: getattr(_be, "kb_path", ""), lambda: STANDALONE_USER_ID)
             await kb_watcher.start()
             app.state.kb_watcher = kb_watcher
 

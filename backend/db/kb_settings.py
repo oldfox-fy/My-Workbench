@@ -17,6 +17,13 @@ from backend.database import get_db
 _EMBEDDING_KEY = "kb_embedding_config"
 _RERANKER_KEY = "kb_reranker_config"
 
+# 默认归属用户：单管理员部署下，embedding / reranker 配置统一归管理员（id=1）。
+# 知识库分片/向量表本身不按 user_id 隔离（全局共享），因此 embedding 配置也应
+# 归到同一管理员名下，避免保存走 user_id=1、读取却回退到 user_id=0 的错位。
+# 仅 embedding/reranker 相关读写用此默认；get_setting/set_setting 仍保持 user_id=0，
+# 因为 user_settings / mcp / user_prefs 各自维护独立语义。
+DEFAULT_USER_ID = 1
+
 # 默认配置：本地 Ollama + bge-m3（隐私优先，符合项目"双引擎"定位）
 DEFAULT_EMBEDDING_CONFIG: Dict[str, Any] = {
     "provider": "ollama",
@@ -65,7 +72,7 @@ async def set_setting(key: str, value: str, user_id: int = 0) -> None:
         await db.close()
 
 
-async def get_embedding_config(user_id: int = 0) -> Dict[str, Any]:
+async def get_embedding_config(user_id: int = DEFAULT_USER_ID) -> Dict[str, Any]:
     """
     读取 embedding 配置，与默认值合并（保证字段齐全）。
     未配置时返回默认（本地 Ollama / bge-m3，dim=0）。
@@ -82,7 +89,7 @@ async def get_embedding_config(user_id: int = 0) -> Dict[str, Any]:
     return cfg
 
 
-async def save_embedding_config(cfg: Dict[str, Any], user_id: int = 0) -> Dict[str, Any]:
+async def save_embedding_config(cfg: Dict[str, Any], user_id: int = DEFAULT_USER_ID) -> Dict[str, Any]:
     """
     保存 embedding 配置。仅持久化已知字段，避免脏数据。
     返回合并后的完整配置。
@@ -95,7 +102,7 @@ async def save_embedding_config(cfg: Dict[str, Any], user_id: int = 0) -> Dict[s
     return merged
 
 
-async def update_embedding_dim(dim: int, user_id: int = 0) -> None:
+async def update_embedding_dim(dim: int, user_id: int = DEFAULT_USER_ID) -> None:
     """探测到向量维度后单独更新 dim 字段。"""
     cfg = await get_embedding_config(user_id)
     cfg["dim"] = int(dim)
@@ -104,7 +111,7 @@ async def update_embedding_dim(dim: int, user_id: int = 0) -> None:
 
 # ──────────────────────── Reranker 配置读写 ────────────────────────
 
-async def get_reranker_config(user_id: int = 0) -> Dict[str, Any]:
+async def get_reranker_config(user_id: int = DEFAULT_USER_ID) -> Dict[str, Any]:
     """读取 reranker 配置，未配置时返回默认（enabled=False）。"""
     raw = await get_setting(_RERANKER_KEY, user_id)
     cfg = dict(DEFAULT_RERANKER_CONFIG)
@@ -118,7 +125,7 @@ async def get_reranker_config(user_id: int = 0) -> Dict[str, Any]:
     return cfg
 
 
-async def save_reranker_config(cfg: Dict[str, Any], user_id: int = 0) -> Dict[str, Any]:
+async def save_reranker_config(cfg: Dict[str, Any], user_id: int = DEFAULT_USER_ID) -> Dict[str, Any]:
     """保存 reranker 配置。仅持久化已知字段。返回合并后的完整配置。"""
     merged = await get_reranker_config(user_id)
     for k in DEFAULT_RERANKER_CONFIG:

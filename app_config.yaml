@@ -105,3 +105,10 @@ intent_router:
   enabled: true           # 是否启用意图路由
   llm_classify: true      # 是否启用 LLM 分类器（false 则仅关键词检测）
   llm_threshold: 0.7      # LLM 分类置信度阈值（低于此值降级为 standard）
+
+# 知识库索引并发配置（串行改并发后可控）
+# 云端 embedding（硅基流动等）受 RPM 限流，本地 Ollama 受 GPU 算力限制，
+# 两者默认 8 较稳妥，可按机器/服务商情况调高。
+kb_index:
+  embedding_concurrency: 8   # embedding 请求并发数（同时发起的 /embeddings 请求数）
+  file_concurrency: 8        # 同时处理的文件数

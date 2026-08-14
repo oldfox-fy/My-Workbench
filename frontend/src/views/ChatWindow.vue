@@ -90,6 +90,13 @@
               </template>
               使用统计
             </n-button>
+            <n-button text @click="showMemory = true">
+              <template #icon>
+                <n-icon><PricetagsOutline /></n-icon>
+              </template>
+              记忆管理
+              <n-badge v-if="memoryCount != null" :value="memoryCount" :max="99" style="margin-left:6px" />
+            </n-button>
             <n-button text @click="importChat">
               <template #icon>
                 <n-icon><CloudUploadOutline /></n-icon>
@@ -291,6 +298,7 @@
     <!-- 工具列表抽屉 -->
     <ToolsDrawer v-model:show="showTools" />
     <StatsDashboard v-model:show="showStats" />
+    <MemoryPanel v-model:show="showMemory" />
 
     <!-- 工具审批弹窗 -->
     <ToolApprovalDialog
@@ -350,9 +358,9 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { NButton, NInput, NList, NListItem, NIcon, NScrollbar, NFlex, NSelect, NModal, NPopconfirm, NPopover, NQrCode, NTag } from 'naive-ui'
+import { NButton, NInput, NList, NListItem, NIcon, NScrollbar, NFlex, NSelect, NModal, NPopconfirm, NPopover, NQrCode, NTag, NBadge } from 'naive-ui'
 import type { UploadFileInfo } from 'naive-ui'
-import { SettingsOutline, DocumentOutline, MenuOutline, QrCodeOutline, ConstructOutline, LibraryOutline, DownloadOutline, CloudUploadOutline, BarChartOutline, CloudDownloadOutline, LogOutOutline } from '@vicons/ionicons5'
+import { SettingsOutline, DocumentOutline, MenuOutline, QrCodeOutline, ConstructOutline, LibraryOutline, DownloadOutline, CloudUploadOutline, BarChartOutline, CloudDownloadOutline, LogOutOutline, PricetagsOutline } from '@vicons/ionicons5'
 import { useChatStore, type Message } from '@/stores/chat'
 import { useConfigStore, fileConfig } from '@/stores/config'
 import { useProfileStore, VIRTUAL_PROFILE_ID } from '@/stores/profiles'
@@ -360,6 +368,7 @@ import { useSkillStore } from '@/stores/skills'
 import { useAuthStore } from '@/stores/auth'
 import { apiFetch } from '@/api/client'
 import { saveUserPrefs } from '@/api/userPrefs'
+import { getMemoryStats } from '@/api/memory'
 import { useToolStore } from '@/stores/tools'
 import { useKnowledgeStore } from '@/stores/knowledge'
 import SettingsDrawer from '@/components/SettingsDrawer.vue'
@@ -372,6 +381,7 @@ import MessageList from '@/components/MessageList.vue'
 import ChatInput from '@/components/ChatInput.vue'
 import ToolApprovalDialog from '@/components/ToolApprovalDialog.vue'
 import StatsDashboard from '@/components/StatsDashboard.vue'
+import MemoryPanel from '@/components/MemoryPanel.vue'
 
 import { useModel } from '@/composables/useModel'
 import { useFileUpload } from '@/composables/useFileUpload'
@@ -598,6 +608,8 @@ const sidebarCollapsed = ref(true)
 const showSettings = ref(false)
 const showTools = ref(false)
 const showStats = ref(false)
+const showMemory = ref(false)
+const memoryCount = ref<number | null>(null)
 const hasUpdate = ref(false)
 const updateUrl = ref('')
 
@@ -611,6 +623,10 @@ onMounted(async () => {
       updateUrl.value = data.download_url
     }
   } catch { /* ignore */ }
+  // 记忆条数（侧边栏徽标）
+  getMemoryStats().then((s) => {
+    memoryCount.value = (s?.structured?.total ?? 0) + (s?.raw?.total ?? 0)
+  }).catch(() => {})
 })
 
 function openUpdateUrl() {

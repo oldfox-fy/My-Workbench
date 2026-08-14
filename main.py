@@ -107,7 +107,25 @@ async def lifespan(app: FastAPI):
             app.state.skill_registry = skill_registry
             # 启动知识库文件监听器（自动增量索引）
             import backend as _be
-            kb_watcher = KbFileWatcher(lambda: getattr(_be, "kb_path", ""))
+            # 从数据库恢复管理员（单用户部署，id=1）的 KB 路径到全局变量，
+            # 供后台监听器与索引任务使用（后台任务无请求上下文，读不到 ContextVar）。
+            try:
+                from backend.database import get_db
+                db = await get_db()
+                try:
+                    cur = await db.execute("SELECT kb_path FROM users WHERE id = 1")
+                    row = await cur.fetchone()
+                    if row and row[0]:
+                        _be.kb_path = row[0]
+                        _be._user_kb_path.set(row[0])
+                finally:
+                    await db.close()
+            except Exception as _e:
+                logger.warning(f"恢复 KB 路径失败：{_e}")
+            kb_watcher = KbFileWatcher(
+                lambda: getattr(_be, "kb_path", ""),
+                lambda: 1,
+            )
             await kb_watcher.start()
             app.state.kb_watcher = kb_watcher
             app.state.init_success = True

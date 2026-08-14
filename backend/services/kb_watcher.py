@@ -52,12 +52,15 @@ class KbFileWatcher:
         await watcher.stop()
     """
 
-    def __init__(self, kb_root_getter):
+    def __init__(self, kb_root_getter, user_id_getter=None):
         """
         kb_root_getter: 无参可调用对象，返回当前 KB 根目录路径（str）或 None。
                        使用 getter 而非固定值以支持运行时切换 KB 目录。
+        user_id_getter: 无参可调用对象，返回当前用户 ID（int）。用于增量索引时
+                       读取该用户的 embedding 配置；缺省回退到 0（全局）。
         """
         self._get_root = kb_root_getter
+        self._get_user_id = user_id_getter or (lambda: 0)
         self._task: Optional[asyncio.Task] = None
         self._running = False
         self._snapshot: Dict[str, tuple] = {}  # rel_path → (mtime, size, hash_head)
@@ -181,15 +184,20 @@ class KbFileWatcher:
             return
 
         try:
-            from backend.services.kb_indexer import rebuild
+            from backend.services.kb_indexer import rebuild, IndexInProgressError
             logger.info("[kb_watcher] 检测到文件变更，触发增量索引...")
-            result = await rebuild(full=False)
+            user_id = self._get_user_id()
+            result = await rebuild(full=False, user_id=user_id, kb_path=self._get_root())
             logger.info(
                 "[kb_watcher] 增量索引完成 — "
                 f"新增/更新 {result['indexed_files_this_run']} 个文件，"
                 f"删除 {result['removed']} 个，"
                 f"跳过 {result['skipped']} 个"
             )
+        except IndexInProgressError:
+            # 已有重建任务在跑（如用户手动点了「重建索引」），跳过本次自动增量，
+            # 变更会由正在进行的重建或下一次轮询覆盖。
+            logger.info("[kb_watcher] 已有索引任务在进行中，跳过本次自动增量。")
         except Exception as e:
             # rebuild 内部已有完整的错误处理，这里兜底
             logger.warning(f"[kb_watcher] 增量索引失败（不影响监听继续）: {e}")
