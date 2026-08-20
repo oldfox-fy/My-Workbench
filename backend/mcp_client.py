@@ -38,15 +38,12 @@ class MCPClientManager:
         }
         await self._connect_server(name, config_dict)
 
-    async def connect_server_sse(self, name: str, url: str):
+    async def connect_server_sse(self, name: str, url: str, headers: Dict = None):
         """连接远程 MCP 服务器，支持自动识别 Streamable HTTP 或 SSE"""
-        config_dict = {
-            "mcpServers": {
-                name: {
-                    "url": url,
-                }
-            }
-        }
+        server_cfg = {"url": url}
+        if headers:
+            server_cfg["headers"] = headers
+        config_dict = {"mcpServers": {name: server_cfg}}
         await self._connect_server(name, config_dict)
 
     async def _fetch_tools(self, name: str, client: Client):
@@ -76,7 +73,10 @@ class MCPClientManager:
             await self.remove_server(name)
 
         if "url" in server_config:
-            config_dict = {"mcpServers": {name: {"url": server_config["url"]}}}
+            server_cfg = {"url": server_config["url"]}
+            if "headers" in server_config:
+                server_cfg["headers"] = server_config["headers"]
+            config_dict = {"mcpServers": {name: server_cfg}}
         elif "command" in server_config or "commad" in server_config:
             command = server_config.get("command") or server_config.get("commad")
             args = server_config.get("args", [])
@@ -133,7 +133,7 @@ class MCPClientManager:
         servers = config.get("mcpServers", {})
         for server_name, server_config in servers.items():
             if "url" in server_config:
-                await self.connect_server_sse(server_name, server_config["url"])
+                await self.connect_server_sse(server_name, server_config["url"], server_config.get("headers"))
             elif "command" in server_config or "commad" in server_config:
                 command = server_config.get("command") or server_config.get("commad")
                 args = server_config.get("args", [])

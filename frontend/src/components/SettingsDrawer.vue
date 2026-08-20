@@ -461,6 +461,10 @@
       <n-form-item v-if="mcpForm.transport === 'http'" label="URL" required>
         <n-input v-model:value="mcpForm.url" placeholder="https://example.com/mcp 或 /sse" />
       </n-form-item>
+      <n-form-item v-if="mcpForm.transport === 'http'" label="API Key">
+        <n-input v-model:value="mcpForm.apiKey" type="password" show-password-on="click"
+          :placeholder="editingMcpName ? '已保存，留空则不修改' : '可选，例如 sk-xxx'" />
+      </n-form-item>
       <template v-else>
         <n-form-item label="命令" required>
           <n-input v-model:value="mcpForm.command" placeholder="例如：npx、python、uvx" />
@@ -1181,11 +1185,13 @@ const mcpForm = reactive<{
   transport: 'http' | 'stdio'
   url: string
   command: string
+  apiKey: string
 }>({
   name: '',
   transport: 'http',
   url: '',
-  command: ''
+  command: '',
+  apiKey: ''
 })
 // 参数用多行文本编辑，保存时按行拆分
 const mcpArgsText = ref('')
@@ -1196,6 +1202,7 @@ function openAddMcpDialog() {
   mcpForm.transport = 'http'
   mcpForm.url = ''
   mcpForm.command = ''
+  mcpForm.apiKey = ''
   mcpArgsText.value = ''
   showMcpDialog.value = true
 }
@@ -1206,6 +1213,7 @@ function editMcpServer(server: MCPServer) {
   mcpForm.transport = server.transport
   mcpForm.url = server.url || ''
   mcpForm.command = server.command || ''
+  mcpForm.apiKey = '' // 不回填，留空表示不修改
   mcpArgsText.value = (server.args || []).join('\n')
   showMcpDialog.value = true
 }
@@ -1231,6 +1239,9 @@ async function saveMcpServer() {
     command: mcpForm.transport === 'stdio' ? mcpForm.command.trim() : undefined,
     args: mcpForm.transport === 'stdio'
       ? mcpArgsText.value.split('\n').map(s => s.trim()).filter(Boolean)
+      : undefined,
+    api_key: mcpForm.transport === 'http' && mcpForm.apiKey.trim()
+      ? mcpForm.apiKey.trim()
       : undefined
   }
 

@@ -204,7 +204,7 @@ _INTENT_PARAMS = {
         "prompt_style": "concise",
     },
     "kb_query": {
-        "max_steps": 5,
+        "max_steps": 25,
         "max_tokens": 8192,
         "auto_inject_tools": ["system_kb_search"],
         "prompt_style": "kb",

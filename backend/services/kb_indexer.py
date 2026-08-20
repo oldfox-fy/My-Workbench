@@ -24,6 +24,7 @@ import backend
 from config_loader import config
 from backend.bootstrap import logger
 from backend.db import kb_chunks, vec_store
+from backend.db.kb_settings import DEFAULT_USER_ID
 from backend.services.embedding import get_embedder, Embedder
 from backend.system_tools.reader import file_read, FileReadError
 
@@ -288,7 +289,7 @@ def is_rebuilding() -> bool:
     return _rebuild_lock.locked()
 
 
-async def rebuild(full: bool = False, user_id: int = 0, kb_path: Optional[str] = None) -> Dict[str, Any]:
+async def rebuild(full: bool = False, user_id: int = DEFAULT_USER_ID, kb_path: Optional[str] = None) -> Dict[str, Any]:
     """重建知识库索引（互斥入口）。已在索引中则抛 IndexInProgressError。"""
     if _rebuild_lock.locked():
         raise IndexInProgressError("索引任务正在进行中，请稍候。")
@@ -296,7 +297,7 @@ async def rebuild(full: bool = False, user_id: int = 0, kb_path: Optional[str] =
         return await _rebuild(full, user_id, kb_path)
 
 
-async def _rebuild(full: bool = False, user_id: int = 0, kb_path: Optional[str] = None) -> Dict[str, Any]:
+async def _rebuild(full: bool = False, user_id: int = DEFAULT_USER_ID, kb_path: Optional[str] = None) -> Dict[str, Any]:
     """
     重建知识库索引。
     - full=True：清空所有分片与向量后全量重建。
@@ -416,7 +417,7 @@ async def _rebuild(full: bool = False, user_id: int = 0, kb_path: Optional[str] 
 
 async def search(query: str, top_k: int = 8,
                 use_rerank: bool = False,
-                user_id: int = 0) -> List[Dict[str, Any]]:
+                user_id: int = DEFAULT_USER_ID) -> List[Dict[str, Any]]:
     """
     语义检索：query 向量化 → 向量库 KNN → 回填分片内容。
     当 use_rerank=True 时：先召回 top_k × 5 候选 → Reranker 精排 → 返回 top_k。

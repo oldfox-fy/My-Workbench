@@ -19,14 +19,15 @@ class MCPServerRequest(BaseModel):
     url: Optional[str] = None        # transport=http 时使用
     command: Optional[str] = None    # transport=stdio 时使用
     args: List[str] = []             # transport=stdio 时使用
+    api_key: Optional[str] = None    # transport=http 时使用的鉴权 key（转成 Authorization: Bearer）
 
 
 async def get_mcp_manager(request: Request):
     return request.app.state.mcp_manager
 
 
-def _to_server_config(req: MCPServerRequest) -> dict:
-    """将请求转换为存储用的 server 配置片段"""
+def _to_server_config(req: MCPServerRequest, existing: Optional[dict] = None) -> dict:
+    """将请求转换为存储用的 server 配置片段。existing 为已保存的旧配置，用于编辑时保留未填写的字段。"""
     if req.transport == "stdio":
         if not req.command:
             raise HTTPException(400, "本地（stdio）服务必须提供命令 command")
@@ -34,7 +35,16 @@ def _to_server_config(req: MCPServerRequest) -> dict:
     else:
         if not req.url:
             raise HTTPException(400, "远程（http）服务必须提供 URL")
-        return {"url": req.url}
+        cfg = {"url": req.url}
+        headers = {}
+        if req.api_key:
+            headers["Authorization"] = f"Bearer {req.api_key}"
+        elif existing:
+            # 编辑时未填写 key，保留原有 headers，避免清空已保存的鉴权信息
+            headers = dict(existing.get("headers") or {})
+        if headers:
+            cfg["headers"] = headers
+        return cfg
 
 
 async def _read_user_config(user_id: int) -> dict:
@@ -70,6 +80,7 @@ async def list_servers(request: Request, mcp_manager=Depends(get_mcp_manager)):
             "url": cfg.get("url"),
             "command": cfg.get("command") or cfg.get("commad"),
             "args": cfg.get("args", []),
+            "has_api_key": bool((cfg.get("headers") or {}).get("Authorization")),
             "connected": status["connected"],
             "tools": status["tools"],
         })
@@ -84,10 +95,11 @@ async def save_server(req: MCPServerRequest, request: Request, mcp_manager=Depen
         raise HTTPException(400, "服务名称不能为空")
 
     user_id = request.state.user["id"]
-    server_config = _to_server_config(req)
+    data = await _read_user_config(user_id)
+    existing = data["mcpServers"].get(name)
+    server_config = _to_server_config(req, existing)
 
     # 1. 写入用户配置
-    data = await _read_user_config(user_id)
     data["mcpServers"][name] = server_config
     await _write_user_config(user_id, data)
 

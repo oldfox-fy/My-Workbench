@@ -8,6 +8,7 @@ export interface MCPServer {
   url?: string | null
   command?: string | null
   args: string[]
+  has_api_key?: boolean
   connected: boolean
   tools: string[]
 }
@@ -18,6 +19,7 @@ export interface SaveServerPayload {
   url?: string
   command?: string
   args?: string[]
+  api_key?: string
 }
 
 export interface SaveServerResult {
