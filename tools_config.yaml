@@ -446,3 +446,208 @@ tools:
       required: ["slides"]
     module: backend.system_tools.ppt_generator
     function_name: generate_pptx
+
+  - name: system_set_reminder
+    title: 设置提醒
+    description: >
+      设置一条定时提醒或循环提醒。时间用 at（具体时间，格式 YYYY-MM-DD HH:MM 或 HH:MM）
+      或 after_seconds（相对现在的秒数）之一指定；recurring_seconds>0 表示循环提醒（如
+      1800=每30分钟）。设置后到点会弹通知并语音播报提醒内容。
+      典型用法：用户说"提醒我明天开会""每2小时提醒我喝水"等。当前时间以系统提示词中的
+      {{time_now}} 为准，请换算成正确的 at 或 after_seconds。
+    parameters:
+      type: object
+      properties:
+        content:
+          type: string
+          description: 提醒内容，例如"开会"、"喝水"。
+        at:
+          type: string
+          description: 具体提醒时间（本地时间），格式 YYYY-MM-DD HH:MM 或 HH:MM。与 after_seconds 二选一。
+        after_seconds:
+          type: integer
+          description: 相对现在多少秒后提醒，例如 600=10分钟后。与 at 二选一。
+        recurring_seconds:
+          type: integer
+          description: 循环周期（秒），0 表示一次性。例如 1800=每30分钟、3600=每小时、86400=每天。
+      required: ["content"]
+    module: backend.system_tools.reminder
+    function_name: set_reminder
+
+  - name: system_list_reminders
+    title: 查看提醒
+    description: 列出所有尚未触发的提醒（含 id、内容、触发时间、是否循环）。
+    parameters:
+      type: object
+      properties: {}
+    module: backend.system_tools.reminder
+    function_name: list_reminders
+
+  - name: system_cancel_reminder
+    title: 取消提醒
+    description: 取消指定 id 的提醒（id 来自 system_list_reminders 的结果）。
+    parameters:
+      type: object
+      properties:
+        reminder_id:
+          type: integer
+          description: 要取消的提醒 id。
+      required: ["reminder_id"]
+    module: backend.system_tools.reminder
+    function_name: cancel_reminder
+
+  - name: system_open_app
+    title: 打开应用/文件/网址
+    description: >
+      打开一个应用程序、本地文件/文件夹或网址。应用可用中文名或别名
+      （如"记事本""计算器""任务管理器""浏览器""微信""vscode"等），
+      文件/文件夹传完整路径，网址传 http(s):// 开头或 www. 开头的地址。
+    parameters:
+      type: object
+      properties:
+        target:
+          type: string
+          description: 要打开的应用名/别名、文件路径、文件夹路径或网址。
+      required: ["target"]
+    module: backend.system_tools.system_control
+    function_name: open_app
+
+  - name: system_set_volume
+    title: 调节音量
+    description: 把系统主音量设置为 0~100 的绝对值（0 静音、100 最大）。
+    parameters:
+      type: object
+      properties:
+        level:
+          type: integer
+          description: 音量百分比 0~100。
+      required: ["level"]
+    module: backend.system_tools.system_control
+    function_name: set_volume
+
+  - name: system_mute_volume
+    title: 静音/取消静音
+    description: 静音（mute=true）或取消静音（mute=false）。
+    parameters:
+      type: object
+      properties:
+        mute:
+          type: boolean
+          description: true 静音，false 取消静音。默认 true。
+    module: backend.system_tools.system_control
+    function_name: mute_volume
+
+  - name: system_screenshot
+    title: 截屏
+    description: 截取整个屏幕并保存为 PNG 文件，返回文件路径与尺寸。save_path 留空则自动存到生成目录。
+    parameters:
+      type: object
+      properties:
+        save_path:
+          type: string
+          description: 保存路径（可选）。留空则自动以时间戳命名存到生成目录。
+    module: backend.system_tools.system_control
+    function_name: screenshot
+
+  - name: system_clipboard_read
+    title: 读取剪贴板
+    description: 读取系统剪贴板中的文本内容。
+    parameters:
+      type: object
+      properties: {}
+    module: backend.system_tools.system_control
+    function_name: clipboard_read
+
+  - name: system_clipboard_write
+    title: 写入剪贴板
+    description: 把指定文本写入系统剪贴板，便于后续粘贴。
+    parameters:
+      type: object
+      properties:
+        text:
+          type: string
+          description: 要写入剪贴板的文本。
+      required: ["text"]
+    module: backend.system_tools.system_control
+    function_name: clipboard_write
+
+  - name: system_power_action
+    title: 电源操作
+    description: >
+      执行电源操作（敏感，需用户审批）。action 可选：lock（锁屏）、sleep（睡眠）、
+      hibernate（休眠）、shutdown（关机）、restart（重启）。
+    parameters:
+      type: object
+      properties:
+        action:
+          type: string
+          enum: ["lock", "sleep", "hibernate", "shutdown", "restart"]
+          description: 电源操作类型。
+      required: ["action"]
+    module: backend.system_tools.system_control
+    function_name: power_action
+
+  - name: system_get_active_window
+    title: 获取当前窗口
+    description: 获取当前前台（活动）窗口的标题、类名与句柄。
+    parameters:
+      type: object
+      properties: {}
+    module: backend.system_tools.system_control
+    function_name: get_active_window
+
+  - name: system_send_email
+    title: 发送邮件
+    description: >
+      通过 app_config.yaml 里配置的 SMTP 账户发送一封纯文本邮件给指定收件人。
+      使用前需在配置中开启 email 节并填写 smtp_host / smtp_user / smtp_pass（授权码）。
+    parameters:
+      type: object
+      properties:
+        to:
+          type: string
+          description: 收件人邮箱地址。
+        subject:
+          type: string
+          description: 邮件主题。
+        body:
+          type: string
+          description: 邮件正文（纯文本）。
+      required: ["to", "subject", "body"]
+    module: backend.system_tools.email
+    function_name: send_email
+
+  - name: system_send_wechat
+    title: 微信推送
+    description: >
+      通过 Server酱 或 PushPlus（免费自通知服务）把一条消息推送到用户自己的微信。
+      使用前需在 app_config.yaml 的 wechat 节配置 service 与对应 token/sendkey。
+      典型用途：任务完成后通知自己、把某个结果发到自己微信。
+    parameters:
+      type: object
+      properties:
+        title:
+          type: string
+          description: 推送标题。
+        content:
+          type: string
+          description: 推送正文内容。
+      required: ["title", "content"]
+    module: backend.system_tools.wechat
+    function_name: send_wechat
+
+  - name: system_notify
+    title: 系统通知
+    description: 发送一条 Windows 原生 Toast 通知（右下角弹窗）。title 为标题，message 为正文。
+    parameters:
+      type: object
+      properties:
+        title:
+          type: string
+          description: 通知标题。
+        message:
+          type: string
+          description: 通知正文。
+      required: ["title", "message"]
+    module: backend.system_tools.notify
+    function_name: send_notification

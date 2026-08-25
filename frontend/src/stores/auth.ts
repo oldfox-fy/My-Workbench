@@ -95,6 +95,25 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
+  /** 桌面端自动登录：向本机后端申请 admin token，成功返回 true */
+  async function desktopAutoLogin(): Promise<boolean> {
+    if (token.value) return true
+    try {
+      const res = await fetch('/api/auth/desktop-login', { method: 'POST' })
+      if (!res.ok) return false
+      const data = await res.json()
+      token.value = data.token
+      user.value = data.user
+      localStorage.setItem(TOKEN_KEY, data.token)
+      if (data.user?.role === 'admin') {
+        fetchPendingCount()
+      }
+      return true
+    } catch {
+      return false
+    }
+  }
+
   /** 注册 */
   async function register(username: string, password: string): Promise<{ message: string }> {
     const res = await fetch('/api/auth/register', {
@@ -230,7 +249,7 @@ export const useAuthStore = defineStore('auth', () => {
     // getters
     isLoggedIn, isAdmin,
     // actions
-    init, login, register, logout, logoutLocal, changePassword,
+    init, login, desktopAutoLogin, register, logout, logoutLocal, changePassword,
     loadUsers, approveUser, disableUser, enableUser, deleteUser, resetUserPassword,
     fetchPendingCount, loadAuditLogs,
   }

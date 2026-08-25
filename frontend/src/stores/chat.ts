@@ -18,7 +18,8 @@ export interface Chat {
 export const useChatStore = defineStore('chat', () => {
   const chats = ref<Chat[]>([])
   const activeChatId = ref<string>('')
-  const enableProfile = ref(localStorage.getItem('enableProfile') === 'true')
+  // 默认开启角色模式（仅当显式存过 'false' 时才关闭）
+  const enableProfile = ref(localStorage.getItem('enableProfile') !== 'false')
 
   /** 从用户偏好加载 enableProfile */
   function applyUserPrefs(prefs: Record<string, any>) {

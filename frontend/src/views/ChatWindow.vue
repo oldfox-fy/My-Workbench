@@ -209,6 +209,10 @@
                 style="margin-left: 4px; cursor: pointer" @click="configStore.toggleAutoSwitch()">
                 🤖 自动
               </n-tag>
+              <n-tag v-if="wakeAvailable || assistantState !== 'idle'" :type="voiceStateType" size="tiny" round
+                style="margin-left: 4px" :title="wakeAvailable ? '已开启免按键唤醒（说「你好，海之芯」）' : '免按键唤醒不可用'">
+                🎙 {{ voiceStateLabel }}
+              </n-tag>
             </div>
             <div class="toolbar-right">
               <n-select
@@ -287,7 +291,7 @@
         @files-paste="handlePasteFiles"
         @upload-change="handleFileUpload"
         @toggle-auto-read="toggleAutoRead"
-        @voice-text="onVoiceText"
+        @assistant-ask="onAssistantAsk"
       />
     </main>
     </div>
@@ -389,6 +393,7 @@ import { useChat } from '@/composables/useChat'
 import { useMessageActions } from '@/composables/useMessageActions'
 import { useResizeHandle } from '@/composables/useResizeHandle'
 import { useTTS } from '@/composables/useVoice'
+import { useAssistant } from '@/composables/useAssistant'
 import { localIP, uploadDir } from '@/utils/message'
 
 const route = useRoute()
@@ -454,12 +459,55 @@ function toggleAutoRead() {
   saveUserPrefs({ autoRead: autoRead.value } as any)
 }
 
-function onVoiceText(text: string) {
-  // 将语音识别的文字追加到输入框
-  currentInput.value = currentInput.value
-    ? currentInput.value + ' ' + text
-    : text
+// 免按键唤醒（模块级单例：订阅 /ws/assistant，拿到状态 + 唤醒后的识别/回答）
+const { assistantState, wakeAvailable, startHandsfree, stopHandsfree } = useAssistant()
+
+// 语音助手全链路结果：写入对话历史 + 朗读回答（按键触发 / 免按键唤醒共用）
+async function addAssistantResult(transcript: string, answer: string, spokenLocally = false) {
+  if (chatStore.activeChatId) {
+    if (transcript) await chatStore.addMessageToActive({ role: 'user', content: transcript })
+    if (answer) await chatStore.addMessageToActive({ role: 'assistant', content: answer })
+  }
+  // 朗读回答（复用现有 useTTS，优先 LLM TTS，失败降级浏览器原生）；
+  // 后端已本地播报（edge 模式）时跳过，避免双播
+  if (answer && !spokenLocally) speak(answer)
+  nextTick(() => messageListRef.value?.scrollToLatest())
 }
+
+function onAssistantAsk(result: { transcript: string; answer: string; state: string; spoken_locally?: boolean }) {
+  addAssistantResult(result.transcript, result.answer, result.spoken_locally)
+  // 识别文字已作为用户消息写入对话，清空输入框避免重复
+  currentInput.value = ''
+}
+
+// 定时提醒触发：追加到对话 + 浏览器系统通知（后端已本地语音播报，前端不再重复出声）
+function onReminder(r: { id: number; content: string }) {
+  if (chatStore.activeChatId && r.content) {
+    chatStore.addMessageToActive({ role: 'assistant', content: `🔔 提醒：${r.content}` })
+    nextTick(() => messageListRef.value?.scrollToLatest())
+  }
+  try {
+    if ('Notification' in window && Notification.permission === 'granted') {
+      new Notification('提醒', { body: r.content })
+    }
+  } catch { /* ignore */ }
+}
+
+const voiceStateLabel = computed(() => {
+  switch (assistantState.value) {
+    case 'listening': return '聆听中…'
+    case 'thinking': return '思考中…'
+    case 'acting': return '执行中…'
+    case 'speaking': return '播报中…'
+    case 'error': return '出错了'
+    default: return wakeAvailable.value ? '待命' : ''
+  }
+})
+const voiceStateType = computed(() => {
+  if (assistantState.value === 'error') return 'error' as const
+  if (assistantState.value !== 'idle') return 'warning' as const
+  return 'success' as const
+})
 
 const { activeModelId, modelOptions, switchActiveModel } = useModel()
 const { uploadFileList, uploadedFiles, isDragging, onDragEnter, onDragOver,
@@ -785,6 +833,11 @@ async function waitForBackend() {
 
 onMounted(async () => {
   checkMobile()
+  // 免按键唤醒：订阅 /ws/assistant，唤醒后把识别+回答写入对话并播报
+  startHandsfree(
+    (r) => addAssistantResult(r.transcript, r.answer, r.spoken_locally),
+    onReminder,
+  )
   let resizeTimer: ReturnType<typeof setTimeout>
   window.addEventListener('resize', () => {
     clearTimeout(resizeTimer)
@@ -806,6 +859,7 @@ onMounted(async () => {
 onUnmounted(() => {
   window.removeEventListener('resize', checkMobile)
   window.removeEventListener('keydown', onKeydown)
+  stopHandsfree()
 })
 
 // ── 登出 ──

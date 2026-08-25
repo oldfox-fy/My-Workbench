@@ -81,21 +81,21 @@
         </n-button>
       </n-upload>
 
-      <!-- 语音输入按钮 -->
+      <!-- 语音助手按钮（点击说话 → 实时识别显示在输入框 → 结束后交给助手回答） -->
       <n-button
         text
-        class="mic-btn"
-        :class="{ recording: isRecording }"
-        :title="isRecording ? '点击停止录音' : '语音输入'"
-        @click="toggleRecording"
+        class="assistant-btn"
+        :class="{ recording: isRecording || assistantState === 'listening' }"
+        :title="isRecording ? '点击结束并提问' : (wakeAvailable ? '语音助手（已开启免按键唤醒）' : '语音助手')"
+        @click="toggleAssistant"
         :disabled="disabled"
       >
         <template #icon>
           <n-icon v-if="isRecording"><m-svg name="stop" /></n-icon>
-          <n-icon v-else><MicOutline /></n-icon>
+          <n-icon v-else><SparklesOutline /></n-icon>
         </template>
       </n-button>
-      <span v-if="isRecording && interimText" class="mic-interim">{{ interimText }}</span>
+      <span v-if="isRecording || assistantState === 'listening'" class="mic-interim">聆听中…</span>
 
       <!-- 自动朗读开关 -->
       <n-button
@@ -124,11 +124,12 @@
 </template>
 
 <script setup lang="ts">
-import { ref, PropType } from 'vue'
+import { ref, watch, PropType } from 'vue'
 import { NButton, NInput, NUpload, NIcon, type UploadFileInfo } from 'naive-ui'
-import { ArrowDownOutline, DocumentOutline, MicOutline, VolumeHighOutline } from '@vicons/ionicons5'
+import { ArrowDownOutline, DocumentOutline, VolumeHighOutline, SparklesOutline } from '@vicons/ionicons5'
 import mSvg from '@/components/mSvg.vue'
 import { useVoiceRecorder } from '@/composables/useVoice'
+import { useAssistant } from '@/composables/useAssistant'
 
 
 const props = defineProps({
@@ -162,21 +163,38 @@ const emit = defineEmits<{
   'uploadChange': [options: { file: UploadFileInfo; fileList: UploadFileInfo[] }]
   'update:fileList': [files: UploadFileInfo[]]
   'toggleAutoRead': []
-  'voiceText': [text: string]
+  'assistantAsk': [result: { transcript: string; answer: string; state: string; spoken_locally?: boolean }]
 }>()
 
-// 语音录音器
-const { isRecording, interimText, errorMsg, startRecording, stopRecording, cancelRecording } = useVoiceRecorder()
+// 语音助手：录音（浏览器识别，实时显示）→ 识别文字 → 后端助手全链路
+const { isRecording, interimText, startRecording, stopRecording } = useVoiceRecorder()
+const { askText, assistantState, wakeAvailable } = useAssistant()
 
-async function toggleRecording() {
+// 录音时把实时识别文字回填到输入框，满足「说话时自动识别文字显示」
+watch(interimText, (t) => {
+  if (isRecording.value && t) emit('update:modelValue', t)
+})
+
+async function toggleAssistant() {
   if (isRecording.value) {
+    let text = ''
     try {
-      const text = await stopRecording()
-      if (text) {
-        emit('voiceText', text)
-      }
+      text = (await stopRecording()).trim()
     } catch {
       // 错误已由 useVoiceRecorder 处理
+    }
+    if (text) {
+      emit('update:modelValue', text)
+      try {
+        const result = await askText(text)
+        if (result && (result.transcript || result.answer)) {
+          emit('assistantAsk', result)
+        }
+      } catch {
+        // 识别成功但助手调用失败：保留输入框文字，用户可手动发送
+      }
+    } else {
+      emit('update:modelValue', '')
     }
   } else {
     await startRecording()
@@ -468,6 +486,17 @@ function triggerJelly() {
 .auto-read-btn {
   width: 40px;
   height: 40px;
+}
+
+/* 语音助手按钮 */
+.assistant-btn {
+  width: 40px;
+  height: 40px;
+  transition: all 0.2s;
+}
+.assistant-btn.recording {
+  color: #ef4444;
+  animation: pulse-mic 1.2s ease-in-out infinite;
 }
 
 .fade-enter-active,

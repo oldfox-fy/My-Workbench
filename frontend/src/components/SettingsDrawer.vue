@@ -273,6 +273,65 @@
           </div>
         </n-tab-pane>
 
+        <!-- 语音助手设置（P4） -->
+        <n-tab-pane name="voice" tab="语音助手">
+          <n-form label-placement="left" label-width="120">
+            <n-form-item label="启用助手">
+              <n-space align="center">
+                <n-switch v-model:value="voiceConfig.enabled" />
+                <n-text depth="3" style="font-size: 0.75rem">关闭后仅保留按键触发，不监听唤醒词</n-text>
+              </n-space>
+            </n-form-item>
+            <n-form-item label="唤醒方式">
+              <n-select v-model:value="voiceConfig.wake_mode" :options="wakeModeOptions" />
+            </n-form-item>
+            <n-form-item label="唤醒词">
+              <n-input v-model:value="voiceConfig.wake_word" placeholder="如：你好，海之芯" />
+            </n-form-item>
+            <n-form-item label="本地模型">
+              <n-select v-model:value="voiceConfig.whisper_model" :options="whisperModelOptions" />
+            </n-form-item>
+            <n-form-item label="识别引擎">
+              <n-select v-model:value="voiceConfig.stt_engine" :options="engineOptions" />
+            </n-form-item>
+            <n-form-item label="播报引擎">
+              <n-select v-model:value="voiceConfig.tts_engine" :options="ttsEngineOptions" />
+            </n-form-item>
+            <n-form-item v-if="voiceConfig.tts_engine === 'edge'" label="音色">
+              <n-input v-model:value="voiceConfig.edge_voice" placeholder="zh-CN-XiaoxiaoNeural" />
+            </n-form-item>
+            <n-form-item v-if="voiceConfig.tts_engine === 'edge'" label="语速">
+              <n-input v-model:value="voiceConfig.edge_rate" placeholder="+0%（如 +10% / -10%）" />
+            </n-form-item>
+            <n-form-item label="静音判定">
+              <n-space align="center">
+                <n-input-number v-model:value="voiceConfig.silence_timeout" :min="0.3" :max="5" :step="0.1" style="width: 120px" />
+                <n-text depth="3" style="font-size: 0.75rem">秒</n-text>
+              </n-space>
+            </n-form-item>
+            <n-form-item label="最长收音">
+              <n-space align="center">
+                <n-input-number v-model:value="voiceConfig.max_listen_seconds" :min="3" :max="60" :step="1" style="width: 120px" />
+                <n-text depth="3" style="font-size: 0.75rem">秒</n-text>
+              </n-space>
+            </n-form-item>
+            <n-form-item label="唤醒状态">
+              <n-tag :type="wakeAvailable ? 'success' : 'warning'" size="small">
+                {{ wakeAvailable ? '免按键唤醒可用' : '唤醒不可用（麦克风/模型未就绪）' }}
+              </n-tag>
+            </n-form-item>
+            <n-form-item label=" ">
+              <n-space>
+                <n-button type="primary" :loading="voiceSaving" @click="saveVoice">保存并生效</n-button>
+                <n-button :loading="voiceLoading" @click="loadVoiceConfig">重置为当前值</n-button>
+              </n-space>
+            </n-form-item>
+          </n-form>
+          <n-alert type="info" size="small" style="margin-top: 8px">
+            修改唤醒词 / 音色 / 模型后点「保存并生效」，后台会实时重启语音助手，无需重启应用。
+          </n-alert>
+        </n-tab-pane>
+
         <!-- 外观设置 -->
         <n-tab-pane name="appearance" tab="外观">
           <n-form label-placement="left" label-width="80">
@@ -758,6 +817,7 @@ import { useAuthStore } from '@/stores/auth'
 import { apiFetch } from '@/api/client'
 import mSvg from '@/components/mSvg.vue'
 import KbSettingsPanel from '@/components/kb/KbSettingsPanel.vue'
+import { useAssistant, type VoiceConfig } from '@/composables/useAssistant'
 
 
 const props = defineProps<{ show: boolean }>()
@@ -975,6 +1035,68 @@ onMounted(() => {
   applyFontSize(themeFontSize.value)
 })
 const profileId = ref()
+
+// ---------- 语音助手设置（P4） ----------
+const { fetchVoiceConfig, saveVoiceConfig, wakeAvailable } = useAssistant()
+const voiceLoading = ref(false)
+const voiceSaving = ref(false)
+const voiceConfig = reactive<VoiceConfig>({
+  enabled: true,
+  wake_mode: 'whisper',
+  wake_word: '',
+  whisper_model: 'tiny',
+  whisper_mirror: '',
+  silence_timeout: 1.2,
+  max_listen_seconds: 15,
+  stt_engine: 'local',
+  tts_engine: 'edge',
+  edge_voice: 'zh-CN-XiaoxiaoNeural',
+  edge_rate: '+0%',
+})
+const wakeModeOptions = [
+  { label: 'whisper · 本地中文唤醒词（推荐）', value: 'whisper' },
+  { label: 'oww · openWakeWord（英文/自训模型）', value: 'oww' },
+]
+const whisperModelOptions = [
+  { label: 'tiny · 最快（约 75MB）', value: 'tiny' },
+  { label: 'base · 较准', value: 'base' },
+  { label: 'small · 更准（约 460MB）', value: 'small' },
+]
+const engineOptions = [
+  { label: 'local · 本地 faster-whisper（免 key）', value: 'local' },
+  { label: 'cloud · 云端 STT（需 key）', value: 'cloud' },
+]
+const ttsEngineOptions = [
+  { label: 'edge · edge-tts 本地播报（推荐）', value: 'edge' },
+  { label: 'cloud · 前端/云端播报', value: 'cloud' },
+]
+
+async function loadVoiceConfig() {
+  voiceLoading.value = true
+  try {
+    const res = await fetchVoiceConfig()
+    if (res) {
+      if (res.config) Object.assign(voiceConfig, res.config)
+      wakeAvailable.value = !!res.wake_available
+    }
+  } finally {
+    voiceLoading.value = false
+  }
+}
+
+async function saveVoice() {
+  voiceSaving.value = true
+  try {
+    await saveVoiceConfig({ ...voiceConfig })
+    message.success('语音设置已保存并生效')
+  } catch (e: any) {
+    message.error(e.message || '保存语音设置失败')
+  } finally {
+    voiceSaving.value = false
+  }
+}
+
+onMounted(loadVoiceConfig)
 
 // 对话框状态
 const showModelDialog = ref(false)

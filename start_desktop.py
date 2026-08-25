@@ -12,6 +12,32 @@ import threading
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 FRONTEND_DIR = os.path.join(SCRIPT_DIR, "frontend")
 
+# 静默模式：开机自启动时传入 --silent，隐藏所有控制台并把日志写入文件
+SILENT = "--silent" in sys.argv
+
+
+def _setup_logging():
+    """静默模式下把 stdout/stderr 重定向到日志文件。
+
+    pythonw.exe 启动时 sys.stdout 为 None，直接 print 会抛异常；
+    这里统一重定向到 logs/autostart.log，既避免崩溃又保留排查线索。
+    """
+    if not SILENT and sys.stdout is not None:
+        return
+    log_dir = os.path.join(SCRIPT_DIR, "logs")
+    os.makedirs(log_dir, exist_ok=True)
+    log_path = os.path.join(log_dir, "autostart.log")
+    f = open(log_path, "a", encoding="utf-8")
+    sys.stdout = f
+    sys.stderr = f
+
+
+def _pause(msg="按任意键退出..."):
+    """静默模式下不阻塞等待输入。"""
+    if SILENT:
+        return
+    input(msg)
+
 
 def find_free_port(start=5175, max_attempts=10):
     """查找可用端口"""
@@ -86,7 +112,7 @@ def start_frontend():
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             shell=True,
-            creationflags=subprocess.CREATE_NEW_CONSOLE,
+            creationflags=(subprocess.CREATE_NO_WINDOW if SILENT else subprocess.CREATE_NEW_CONSOLE),
         )
     else:
         proc = subprocess.Popen(
@@ -147,6 +173,7 @@ def cleanup(frontend_proc):
 
 
 def main():
+    _setup_logging()
     print()
     print("=" * 60)
     print("   My Workbench — 一键启动桌面版")
@@ -185,7 +212,7 @@ def main():
     except ImportError as e:
         print(f"[错误] 缺少依赖: {e}")
         print("       请运行: pip install -r requirements.txt")
-        input("按任意键退出...")
+        _pause("按任意键退出...")
         sys.exit(1)
     print("[检查] 核心依赖 OK")
 
@@ -198,7 +225,7 @@ def main():
     print("  │  后端地址 : http://localhost:8080       │")
     print("  │  前端地址 : http://localhost:5175       │")
     print("  │  桌面窗口将自动打开                     │")
-    print("  │  关闭桌面窗口即退出程序                 │")
+    print("  │  关闭窗口仅最小化到托盘，随时可唤醒       │")
     print("  └────────────────────────────────────────┘")
     print()
 

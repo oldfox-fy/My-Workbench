@@ -91,6 +91,7 @@ async def lifespan(app: FastAPI):
     app.state.mcp_manager = None
     app.state.skill_registry = None
     app.state.kb_watcher = None
+    app.state.reminder_scheduler = None
     app.state.init_success = False
     app.state.init_error = None
 
@@ -128,6 +129,29 @@ async def lifespan(app: FastAPI):
             )
             await kb_watcher.start()
             app.state.kb_watcher = kb_watcher
+            # 启动语音助手（P0 按键触发；P1 再上唤醒词监听）
+            try:
+                # 先应用持久化的语音设置 overlay（P4：语音设置面板），再启动助手
+                from backend.voice.settings import apply_voice_settings
+                apply_voice_settings()
+                from backend.voice.assistant import get_assistant
+                voice_assistant = get_assistant()
+                voice_assistant.bind(mcp_manager=mcp_manager, skill_registry=skill_registry)
+                await voice_assistant.start()
+                app.state.voice_assistant = voice_assistant
+            except Exception as _ve:
+                logger.warning(f"语音助手启动失败（不影响主流程）：{_ve}")
+            # 启动定时提醒调度器（P2）
+            try:
+                if config.reminders_enabled:
+                    from backend.voice.reminders import get_store, ReminderScheduler
+                    reminder_scheduler = ReminderScheduler(
+                        get_store(), interval=config.reminders_check_interval
+                    )
+                    await reminder_scheduler.start()
+                    app.state.reminder_scheduler = reminder_scheduler
+            except Exception as _re:
+                logger.warning(f"提醒调度器启动失败（不影响主流程）：{_re}")
             app.state.init_success = True
             ready_event.set()
             logger.info("✅ 后台基础设施全部初始化完毕！")
@@ -164,6 +188,16 @@ async def lifespan(app: FastAPI):
             await app.state.kb_watcher.stop()
     except Exception as e:
         logger.warning(f"停止KB监听器出错: {e}")
+    try:
+        if getattr(app.state, "voice_assistant", None):
+            await app.state.voice_assistant.stop()
+    except Exception as e:
+        logger.warning(f"停止语音助手出错: {e}")
+    try:
+        if getattr(app.state, "reminder_scheduler", None):
+            await app.state.reminder_scheduler.stop()
+    except Exception as e:
+        logger.warning(f"停止提醒调度器出错: {e}")
 
 
 # ============ FastAPI App 构建 ============
@@ -224,6 +258,10 @@ register_all_routers(app)
 # WebSocket 聊天端点（双向通信，即时取消）
 from backend.routes.ws_chat import ws_chat_endpoint
 app.websocket("/ws/chat")(ws_chat_endpoint)
+
+# WebSocket 语音助手状态推送端点（P0 预留，P1 唤醒后前端订阅）
+from backend.routes.assistant import ws_assistant
+app.websocket("/ws/assistant")(ws_assistant)
 
 @app.get("/api/wait-ready")
 async def wait_ready(request: Request):
@@ -332,6 +370,82 @@ def start_fastapi(reload: bool = False):
         logger.error(f"❌ FastAPI 启动失败: {e}")
 
 
+def _build_orb_html(ws_url: str) -> str:
+    """构建悬浮球窗口的内联 HTML（无外部资源，直接连 /ws/assistant 状态通道）。"""
+    return """<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; padding: 0; background: transparent; overflow: hidden; }
+  #wrap { width: 100vw; height: 100vh; display: flex; flex-direction: column;
+          align-items: center; justify-content: center; gap: 3px; }
+  #orb { width: 62px; height: 62px; border-radius: 50%;
+    background: radial-gradient(circle at 30% 30%, rgba(255,255,255,.55), rgba(0,0,0,0) 60%), #22c55e;
+    box-shadow: 0 0 16px 5px #22c55e;
+    display: flex; align-items: center; justify-content: center;
+    transition: background .3s ease, box-shadow .3s ease;
+    user-select: none; cursor: pointer; }
+  #mic { font-size: 28px; line-height: 1; }
+  #label { font: 10px/1.2 "Segoe UI", "Microsoft YaHei", sans-serif;
+           color: #fff; text-shadow: 0 0 3px #000; white-space: nowrap; }
+</style>
+</head>
+<body>
+  <div id="wrap">
+    <div id="orb"><span id="mic">🎤</span></div>
+    <div id="label">待命</div>
+  </div>
+<script>
+  var COLORS = { idle:'#22c55e', listening:'#3b82f6', thinking:'#f59e0b',
+                 acting:'#a855f7', speaking:'#06b6d4', error:'#ef4444' };
+  var LABELS = { idle:'待命', listening:'聆听', thinking:'思考',
+                 acting:'执行', speaking:'播报', error:'出错' };
+  var orb = document.getElementById('orb');
+  var label = document.getElementById('label');
+  function setState(s) {
+    var c = COLORS[s] || COLORS.idle;
+    orb.style.background = 'radial-gradient(circle at 30% 30%, rgba(255,255,255,.55), rgba(0,0,0,0) 60%), ' + c;
+    orb.style.boxShadow = '0 0 16px 5px ' + c;
+    label.textContent = LABELS[s] || s;
+  }
+  // 区分「点击」与「拖动」：按下→抬起位移很小时视为点击，唤起主窗口
+  var downX = 0, downY = 0, moved = false;
+  document.addEventListener('mousedown', function(e){ downX = e.screenX; downY = e.screenY; moved = false; });
+  document.addEventListener('mousemove', function(e){
+    if (Math.abs(e.screenX - downX) + Math.abs(e.screenY - downY) > 6) moved = true; });
+  orb.addEventListener('mouseup', function(){
+    if (moved) return;
+    try { window.pywebview.api.show_main(); } catch (_) {} });
+  // 状态订阅（服务端广播，主窗口/悬浮球共享）
+  var ws = null, retry = null;
+  function schedule(){ if (retry) return; retry = setTimeout(function(){ retry = null; connect(); }, 3000); }
+  function connect(){
+    try { ws = new WebSocket('__WS_URL__'); } catch (e) { schedule(); return; }
+    ws.onmessage = function(ev){
+      var m; try { m = JSON.parse(ev.data); } catch (_) { return; }
+      if (m && m.type === 'state' && m.state) setState(m.state); };
+    ws.onclose = function(){ schedule(); };
+    ws.onerror = function(){ try { ws.close(); } catch (_) {} };
+  }
+  connect();
+</script>
+</body>
+</html>""".replace("__WS_URL__", ws_url)
+
+
+def _make_tray_image():
+    """用 PIL 生成托盘图标（蓝紫圆底 + 白色麦克风，避免依赖外部图标文件）。"""
+    from PIL import Image, ImageDraw
+    img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    d.ellipse((4, 4, 60, 60), fill=(99, 102, 241, 255))                       # 强调色底
+    d.rounded_rectangle((26, 14, 38, 40), radius=6, fill=(255, 255, 255, 255))  # 麦克风头
+    d.line((32, 40, 32, 46), fill=(255, 255, 255, 255), width=4)                # 麦克风杆
+    d.line((24, 46, 40, 46), fill=(255, 255, 255, 255), width=4)                # 底座
+    return img
+
+
 def start_gui():
     import webview
     import threading
@@ -437,7 +551,83 @@ def start_gui():
     _storage_dir = os.path.join(_tempfile.gettempdir(), 'MyWorkbench_WebView2')
     os.makedirs(_storage_dir, exist_ok=True)
 
-    webview.create_window(
+    # ── P4：托盘 + 悬浮球 + 关闭即后台常驻 ──
+    silent = "--silent" in sys.argv     # 开机自启动时隐藏主窗口，仅托盘/悬浮球常驻
+    state = {"quit": False}             # 退出标志（托盘「退出」置位后，点 X 才真正退出）
+    main_window = None
+    orb_window = None
+    tray_icon = None
+
+    def do_quit():
+        """真正退出：先销毁所有窗口让 webview.start() 返回，再停掉托盘。"""
+        state["quit"] = True
+        for w in (orb_window, main_window):
+            if w is not None:
+                try:
+                    w.destroy()   # pywebview 内部会 Invoke 到 GUI 线程，线程安全
+                except Exception:
+                    pass
+        try:
+            if tray_icon is not None:
+                tray_icon.stop()
+        except Exception:
+            pass
+
+    def on_main_closing():
+        """主窗口点 X：不退出，只隐藏到托盘（返回 False 取消关闭）。"""
+        if state["quit"]:
+            return True
+        try:
+            main_window.hide()
+        except Exception:
+            pass
+        return False
+
+    def on_orb_closing():
+        """悬浮球被关闭（如 Alt+F4）：非退出场景下隐藏而非销毁。"""
+        if state["quit"]:
+            return True
+        try:
+            orb_window.hide()
+        except Exception:
+            pass
+        return False
+
+    class OrbApi:
+        """悬浮球暴露给前端 JS 的接口：点击唤起主窗口。"""
+        def show_main(self):
+            if main_window is not None:
+                try:
+                    main_window.show()
+                except Exception:
+                    pass
+
+    def _show_main():
+        if main_window is not None:
+            try:
+                main_window.show()
+            except Exception:
+                pass
+
+    def _show_orb():
+        if orb_window is not None:
+            try:
+                orb_window.show()
+            except Exception:
+                pass
+
+    def _start_tray():
+        import pystray
+        menu = pystray.Menu(
+            pystray.MenuItem("显示主窗口", lambda icon, item: _show_main(), default=True),
+            pystray.MenuItem("显示悬浮球", lambda icon, item: _show_orb()),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem("退出", lambda icon, item: do_quit()),
+        )
+        return pystray.Icon("MyWorkbench", _make_tray_image(), "My Workbench", menu)
+
+    # 主窗口（silent 模式启动即隐藏，开机常驻）
+    main_window = webview.create_window(
         title="My Workbench",
         url=FRONTEND_URL,
         width=1200, height=860,
@@ -445,7 +635,27 @@ def start_gui():
         resizable=True,
         text_select=True,
         js_api=Api(),
+        hidden=silent,
     )
+    main_window.events.closing += on_main_closing
+
+    # 悬浮球（无边框、透明、置顶、可拖动；点击唤起主窗口）
+    orb_window = webview.create_window(
+        title="",
+        html=_build_orb_html(f"ws://127.0.0.1:{SERVER_PORT}/ws/assistant"),
+        width=96, height=100,
+        frameless=True,
+        transparent=True,
+        on_top=True,
+        easy_drag=True,
+        js_api=OrbApi(),
+    )
+    orb_window.events.closing += on_orb_closing
+
+    # 系统托盘（独立线程跑 pystray 主循环）
+    tray_icon = _start_tray()
+    threading.Thread(target=tray_icon.run, daemon=True, name="tray-icon").start()
+
     webview.start(
         debug=DEBUG_MODE,
         http_server=True,
@@ -453,6 +663,13 @@ def start_gui():
         storage_path=_storage_dir,
         icon=icon_path,
     )
+
+    # webview.start() 在所有窗口销毁后返回（正常只有点托盘「退出」才会走到这里）
+    try:
+        if tray_icon is not None:
+            tray_icon.stop()
+    except Exception:
+        pass
 
 
 # ============ 入口 ============

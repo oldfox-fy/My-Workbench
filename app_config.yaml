@@ -57,6 +57,65 @@ voice:
   tts_base_url: ""
   tts_api_key: ""
 
+# 语音助手配置（「小爱同学」式，P0 按键触发；P1 唤醒词；P2 定时/本地引擎）
+voice_assistant:
+  enabled: true        # 总开关
+  # 唤醒方式：whisper = 本地 faster-whisper 转写匹配中文唤醒词（推荐，支持中文）；
+  #           oww     = openWakeWord（仅英文内置/自训模型，中文走不通）
+  wake_mode: "whisper"
+  wake_word: "你好，海之芯"  # 唤醒词（whisper 模式直接匹配这段中文；oww 模式为英文/自训模型名）
+  wake_threshold: 0.5  # oww 模式唤醒置信度阈值（whisper 模式忽略）
+  # —— oww 模式专用 ——
+  # 自定义唤醒词 ONNX 模型路径（留空则回退英文内置模型）
+  wake_model_path: ""
+  # oww 模型下载镜像前缀（留空直连 GitHub）。国内可设代理前缀，例如 https://ghproxy.com
+  wake_model_mirror: ""
+  # —— whisper 模式专用 ——
+  # 本地模型大小：tiny 最快（约 75MB）/ base 较准 / small 更准（约 460MB）
+  whisper_model: "tiny"
+  # HuggingFace 镜像（留空用官方）。国内网络建议设 https://hf-mirror.com 加速模型下载
+  # 注意：走镜像时必须禁用 xet（代码内已自动设置 HF_HUB_DISABLE_XET=1）
+  whisper_mirror: "https://hf-mirror.com"
+  # 静默判定：说完后静音多久（秒）自动结束收音（P1 VAD）
+  silence_timeout: 1.2
+  # 单句最长收音时长（秒）
+  max_listen_seconds: 15
+  # —— 本地引擎（P2）——
+  # STT：local = faster-whisper 本地转写（免 key，可离线，速度看 whisper_model）；
+  #       cloud = 复用 voice 节云端 STT（whisper-1 等，需 key）
+  stt_engine: "local"
+  # TTS：edge = edge-tts 合成 + pygame 后端本地播报（窗口最小化也能出声、可打断，需联网）；
+  #       cloud = 前端 useTTS 播报（浏览器 speechSynthesis / LLM TTS）
+  tts_engine: "edge"
+  edge_voice: "zh-CN-XiaoxiaoNeural"  # edge-tts 音色（自然中文女声）
+  edge_rate: "+0%"                    # 语速，如 +10% / -10%
+
+# 定时提醒（P2）：应用内通知 + 本地语音播报。到点会弹 Windows Toast + 语音播报。
+reminders:
+  enabled: true         # 总开关
+  file: ""              # 持久化文件路径（留空 → data_dir/reminders.json）
+  check_interval: 2     # 调度器轮询间隔（秒）
+
+# 邮件外发（P3）：system_send_email 工具使用的 SMTP 账户。
+# smtp_pass 填「授权码」而非登录密码（QQ/163/Gmail 等均需在邮箱设置里开启 SMTP 并生成授权码）。
+email:
+  enabled: false        # 总开关
+  smtp_host: ""         # SMTP 服务器，如 smtp.qq.com / smtp.163.com / smtp.gmail.com
+  smtp_port: 465        # 465=SSL，587=STARTTLS
+  smtp_user: ""         # 登录账号（通常等于发件邮箱）
+  smtp_pass: ""         # SMTP 授权码
+  from_addr: ""         # 发件人显示地址（留空用 smtp_user）
+  use_ssl: true         # true=SSL(465)；false=STARTTLS(587)
+
+# 微信外发（P3）：system_send_wechat 工具，把消息推送到「你自己的微信」。
+# 二选一：PushPlus（https://www.pushplus.plus）或 Server酱（https://sct.ftqq.com）。
+# 两者都是免费的自通知服务——只需扫码绑定自己的微信即可，无需对方授权。
+wechat:
+  enabled: false        # 总开关
+  service: "pushplus"   # pushplus | serverchan
+  pushplus_token: ""    # PushPlus 的 token（service=pushplus 时用）
+  serverchan_sendkey: ""  # Server酱 的 SendKey（SCT 开头，service=serverchan 时用）
+
 # 智能模型切换配置（可选，默认关闭，由前端 localStorage 控制）
 auto_switch:
   enabled: false          # 默认关闭，用户可在设置中手动开启
@@ -76,6 +135,9 @@ tool_approval:
     - system_patch_file
     - system_run_command
     - system_delegate_task
+    - system_power_action      # 关机/重启/睡眠等
+    - system_send_email        # 外发邮件
+    - system_send_wechat       # 微信推送
   # 是否支持"此会话始终允许"（同类工具一次批准后不再询问）
   session_whitelist: true
 

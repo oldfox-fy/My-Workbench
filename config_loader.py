@@ -88,6 +88,47 @@ class AppConfig:
         self.voice_tts_base_url = vc.get("tts_base_url", "")
         self.voice_tts_api_key = vc.get("tts_api_key", "")
 
+        # 语音助手配置（「小爱同学」式）
+        va = self.raw_config.get("voice_assistant", {}) or {}
+        self.voice_assistant_enabled = va.get("enabled", True)
+        self.voice_assistant_wake_word = va.get("wake_word", "你好，海之芯")
+        self.voice_assistant_wake_threshold = float(va.get("wake_threshold", 0.5))
+        self.voice_assistant_wake_model_path = va.get("wake_model_path", "") or ""
+        self.voice_assistant_wake_model_mirror = va.get("wake_model_mirror", "") or ""
+        self.voice_assistant_wake_mode = va.get("wake_mode", "whisper") or "whisper"
+        self.voice_assistant_whisper_model = va.get("whisper_model", "tiny") or "tiny"
+        self.voice_assistant_whisper_mirror = va.get("whisper_mirror", "") or ""
+        self.voice_assistant_silence_timeout = float(va.get("silence_timeout", 1.2))
+        self.voice_assistant_max_listen_seconds = int(va.get("max_listen_seconds", 15))
+        # 本地引擎（P2）：STT 与 TTS 均支持 local/edge 与 cloud 切换
+        self.voice_assistant_stt_engine = va.get("stt_engine", "local") or "local"
+        self.voice_assistant_tts_engine = va.get("tts_engine", "edge") or "edge"
+        self.voice_assistant_edge_voice = va.get("edge_voice", "zh-CN-XiaoxiaoNeural")
+        self.voice_assistant_edge_rate = va.get("edge_rate", "+0%") or "+0%"
+
+        # 定时提醒配置（P2）
+        rm = self.raw_config.get("reminders", {}) or {}
+        self.reminders_enabled = rm.get("enabled", True)
+        self.reminders_file = rm.get("file", "") or ""
+        self.reminders_check_interval = float(rm.get("check_interval", 2))
+
+        # 邮件外发配置（P3）
+        em = self.raw_config.get("email", {}) or {}
+        self.email_enabled = em.get("enabled", False)
+        self.email_smtp_host = em.get("smtp_host", "") or ""
+        self.email_smtp_port = int(em.get("smtp_port", 465))
+        self.email_smtp_user = em.get("smtp_user", "") or ""
+        self.email_smtp_pass = em.get("smtp_pass", "") or ""
+        self.email_from = em.get("from_addr", "") or ""
+        self.email_use_ssl = bool(em.get("use_ssl", True))
+
+        # 微信推送配置（P3：Server酱 / PushPlus）
+        wc = self.raw_config.get("wechat", {}) or {}
+        self.wechat_enabled = wc.get("enabled", False)
+        self.wechat_service = wc.get("service", "pushplus") or "pushplus"
+        self.wechat_pushplus_token = wc.get("pushplus_token", "") or ""
+        self.wechat_serverchan_sendkey = wc.get("serverchan_sendkey", "") or ""
+
         # 工具审批配置
         ta = self.raw_config.get("tool_approval", {}) or {}
         self.tool_approval_enabled = ta.get("enabled", True)
@@ -95,6 +136,7 @@ class AppConfig:
             "system_write_file", "system_patch_file",
             "system_run_command", "system_delegate_task",
             "system_ask_user",
+            "system_power_action", "system_send_email", "system_send_wechat",
         ]))
         self.tool_approval_session_whitelist = ta.get("session_whitelist", True)
 

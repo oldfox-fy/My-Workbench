@@ -27,3 +27,11 @@ pdf2image>=1.17.0          # PDF to image conversion (PDF OCR needed)
 
 # --- Auto-tagging (Chinese word seg, non-blocking on failure) ---
 jieba>=0.42.1
+
+# --- Voice assistant (P1/P2: 唤醒词 + 本地 ASR/TTS + 系统托盘) ---
+pypinyin>=0.53.0
+faster-whisper>=1.2.0
+sounddevice>=0.5.0
+edge-tts>=7.0.0
+pygame>=2.6.0
+pystray>=0.19.0

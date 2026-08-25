@@ -21,6 +21,7 @@ import { useConfigStore } from '@/stores/config'
 import { useAuthStore } from '@/stores/auth'
 import { loadUserPrefs } from '@/api/userPrefs'
 import { useChatStore } from '@/stores/chat'
+import { isRunningInPyWebView } from '@/utils/common'
 
 const { naiveTheme, themeOverrides } = useTheme()
 const configStore = useConfigStore()
@@ -43,6 +44,15 @@ onMounted(async () => {
     await fetch('/api/wait-ready')
   } catch {
     // 后端可能未就绪，继续
+  }
+
+  // 桌面端自动登录：运行在 pywebview 窗口内且无 token 时，用 admin 账号免密登录
+  if (isRunningInPyWebView() && !authStore.token) {
+    try {
+      await authStore.desktopAutoLogin()
+    } catch {
+      // 自动登录失败则回退到正常登录页
+    }
   }
 
   // 确保 router 就绪

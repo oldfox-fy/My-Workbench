@@ -125,6 +125,53 @@ async def login(req: LoginRequest, request: Request):
         await db.close()
 
 
+@router.post("/auth/desktop-login")
+async def desktop_login(request: Request):
+    """桌面端自动登录：返回 admin 用户的 token（仅限本机访问）"""
+    client_host = request.client.host if request.client else ""
+    if client_host not in ("127.0.0.1", "localhost", "::1"):
+        await log_audit(None, "desktop", "desktop_login_failed", detail="非本机访问被拒绝")
+        raise HTTPException(status_code=403, detail="仅限本机访问")
+
+    db = await get_db()
+    try:
+        # 优先取 username='admin' 的管理员，否则取任一 role='admin'
+        cursor = await db.execute(
+            "SELECT id, username, role, status, kb_path, workspace_path "
+            "FROM users WHERE username = 'admin' AND role = 'admin' LIMIT 1"
+        )
+        row = await cursor.fetchone()
+        if not row:
+            cursor = await db.execute(
+                "SELECT id, username, role, status, kb_path, workspace_path "
+                "FROM users WHERE role = 'admin' LIMIT 1"
+            )
+            row = await cursor.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="管理员账号不存在")
+
+        user_id, username, role, status, kb_path, workspace_path = row
+        if status == "disabled":
+            raise HTTPException(status_code=403, detail="管理员账号已被禁用")
+
+        token = await create_token(user_id, remember_me=True)
+        await log_audit(user_id, username, "desktop_login", detail="桌面端自动登录")
+
+        return {
+            "token": token,
+            "user": {
+                "id": user_id,
+                "username": username,
+                "role": role,
+                "status": status,
+                "kb_path": kb_path or "",
+                "workspace_path": workspace_path or "",
+            },
+        }
+    finally:
+        await db.close()
+
+
 @router.post("/auth/register")
 async def register(req: RegisterRequest, request: Request):
     """注册新用户，默认 status=pending，角色=user"""
