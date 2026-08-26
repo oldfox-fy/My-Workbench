@@ -1,0 +1,13 @@
+{
+  "enabled": true,
+  "wake_mode": "whisper",
+  "wake_word": "你好，海之芯",
+  "whisper_model": "small",
+  "whisper_mirror": "https://hf-mirror.com",
+  "silence_timeout": 1.2,
+  "max_listen_seconds": 15,
+  "stt_engine": "local",
+  "tts_engine": "edge",
+  "edge_voice": "zh-CN-XiaoxiaoNeural",
+  "edge_rate": "+0%"
+}

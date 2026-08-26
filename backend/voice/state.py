@@ -17,6 +17,7 @@ class AssistantState(str, Enum):
     ACTING = "acting"       # Agent 工具执行中
     SPEAKING = "speaking"   # TTS 播报中
     ERROR = "error"         # 出错
+    PAUSED = "paused"       # 已暂停（启用开关关闭）
 
 
 class VoiceConnectionManager:

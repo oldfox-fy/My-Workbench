@@ -210,7 +210,7 @@
                 🤖 自动
               </n-tag>
               <n-tag v-if="wakeAvailable || assistantState !== 'idle'" :type="voiceStateType" size="tiny" round
-                style="margin-left: 4px" :title="wakeAvailable ? '已开启免按键唤醒（说「你好，海之芯」）' : '免按键唤醒不可用'">
+                style="margin-left: 4px" :title="assistantState === 'paused' ? '语音助手已暂停，可在设置中重新启用' : (wakeAvailable ? '已开启免按键唤醒（说「你好，海之芯」）' : '免按键唤醒不可用')">
                 🎙 {{ voiceStateLabel }}
               </n-tag>
             </div>
@@ -500,11 +500,13 @@ const voiceStateLabel = computed(() => {
     case 'acting': return '执行中…'
     case 'speaking': return '播报中…'
     case 'error': return '出错了'
+    case 'paused': return '已暂停'
     default: return wakeAvailable.value ? '待命' : ''
   }
 })
 const voiceStateType = computed(() => {
   if (assistantState.value === 'error') return 'error' as const
+  if (assistantState.value === 'paused') return 'default' as const
   if (assistantState.value !== 'idle') return 'warning' as const
   return 'success' as const
 })

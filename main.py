@@ -371,7 +371,12 @@ def start_fastapi(reload: bool = False):
 
 
 def _build_orb_html(ws_url: str) -> str:
-    """构建悬浮球窗口的内联 HTML（无外部资源，直接连 /ws/assistant 状态通道）。"""
+    """构建悬浮球窗口的内联 HTML（无外部资源，直接连 /ws/assistant 状态通道）。
+
+    交互：
+      - 左键点击：播报中→停止播报；否则→唤醒进入聆听（停靠侧边时→弹回原位）。
+      - 右键：弹出菜单（隐藏悬浮球 / 关闭·开启语音助手）。
+    """
     return """<!DOCTYPE html>
 <html>
 <head>
@@ -379,7 +384,7 @@ def _build_orb_html(ws_url: str) -> str:
 <style>
   html, body { margin: 0; padding: 0; background: transparent; overflow: hidden; }
   #wrap { width: 100vw; height: 100vh; display: flex; flex-direction: column;
-          align-items: center; justify-content: center; gap: 3px; }
+          align-items: center; justify-content: flex-start; padding-top: 4px; gap: 3px; }
   #orb { width: 62px; height: 62px; border-radius: 50%;
     background: radial-gradient(circle at 30% 30%, rgba(255,255,255,.55), rgba(0,0,0,0) 60%), #22c55e;
     box-shadow: 0 0 16px 5px #22c55e;
@@ -389,34 +394,61 @@ def _build_orb_html(ws_url: str) -> str:
   #mic { font-size: 28px; line-height: 1; }
   #label { font: 10px/1.2 "Segoe UI", "Microsoft YaHei", sans-serif;
            color: #fff; text-shadow: 0 0 3px #000; white-space: nowrap; }
+  #menu { display: none; flex-direction: column; background: rgba(30,30,30,.95);
+          border: 1px solid rgba(255,255,255,.22); border-radius: 8px; overflow: hidden;
+          box-shadow: 0 4px 16px rgba(0,0,0,.5); }
+  #menu div { padding: 8px 12px; font: 12px/1.2 "Segoe UI", "Microsoft YaHei", sans-serif;
+              color: #eee; cursor: pointer; white-space: nowrap; }
+  #menu div:hover { background: rgba(99,102,241,.9); }
 </style>
 </head>
 <body>
   <div id="wrap">
     <div id="orb"><span id="mic">🎤</span></div>
     <div id="label">待命</div>
+    <div id="menu">
+      <div id="menu-hide">隐藏悬浮球</div>
+      <div id="menu-toggle">关闭语音助手</div>
+    </div>
   </div>
 <script>
   var COLORS = { idle:'#22c55e', listening:'#3b82f6', thinking:'#f59e0b',
-                 acting:'#a855f7', speaking:'#06b6d4', error:'#ef4444' };
+                 acting:'#a855f7', speaking:'#06b6d4', error:'#ef4444', paused:'#6b7280' };
   var LABELS = { idle:'待命', listening:'聆听', thinking:'思考',
-                 acting:'执行', speaking:'播报', error:'出错' };
+                 acting:'执行', speaking:'播报', error:'出错', paused:'暂停' };
   var orb = document.getElementById('orb');
   var label = document.getElementById('label');
-  function setState(s) {
+  var menu = document.getElementById('menu');
+  var menuToggle = document.getElementById('menu-toggle');
+  var enabled = true;
+  function setState(s, en) {
     var c = COLORS[s] || COLORS.idle;
     orb.style.background = 'radial-gradient(circle at 30% 30%, rgba(255,255,255,.55), rgba(0,0,0,0) 60%), ' + c;
     orb.style.boxShadow = '0 0 16px 5px ' + c;
     label.textContent = LABELS[s] || s;
+    if (typeof en === 'boolean') { enabled = en; }
+    menuToggle.textContent = enabled ? '关闭语音助手' : '开启语音助手';
   }
-  // 区分「点击」与「拖动」：按下→抬起位移很小时视为点击，唤起主窗口
+  // 区分「点击」与「拖动」：位移很小时视为点击
   var downX = 0, downY = 0, moved = false;
   document.addEventListener('mousedown', function(e){ downX = e.screenX; downY = e.screenY; moved = false; });
   document.addEventListener('mousemove', function(e){
     if (Math.abs(e.screenX - downX) + Math.abs(e.screenY - downY) > 6) moved = true; });
-  orb.addEventListener('mouseup', function(){
+  orb.addEventListener('mouseup', function(e){
+    if (e.button !== 0) return;
+    if (menu.style.display === 'flex') { menu.style.display = 'none'; return; }
     if (moved) return;
-    try { window.pywebview.api.show_main(); } catch (_) {} });
+    try { window.pywebview.api.orb_click(); } catch (_) {} });
+  // 右键菜单
+  document.addEventListener('contextmenu', function(e){
+    e.preventDefault();
+    menu.style.display = 'flex'; });
+  document.getElementById('menu-hide').addEventListener('click', function(){
+    menu.style.display = 'none';
+    try { window.pywebview.api.hide_to_side(); } catch (_) {} });
+  menuToggle.addEventListener('click', function(){
+    menu.style.display = 'none';
+    try { window.pywebview.api.toggle_assistant(); } catch (_) {} });
   // 状态订阅（服务端广播，主窗口/悬浮球共享）
   var ws = null, retry = null;
   function schedule(){ if (retry) return; retry = setTimeout(function(){ retry = null; connect(); }, 3000); }
@@ -424,7 +456,7 @@ def _build_orb_html(ws_url: str) -> str:
     try { ws = new WebSocket('__WS_URL__'); } catch (e) { schedule(); return; }
     ws.onmessage = function(ev){
       var m; try { m = JSON.parse(ev.data); } catch (_) { return; }
-      if (m && m.type === 'state' && m.state) setState(m.state); };
+      if (m && m.type === 'state' && m.state) setState(m.state, m.enabled); };
     ws.onclose = function(){ schedule(); };
     ws.onerror = function(){ try { ws.close(); } catch (_) {} };
   }
@@ -594,13 +626,75 @@ def start_gui():
         return False
 
     class OrbApi:
-        """悬浮球暴露给前端 JS 的接口：点击唤起主窗口。"""
-        def show_main(self):
-            if main_window is not None:
+        """悬浮球暴露给前端 JS 的接口。
+
+        左键：播报中→停止播报；否则→唤醒进入聆听；停靠侧边时→弹回原位。
+        右键菜单：隐藏悬浮球（停靠屏幕侧边）/ 关闭·开启语音助手。
+        """
+        def __init__(self):
+            self._docked = False
+            self._normal_pos = None  # (x, y) 停靠前的正常位置
+
+        def _assistant(self):
+            from backend.voice.assistant import get_assistant
+            return get_assistant()
+
+        def _schedule(self, coro):
+            """把协程调度到语音助手的事件循环（本线程非 asyncio 线程）。"""
+            try:
+                self._assistant()._schedule(coro)
+            except Exception:
+                pass
+
+        def _screen_width(self):
+            if sys.platform == "win32":
                 try:
-                    main_window.show()
+                    import ctypes
+                    return int(ctypes.windll.user32.GetSystemMetrics(0))
                 except Exception:
                     pass
+            try:
+                import tkinter as tk
+                root = tk.Tk(); root.withdraw()
+                w = root.winfo_screenwidth(); root.destroy()
+                return w
+            except Exception:
+                return 1920
+
+        def orb_click(self):
+            """左键点击：停靠→还原；播报中→停止；否则→唤醒进入聆听。"""
+            if self._docked:
+                self._restore()
+                return
+            assistant = self._assistant()
+            if assistant.state == "speaking":
+                self._schedule(assistant.stop_speaking())
+            elif assistant.enabled:
+                self._schedule(assistant.wake_manually())
+
+        def hide_to_side(self):
+            """隐藏悬浮球：停靠到屏幕右缘，只留一小条可点击（点击弹回）。"""
+            try:
+                if not self._docked:
+                    self._normal_pos = (orb_window.x, orb_window.y)
+                y = self._normal_pos[1] if self._normal_pos else 0
+                orb_window.move(self._screen_width() - 30, y)
+                self._docked = True
+            except Exception:
+                pass
+
+        def _restore(self):
+            try:
+                if self._normal_pos:
+                    orb_window.move(self._normal_pos[0], self._normal_pos[1])
+            except Exception:
+                pass
+            self._docked = False
+
+        def toggle_assistant(self):
+            """右击菜单：启用/停用语音助手（实时重启生效）。"""
+            assistant = self._assistant()
+            self._schedule(assistant.set_enabled(not assistant.enabled))
 
     def _show_main():
         if main_window is not None:
@@ -639,11 +733,11 @@ def start_gui():
     )
     main_window.events.closing += on_main_closing
 
-    # 悬浮球（无边框、透明、置顶、可拖动；点击唤起主窗口）
+    # 悬浮球（无边框、透明、置顶、可拖动；左键唤醒/停止，右键菜单）
     orb_window = webview.create_window(
         title="",
         html=_build_orb_html(f"ws://127.0.0.1:{SERVER_PORT}/ws/assistant"),
-        width=96, height=100,
+        width=96, height=150,
         frameless=True,
         transparent=True,
         on_top=True,

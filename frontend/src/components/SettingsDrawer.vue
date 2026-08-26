@@ -316,8 +316,8 @@
               </n-space>
             </n-form-item>
             <n-form-item label="唤醒状态">
-              <n-tag :type="wakeAvailable ? 'success' : 'warning'" size="small">
-                {{ wakeAvailable ? '免按键唤醒可用' : '唤醒不可用（麦克风/模型未就绪）' }}
+              <n-tag :type="!voiceConfig.enabled ? 'default' : (wakeAvailable ? 'success' : 'warning')" size="small">
+                {{ !voiceConfig.enabled ? '已暂停' : (wakeAvailable ? '免按键唤醒可用' : '唤醒不可用（麦克风/模型未就绪）') }}
               </n-tag>
             </n-form-item>
             <n-form-item label=" ">

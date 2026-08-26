@@ -117,26 +117,48 @@ class WhisperWakeDetector:
             return False
 
     @classmethod
+    def _wake_variants(cls, wake_word: str) -> list:
+        """生成待匹配的唤醒词变体（按长度降序）：完整唤醒词 + 去掉问候前缀后的核心词。
+
+        tiny 模型常把问候语「你好」误转成「鸣好」（ní→míng），整句前缀因此对不上；
+        但核心词（如「海之芯」）才是区分度所在，去掉问候前缀单独匹配即可容忍该误差。
+        """
+        w = cls.normalize(wake_word)
+        if not w:
+            return []
+        variants = {w}
+        core = re.sub(r"^(你好|嗨|哈喽|哈啰|hello|hi|hey|喂)\s*[,，]?\s*", "", w, flags=re.I)
+        if core and core != w:
+            variants.add(core)
+        return sorted(variants, key=len, reverse=True)
+
+    @classmethod
     def match_wake(cls, transcript: str, wake_word: str) -> Tuple[bool, str]:
         """匹配唤醒词，返回 (是否命中, 唤醒词之后的指令文本)。
 
         例：transcript="你好，海之芯，帮我查一下天气"、wake_word="你好，海之芯"
             → (True, "帮我查一下天气")
+
+        匹配策略（对每个变体：完整词 → 核心词）：
+          1) 精确包含（句首或句中均可）；
+          2) 逐字符滑动窗口 + 拼音/近似模糊匹配，容忍 ASR 同音/近音误差，
+             且不要求唤醒词位于句首（ASR 可能在前方混入「鸣好」等杂质）。
         """
         t = cls.normalize(transcript)
-        w = cls.normalize(wake_word)
-        if not w:
+        if not t:
             return False, ""
-        idx = t.find(w)
-        if idx >= 0:
-            return True, t[idx + len(w):].strip()
-        # ASR 常把专有名词（如「海之芯」）转成同音字（海之心/海之新/还之心…），
-        # 精确匹配失败时用拼音归一化兜底；唤醒词一般位于句首，只对句首前缀做模糊比对。
-        prefix = t[:len(w)]
-        if len(prefix) < len(w):
-            return False, ""
-        if cls._fuzzy_equal(prefix, w):
-            return True, t[len(w):].strip()
+        for w in cls._wake_variants(wake_word):
+            # 1) 精确包含
+            idx = t.find(w)
+            if idx >= 0:
+                return True, t[idx + len(w):].strip()
+            # 2) 逐字符滑动窗口模糊匹配
+            wlen = len(w)
+            if wlen > len(t):
+                continue
+            for i in range(len(t) - wlen + 1):
+                if cls._fuzzy_equal(t[i:i + wlen], w):
+                    return True, t[i + wlen:].strip()
         return False, ""
 
     def close(self):

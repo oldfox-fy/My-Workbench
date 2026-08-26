@@ -168,6 +168,14 @@ async def assistant_put_config(payload: VoiceConfigUpdate):
 async def ws_assistant(websocket: WebSocket):
     await connection_manager.connect(websocket)
     try:
+        # 连接后立即推送一次当前状态，让悬浮球/主窗口在无状态变化时也能正确显示（如已暂停）
+        assistant = get_assistant()
+        await websocket.send_json({
+            "type": "state",
+            "state": assistant.state,
+            "enabled": assistant.enabled,
+            "wake_available": assistant.wake_available,
+        })
         while True:
             # P0 阶段只做服务端推送，不处理客户端指令；接收消息仅为保活/防阻塞。
             await websocket.receive_text()

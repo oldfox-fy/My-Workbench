@@ -22,13 +22,18 @@ from .state import AssistantState, connection_manager
 
 logger = logging.getLogger("My Workbench")
 
+# 纯唤醒词（未跟指令）时，先语音回应的问候语，随后进入聆听等待下一句指令。
+_WAKE_GREETING = "您好，有什么可以帮您？"
+
+# 语音播报时需过滤的过程性输出前缀（工具执行状态 / 重试 / 失败提示等），只保留最终答案。
+_PROCESS_MARKERS = ("⚠️", "🔄", "✅", "❌", "⏳", "⏰", "🎬", "📋", "🖼️")
+
 
 class VoiceAssistant:
     """语音助手单例。P0 提供 ask() 按键触发；P1 增加免按键唤醒主循环。"""
 
     def __init__(self):
         self._state = AssistantState.IDLE
-        self._enabled = True
         self.tts = None  # P2 阶段挂载 TTSEngine
 
         # P1 唤醒监听相关（在 start() 中初始化）
@@ -57,23 +62,29 @@ class VoiceAssistant:
 
     @property
     def enabled(self) -> bool:
-        return self._enabled
+        """是否启用语音助手（含免按键唤醒）。读取配置，保证与设置面板一致。"""
+        from config_loader import config
+        return bool(getattr(config, "voice_assistant_enabled", True))
 
     @property
     def wake_available(self) -> bool:
-        """免按键唤醒是否可用（依赖已装 + 麦克风可用 + 引擎加载成功）。"""
+        """免按键唤醒是否可用（已启用 + 麦克风可用 + 引擎加载成功）。"""
+        if not self.enabled:
+            return False
         if self._mic is None:
             return False
         if self._wake_mode == "whisper":
             return self._whisper is not None
         return self._wake_engine is not None
 
-    def set_enabled(self, on: bool):
-        self._enabled = bool(on)
-
     async def _set_state(self, state: AssistantState):
         self._state = state
-        await connection_manager.broadcast({"type": "state", "state": state.value})
+        await connection_manager.broadcast({
+            "type": "state",
+            "state": state.value,
+            "enabled": self.enabled,
+            "wake_available": self.wake_available,
+        })
 
     def _schedule(self, coro):
         """把协程调度到主事件循环（在 sounddevice 线程里调用）。"""
@@ -103,6 +114,62 @@ class VoiceAssistant:
         finally:
             await self._set_state(AssistantState.IDLE)
         return True
+
+    async def stop_speaking(self) -> None:
+        """打断当前播报（悬浮球播报中点击调用）。"""
+        from .tts import get_tts
+        try:
+            get_tts().stop()
+        except Exception as e:
+            logger.warning(f"[Voice] 停止播报失败：{e}")
+        # speak_answer 的 finally 会把 SPEAKING 改回 IDLE；这里兜底处理并发时序
+        if self._state == AssistantState.SPEAKING:
+            await self._set_state(AssistantState.IDLE)
+
+    async def wake_manually(self) -> bool:
+        """按键/悬浮球手动唤醒：进入聆听，等下一句指令直接对话。
+
+        复用 whisper 模式的 _awaiting_command / oww 模式的 _listening，
+        使「点击唤醒」与「说唤醒词后等指令」走同一套后续处理链路。
+        """
+        if not self.enabled:
+            return False
+        # 打断在途播报，避免把问候/回答的尾音当新输入
+        from .tts import get_tts
+        try:
+            get_tts().stop()
+        except Exception:
+            pass
+        self._cooldown_blocks = 0
+        self._buffer = []
+        self._speech_active = False
+        if self._vad is not None:
+            try:
+                self._vad.reset()
+            except Exception:
+                pass
+        if self._wake_mode == "oww":
+            self._listening = True
+        else:
+            self._awaiting_command = True
+        await self._set_state(AssistantState.LISTENING)
+        return True
+
+    async def set_enabled(self, enabled: bool) -> None:
+        """启用/停用语音助手（悬浮球右键菜单 / 设置面板共用）。实时重启生效。"""
+        from .settings import get_settings
+        from .tts import reset_tts
+        get_settings().update({"enabled": enabled})
+        try:
+            await self.stop()
+        except Exception as e:
+            logger.warning(f"[Voice] 停止助手失败：{e}")
+        self.tts = None
+        reset_tts()  # 让新的音色/语速在下次播报生效
+        try:
+            await self.start()
+        except Exception as e:
+            logger.warning(f"[Voice] 重启助手失败：{e}")
 
     # ── 主入口（按键触发 / 唤醒触发共用）──
     async def ask(self, text: str) -> str:
@@ -160,8 +227,9 @@ class VoiceAssistant:
             {"role": "user", "content": text},
         ]
 
-        # 4. 流式生成 → 拼出最终文本（过滤控制标记，仅保留正文）
+        # 4. 流式生成 → 拼出最终文本（过滤控制标记 + 思考过程，仅保留最终答案）
         chunks: list[str] = []
+        in_reasoning = False
         async for chunk in service.generate_response(
             messages=messages,
             enable_tools=True,
@@ -175,8 +243,20 @@ class VoiceAssistant:
             if not isinstance(chunk, str) or not chunk:
                 continue
             stripped = chunk.strip()
+            # 思考过程（reasoning_content）以 <!--reasoning:start--> / <!--reasoning:end--> 包裹，
+            # 语音场景只播报最终结果，整段跳过，不读思考过程。
+            if stripped.startswith("<!--reasoning:start-->"):
+                in_reasoning = True
+                continue
+            if stripped.startswith("<!--reasoning:end"):
+                in_reasoning = False
+                continue
+            if in_reasoning:
+                continue
             if stripped.startswith("<!--"):
-                continue  # 跳过 tool_approval / tool_status / token_usage 等控制标记
+                continue  # 跳过 tool_approval / tool_status / token_usage / plan / ppt 等控制标记
+            if stripped.startswith(_PROCESS_MARKERS):
+                continue  # 跳过工具执行状态 / 重试 / 失败等过程提示
             chunks.append(stripped)
 
         return "".join(chunks).strip()
@@ -342,7 +422,12 @@ class VoiceAssistant:
             if command:
                 await self._process_command(command, transcript)
             else:
-                # 纯唤醒词：进入聆听，等下一句指令
+                # 纯唤醒词：先语音回应问候语，再进入聆听，等下一句指令
+                try:
+                    await self.speak_answer(_WAKE_GREETING)
+                except Exception as e:
+                    # 问候播报失败（如离线）不阻断唤醒流程，仍进入聆听等指令
+                    logger.warning(f"[Voice] 唤醒问候播报失败：{e}")
                 self._awaiting_command = True
                 await self._set_state(AssistantState.LISTENING)
         except Exception as e:
@@ -379,9 +464,12 @@ class VoiceAssistant:
         self._max_blocks = int(config.voice_assistant_max_listen_seconds / 0.03)
         self._wake_word_text = config.voice_assistant_wake_word or ""
         if not config.voice_assistant_enabled:
-            logger.info("[Voice] 语音助手已就绪（唤醒功能在配置中关闭，仅按键模式）")
+            logger.info("[Voice] 语音助手已暂停（启用开关关闭，仅按键模式）")
+            await self._set_state(AssistantState.PAUSED)
             return
 
+        # 启用：先广播「待命」，唤醒监听真正就绪后仍保持该状态
+        await self._set_state(AssistantState.IDLE)
         mode = (config.voice_assistant_wake_mode or "whisper").lower()
         threading.Thread(target=self._bootstrap, args=(mode, gen), name="voice-wake-bootstrap", daemon=True).start()
 

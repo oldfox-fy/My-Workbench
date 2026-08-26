@@ -18,7 +18,7 @@ export interface AssistantResult {
   spoken_locally?: boolean
 }
 
-export type AssistantStateName = 'idle' | 'listening' | 'thinking' | 'acting' | 'speaking' | 'error'
+export type AssistantStateName = 'idle' | 'listening' | 'thinking' | 'acting' | 'speaking' | 'error' | 'paused'
 
 // ── 免按键唤醒：模块级单例状态（ChatInput 徽标 + ChatWindow 回答处理共享同一份）──
 // 说明：/ws/assistant 是服务端广播通道，主窗口只需订阅一次；用模块级单例避免
@@ -46,6 +46,9 @@ function onWsMessage(ev: MessageEvent) {
   if (!msg || typeof msg !== 'object') return
   if (msg.type === 'state' && msg.state) {
     assistantState.value = msg.state as AssistantStateName
+    if (typeof msg.wake_available === 'boolean') {
+      wakeAvailable.value = msg.wake_available
+    }
   } else if (msg.type === 'assistant_answer') {
     const r = { transcript: String(msg.transcript || ''), answer: String(msg.answer || ''), spoken_locally: !!msg.spoken_locally }
     lastHandsfree.value = r
@@ -166,7 +169,11 @@ async function saveVoiceConfig(updates: Partial<VoiceConfig>): Promise<VoiceConf
     const err = await res.json().catch(() => ({ detail: res.statusText }))
     throw new Error(err.detail || '保存语音设置失败')
   }
-  return (await res.json()) as VoiceConfigResponse
+  const data = (await res.json()) as VoiceConfigResponse
+  // 同步模块级单例状态，让主窗口徽标 / 悬浮球状态即时刷新（如停用后显示「已暂停」）
+  wakeAvailable.value = !!data.wake_available
+  assistantState.value = (data.state as AssistantStateName) || 'idle'
+  return data
 }
 
 export function useAssistant() {
