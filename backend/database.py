@@ -372,6 +372,53 @@ async def init_db():
         )
     """)
 
+    # ── AI 定时任务：任务定义 ──
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS scheduled_tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            title TEXT DEFAULT '',
+            prompt TEXT NOT NULL,
+            schedule_type TEXT NOT NULL DEFAULT 'once',
+            time_of_day TEXT DEFAULT '',
+            weekday INTEGER DEFAULT NULL,
+            monthday INTEGER DEFAULT NULL,
+            run_at TEXT DEFAULT NULL,
+            next_run_at TEXT DEFAULT NULL,
+            status TEXT NOT NULL DEFAULT 'active',
+            model_config TEXT DEFAULT '{}',
+            enable_tools INTEGER DEFAULT 1,
+            profile_id INTEGER DEFAULT NULL,
+            auto_approve INTEGER DEFAULT 1,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_user ON scheduled_tasks(user_id)"
+    )
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_next ON scheduled_tasks(status, next_run_at)"
+    )
+
+    # ── AI 定时任务：执行日志 ──
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS scheduled_task_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'running',
+            scheduled_for TEXT DEFAULT NULL,
+            started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            finished_at TIMESTAMP DEFAULT NULL,
+            output TEXT DEFAULT '',
+            error TEXT DEFAULT '',
+            FOREIGN KEY (task_id) REFERENCES scheduled_tasks(id) ON DELETE CASCADE
+        )
+    """)
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_task_runs_task ON scheduled_task_runs(task_id)"
+    )
+
     # ── 为已有表添加列 ──
     await _ensure_column(db, "users", "workspace_path", "TEXT DEFAULT ''")
     await _ensure_column(db, "chats", "user_id", "INTEGER DEFAULT NULL")

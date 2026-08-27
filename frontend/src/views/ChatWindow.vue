@@ -25,6 +25,10 @@
             <template #icon><n-icon><LibraryOutline /></n-icon></template>
             我的知识库
           </n-button>
+          <n-button block strong secondary size="large" class="new-chat-btn kb-btn" @click="showScheduledTasks = true">
+            <template #icon><n-icon><AlarmOutline /></n-icon></template>
+            定时任务
+          </n-button>
         </div>
         <!-- 3. 历史对话区：独立滚动区域 -->
         <div class="chat-history-section">
@@ -74,10 +78,35 @@
           </n-scrollbar>
         </div>
 
+        <!-- 定时任务区 -->
+        <div class="scheduled-tasks-section">
+          <div class="section-label" style="display:flex;justify-content:space-between;align-items:center;padding-right:12px;">
+            <span>定时任务</span>
+            <n-button text size="tiny" @click="showScheduledTasks = true" title="管理定时任务">
+              <template #icon><n-icon :size="14"><m-svg name="add"/></n-icon></template>
+            </n-button>
+          </div>
+          <div class="scheduled-list">
+            <div v-if="scheduledStore.tasks.length === 0" class="scheduled-empty" @click="showScheduledTasks = true">
+              暂无定时任务，点击管理
+            </div>
+            <div v-for="t in scheduledStore.tasks.slice(0, 5)" :key="t.id" class="scheduled-item" @click="showScheduledTasks = true">
+              <div class="scheduled-item-title">{{ t.title || '未命名任务' }}</div>
+              <div class="scheduled-item-meta">
+                <span>{{ t.human_readable }}</span>
+                <n-tag size="tiny" :type="t.status === 'active' ? 'success' : t.status === 'paused' ? 'warning' : 'default'">{{ taskStatusLabel(t.status) }}</n-tag>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <!-- 4. 功能菜单区 -->
         <div class="sidebar-menu-section">
-          <div class="section-label">功能菜单</div>
-          <div class="menu-items">
+          <div class="section-label menu-toggle" @click="menuExpanded = !menuExpanded">
+            <span>功能菜单</span>
+            <span class="menu-chevron">{{ menuExpanded ? '▾' : '▸' }}</span>
+          </div>
+          <div class="menu-items" v-show="menuExpanded">
             <n-button text @click="showTools = true">
               <template #icon>
                 <n-icon><ConstructOutline /></n-icon>
@@ -303,6 +332,7 @@
     <ToolsDrawer v-model:show="showTools" />
     <StatsDashboard v-model:show="showStats" />
     <MemoryPanel v-model:show="showMemory" />
+    <ScheduledTasksPanel v-model:show="showScheduledTasks" />
 
     <!-- 工具审批弹窗 -->
     <ToolApprovalDialog
@@ -333,18 +363,24 @@
       <template #header>
         <div class="edit-modal-title">
           <span>编辑消息</span>
-          <n-popover trigger="hover" placement="bottom">
-            <template #trigger>
-              <n-button quaternary size="tiny" @click="toggleFullscreen" class="fullscreen-btn">
-                <template #icon>
-                  <n-icon :size="20">
-                    <m-svg :name="isFullscreen ? 'fullscreen-exit' : 'fullscreen'" />
-                  </n-icon>
-                </template>
-              </n-button>
-            </template>
-            {{ isFullscreen ? '退出全屏 (Esc)' : '全屏编辑' }}
-          </n-popover>
+          <div class="edit-modal-actions">
+            <n-button quaternary size="tiny" :loading="savingToFile" @click="onSaveToFile" title="把内容保存到本地文件">
+              <template #icon><n-icon :size="16"><DownloadOutline /></n-icon></template>
+              另存为文件
+            </n-button>
+            <n-popover trigger="hover" placement="bottom">
+              <template #trigger>
+                <n-button quaternary size="tiny" @click="toggleFullscreen" class="fullscreen-btn">
+                  <template #icon>
+                    <n-icon :size="20">
+                      <m-svg :name="isFullscreen ? 'fullscreen-exit' : 'fullscreen'" />
+                    </n-icon>
+                  </template>
+                </n-button>
+              </template>
+              {{ isFullscreen ? '退出全屏 (Esc)' : '全屏编辑' }}
+            </n-popover>
+          </div>
         </div>
       </template>
 
@@ -362,9 +398,9 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { NButton, NInput, NList, NListItem, NIcon, NScrollbar, NFlex, NSelect, NModal, NPopconfirm, NPopover, NQrCode, NTag, NBadge } from 'naive-ui'
+import { NButton, NInput, NList, NListItem, NIcon, NScrollbar, NFlex, NSelect, NModal, NPopconfirm, NPopover, NQrCode, NTag, NBadge, useMessage } from 'naive-ui'
 import type { UploadFileInfo } from 'naive-ui'
-import { SettingsOutline, DocumentOutline, MenuOutline, QrCodeOutline, ConstructOutline, LibraryOutline, DownloadOutline, CloudUploadOutline, BarChartOutline, CloudDownloadOutline, LogOutOutline, PricetagsOutline } from '@vicons/ionicons5'
+import { SettingsOutline, DocumentOutline, MenuOutline, QrCodeOutline, ConstructOutline, LibraryOutline, DownloadOutline, CloudUploadOutline, BarChartOutline, CloudDownloadOutline, LogOutOutline, PricetagsOutline, AlarmOutline } from '@vicons/ionicons5'
 import { useChatStore, type Message } from '@/stores/chat'
 import { useConfigStore, fileConfig } from '@/stores/config'
 import { useProfileStore, VIRTUAL_PROFILE_ID } from '@/stores/profiles'
@@ -375,6 +411,7 @@ import { saveUserPrefs } from '@/api/userPrefs'
 import { getMemoryStats } from '@/api/memory'
 import { useToolStore } from '@/stores/tools'
 import { useKnowledgeStore } from '@/stores/knowledge'
+import { useScheduledTasksStore } from '@/stores/scheduledTasks'
 import SettingsDrawer from '@/components/SettingsDrawer.vue'
 import ToolsDrawer from '@/components/ToolsDrawer.vue'
 import KbTreePanel from '@/components/kb/KbTreePanel.vue'
@@ -386,6 +423,7 @@ import ChatInput from '@/components/ChatInput.vue'
 import ToolApprovalDialog from '@/components/ToolApprovalDialog.vue'
 import StatsDashboard from '@/components/StatsDashboard.vue'
 import MemoryPanel from '@/components/MemoryPanel.vue'
+import ScheduledTasksPanel from '@/components/ScheduledTasksPanel.vue'
 
 import { useModel } from '@/composables/useModel'
 import { useFileUpload } from '@/composables/useFileUpload'
@@ -401,8 +439,10 @@ const router = useRouter()
 const chatStore = useChatStore()
 const configStore = useConfigStore()
 const profileStore = useProfileStore()
+const message = useMessage()
 const toolStore = useToolStore()
 const kbStore = useKnowledgeStore()
+const scheduledStore = useScheduledTasksStore()
 
 const isMobile = ref(false)
 const sidebarOpen = ref(false)
@@ -462,8 +502,19 @@ function toggleAutoRead() {
 // 免按键唤醒（模块级单例：订阅 /ws/assistant，拿到状态 + 唤醒后的识别/回答）
 const { assistantState, wakeAvailable, startHandsfree, stopHandsfree } = useAssistant()
 
+// 唤醒进入聆听/思考/执行时，唤起主窗口让用户看到对话
+watch(assistantState, (s) => {
+  if (s === 'listening' || s === 'thinking' || s === 'acting') showMainWindow()
+})
+
+// 唤起主窗口（语音/悬浮球唤醒后，把对话内容带到前台）
+function showMainWindow() {
+  try { (window as any).pywebview?.api?.show_main_window?.() } catch { /* ignore */ }
+}
+
 // 语音助手全链路结果：写入对话历史 + 朗读回答（按键触发 / 免按键唤醒共用）
 async function addAssistantResult(transcript: string, answer: string, spokenLocally = false) {
+  showMainWindow()
   if (chatStore.activeChatId) {
     if (transcript) await chatStore.addMessageToActive({ role: 'user', content: transcript })
     if (answer) await chatStore.addMessageToActive({ role: 'assistant', content: answer })
@@ -491,6 +542,30 @@ function onReminder(r: { id: number; content: string }) {
       new Notification('提醒', { body: r.content })
     }
   } catch { /* ignore */ }
+}
+
+// 定时任务完成：追加结果预览到对话 + 浏览器系统通知
+function onScheduledTask(r: { task_id: number; title: string; status: string; output_preview: string }) {
+  if (r.status === 'failed') {
+    if (chatStore.activeChatId) {
+      chatStore.addMessageToActive({ role: 'assistant', content: `⏰ 定时任务「${r.title}」执行失败：${r.output_preview || '未知错误'}` })
+      nextTick(() => messageListRef.value?.scrollToLatest())
+    }
+  } else if (chatStore.activeChatId && r.output_preview) {
+    chatStore.addMessageToActive({ role: 'assistant', content: `⏰ 定时任务「${r.title}」已完成：\n${r.output_preview}` })
+    nextTick(() => messageListRef.value?.scrollToLatest())
+  }
+  try {
+    if ('Notification' in window && Notification.permission === 'granted') {
+      new Notification(`定时任务 · ${r.title}`, { body: r.status === 'failed' ? '执行失败' : (r.output_preview || '执行完成') })
+    }
+  } catch { /* ignore */ }
+  // 刷新侧边栏任务列表（状态/下次执行时间可能已变化）
+  scheduledStore.load()
+}
+
+function taskStatusLabel(s: string): string {
+  return { active: '启用', paused: '暂停', completed: '完成' }[s] || s
 }
 
 const voiceStateLabel = computed(() => {
@@ -620,8 +695,52 @@ const handleRegenerateResponse = async (msg: Message) => {
 }
 
 // 编辑后保存并重新生成
+const savingToFile = ref(false)
+
+function defaultExportName(): string {
+  const title = chatStore.chats.find(c => c.id === chatStore.activeChatId)?.title || '对话'
+  const safe = title.replace(/[\\/:*?"<>|]/g, '_').slice(0, 60) || '对话'
+  return `${safe}.md`
+}
+
+async function onSaveToFile() {
+  const content = editContent.value
+  if (!content.trim()) {
+    message.warning('内容为空，无法保存')
+    return
+  }
+  const name = defaultExportName()
+  // 桌面端：优先走 pywebview 原生保存对话框
+  if ((window as any).pywebview?.api?.save_text_file) {
+    savingToFile.value = true
+    try {
+      const res = await (window as any).pywebview.api.save_text_file(content, name)
+      if (res?.success) message.success(`已保存到 ${res.path}`)
+      else if (res?.error) message.error(res.error)
+    } catch (e: any) {
+      message.error(e?.message || '保存失败')
+    } finally {
+      savingToFile.value = false
+    }
+    return
+  }
+  // 浏览器环境 fallback：触发下载
+  const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = name
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
 const onSaveEdit = async () => {
-  await saveEdit(() => onRegenerateFromCurrentHistory())
+  try {
+    await saveEdit(() => onRegenerateFromCurrentHistory())
+  } catch (e: any) {
+    console.error('保存编辑失败:', e)
+    message.error(e?.message || '保存失败')
+  }
 }
 
 // ========== 动效与初始化 ==========
@@ -659,6 +778,8 @@ const showSettings = ref(false)
 const showTools = ref(false)
 const showStats = ref(false)
 const showMemory = ref(false)
+const showScheduledTasks = ref(false)
+const menuExpanded = ref(false)
 const memoryCount = ref<number | null>(null)
 const hasUpdate = ref(false)
 const updateUrl = ref('')
@@ -839,7 +960,9 @@ onMounted(async () => {
   startHandsfree(
     (r) => addAssistantResult(r.transcript, r.answer, r.spoken_locally),
     onReminder,
+    onScheduledTask,
   )
+  scheduledStore.load()
   let resizeTimer: ReturnType<typeof setTimeout>
   window.addEventListener('resize', () => {
     clearTimeout(resizeTimer)
@@ -1035,6 +1158,75 @@ async function handleLogout() {
   padding: 0 8px 12px;
 }
 
+.menu-toggle {
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  user-select: none;
+}
+.menu-toggle:hover {
+  color: var(--text-primary);
+  opacity: 1;
+}
+.menu-chevron {
+  font-size: 0.7rem;
+  transition: transform 0.15s;
+}
+
+/* ========== 定时任务侧栏列表 ========== */
+.scheduled-tasks-section {
+  flex-shrink: 0;
+  max-height: 180px;
+  overflow: hidden;
+}
+.scheduled-list {
+  padding: 0 16px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 140px;
+  overflow-y: auto;
+}
+.scheduled-empty {
+  padding: 4px 16px 10px;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  opacity: 0.7;
+  cursor: pointer;
+}
+.scheduled-item {
+  padding: 6px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.scheduled-item:hover {
+  background: rgba(74, 124, 247, 0.1);
+}
+.scheduled-item-title {
+  font-size: 0.82rem;
+  font-weight: 500;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.scheduled-item-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+}
+.scheduled-item-meta span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* ========== 侧边栏用户信息 ========== */
 .sidebar-user-section {
   flex-shrink: 0;
@@ -1186,6 +1378,11 @@ async function handleLogout() {
   justify-content: space-between;
   width: 100%;
   padding-right: 8px;
+}
+.edit-modal-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
 }
 .edit-modal-title .fullscreen-btn {
   margin-left: 12px;

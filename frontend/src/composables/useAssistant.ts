@@ -27,11 +27,13 @@ const assistantState = ref<AssistantStateName>('idle')
 const wakeAvailable = ref(false)
 const lastHandsfree = ref<{ transcript: string; answer: string; spoken_locally?: boolean } | null>(null)
 const lastReminder = ref<{ id: number; content: string } | null>(null)
+const lastScheduledTask = ref<{ task_id: number; title: string; status: string; output_preview: string } | null>(null)
 
 let ws: WebSocket | null = null
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 let answerHandler: ((r: { transcript: string; answer: string; spoken_locally?: boolean }) => void) | null = null
 let reminderHandler: ((r: { id: number; content: string }) => void) | null = null
+let scheduledTaskHandler: ((r: { task_id: number; title: string; status: string; output_preview: string }) => void) | null = null
 let started = false
 
 function wsUrl(): string {
@@ -57,6 +59,15 @@ function onWsMessage(ev: MessageEvent) {
     const r = { id: Number(msg.id || 0), content: String(msg.content || '') }
     lastReminder.value = r
     reminderHandler?.(r)
+  } else if (msg.type === 'scheduled_task') {
+    const r = {
+      task_id: Number(msg.task_id || 0),
+      title: String(msg.title || '定时任务'),
+      status: String(msg.status || 'success'),
+      output_preview: String(msg.output_preview || ''),
+    }
+    lastScheduledTask.value = r
+    scheduledTaskHandler?.(r)
   }
 }
 
@@ -87,9 +98,11 @@ function connect() {
 async function startHandsfree(
   onAnswer?: (r: { transcript: string; answer: string; spoken_locally?: boolean }) => void,
   onReminder?: (r: { id: number; content: string }) => void,
+  onScheduledTask?: (r: { task_id: number; title: string; status: string; output_preview: string }) => void,
 ) {
   if (onAnswer) answerHandler = onAnswer
   if (onReminder) reminderHandler = onReminder
+  if (onScheduledTask) scheduledTaskHandler = onScheduledTask
   started = true
   connect()
   try {
@@ -107,6 +120,7 @@ function stopHandsfree() {
   started = false
   answerHandler = null
   reminderHandler = null
+  scheduledTaskHandler = null
   if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null }
   if (ws) {
     try { ws.onclose = null; ws.close() } catch { /* ignore */ }
@@ -305,6 +319,7 @@ export function useAssistant() {
     wakeAvailable,
     lastHandsfree,
     lastReminder,
+    lastScheduledTask,
     startHandsfree,
     stopHandsfree,
     // 语音设置面板（P4）

@@ -104,13 +104,19 @@ async def _stream_to_ws(ws: WebSocket, generator, cancel_event: asyncio.Event):
                     if user and user.get("id"):
                         from backend.db.token_usage import record_token_usage
                         model_name = ws.state._ws_llm_model if hasattr(ws.state, "_ws_llm_model") else ""
+                        # token_info 结构：{"final_answer_usage": {...}, "total_usage_all_steps": {...}, "speed": ...}
+                        # 顶层没有 prompt/completion/total_tokens，需从嵌套字段提取，否则会记录为全 0。
+                        agg = usage.get("total_usage_all_steps") or usage.get("final_answer_usage") or {}
+                        prompt_tokens = agg.get("prompt_tokens", 0) or 0
+                        completion_tokens = agg.get("completion_tokens", 0) or 0
+                        total_tokens = agg.get("total_tokens", 0) or (prompt_tokens + completion_tokens)
                         asyncio.create_task(record_token_usage(
                             user_id=user["id"],
                             chat_id="",
                             model_name=model_name,
-                            prompt_tokens=usage.get("prompt_tokens", 0) or 0,
-                            completion_tokens=usage.get("completion_tokens", 0) or 0,
-                            total_tokens=usage.get("total_tokens", 0) or 0,
+                            prompt_tokens=prompt_tokens,
+                            completion_tokens=completion_tokens,
+                            total_tokens=total_tokens,
                         ))
                 except Exception:
                     pass  # token 记录失败不影响主流程

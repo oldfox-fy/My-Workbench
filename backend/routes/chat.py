@@ -583,13 +583,18 @@ async def chat(
                                 model_name = ""
                                 if request.llm_config:
                                     model_name = request.llm_config.model_name or ""
+                                # token_info 结构：{"final_answer_usage": {...}, "total_usage_all_steps": {...}, "speed": ...}
+                                agg = usage.get("total_usage_all_steps") or usage.get("final_answer_usage") or {}
+                                prompt_tokens = agg.get("prompt_tokens", 0) or 0
+                                completion_tokens = agg.get("completion_tokens", 0) or 0
+                                total_tokens = agg.get("total_tokens", 0) or (prompt_tokens + completion_tokens)
                                 asyncio.create_task(record_token_usage(
                                     user_id=user_id,
                                     chat_id="",
                                     model_name=model_name,
-                                    prompt_tokens=usage.get("prompt_tokens", 0) or 0,
-                                    completion_tokens=usage.get("completion_tokens", 0) or 0,
-                                    total_tokens=usage.get("total_tokens", 0) or 0,
+                                    prompt_tokens=prompt_tokens,
+                                    completion_tokens=completion_tokens,
+                                    total_tokens=total_tokens,
                                 ))
                         except Exception:
                             pass  # token 记录失败不影响主流程

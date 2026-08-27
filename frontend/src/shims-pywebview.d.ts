@@ -8,6 +8,8 @@ declare global {
         select_folder: () => Promise<string | null>
         open_with_default_app: (filePath: string) => Promise<{ success: boolean; error?: string }>
         download_file: (url: string, name: string) => Promise<{ success: boolean; path?: string; error?: string }>
+        save_text_file: (content: string, default_name: string) => Promise<{ success: boolean; path?: string; error?: string }>
+        show_main_window: () => Promise<{ success: boolean; error?: string }>
         // 可以在这里加入你未来可能会用到的其他 pywebview 方法
       }
     }

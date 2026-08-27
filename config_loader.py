@@ -112,6 +112,11 @@ class AppConfig:
         self.reminders_file = rm.get("file", "") or ""
         self.reminders_check_interval = float(rm.get("check_interval", 2))
 
+        # AI 定时任务配置（定时自动化任务系统）
+        sd = self.raw_config.get("scheduled_tasks", {}) or {}
+        self.scheduled_enabled = sd.get("enabled", True)
+        self.scheduled_check_interval = float(sd.get("check_interval", 30))
+
         # 邮件外发配置（P3）
         em = self.raw_config.get("email", {}) or {}
         self.email_enabled = em.get("enabled", False)

@@ -92,6 +92,7 @@ async def lifespan(app: FastAPI):
     app.state.skill_registry = None
     app.state.kb_watcher = None
     app.state.reminder_scheduler = None
+    app.state.scheduled_task_scheduler = None
     app.state.init_success = False
     app.state.init_error = None
 
@@ -152,6 +153,19 @@ async def lifespan(app: FastAPI):
                     app.state.reminder_scheduler = reminder_scheduler
             except Exception as _re:
                 logger.warning(f"提醒调度器启动失败（不影响主流程）：{_re}")
+            # 启动 AI 定时任务调度器（自动执行 Agent 提示词）
+            try:
+                if config.scheduled_enabled:
+                    from backend.services.scheduled_tasks import ScheduledTaskScheduler
+                    scheduled_scheduler = ScheduledTaskScheduler(
+                        interval=config.scheduled_check_interval,
+                        mcp_manager=mcp_manager,
+                        skill_registry=skill_registry,
+                    )
+                    await scheduled_scheduler.start()
+                    app.state.scheduled_task_scheduler = scheduled_scheduler
+            except Exception as _se:
+                logger.warning(f"定时任务调度器启动失败（不影响主流程）：{_se}")
             app.state.init_success = True
             ready_event.set()
             logger.info("✅ 后台基础设施全部初始化完毕！")
@@ -198,6 +212,11 @@ async def lifespan(app: FastAPI):
             await app.state.reminder_scheduler.stop()
     except Exception as e:
         logger.warning(f"停止提醒调度器出错: {e}")
+    try:
+        if getattr(app.state, "scheduled_task_scheduler", None):
+            await app.state.scheduled_task_scheduler.stop()
+    except Exception as e:
+        logger.warning(f"停止定时任务调度器出错: {e}")
 
 
 # ============ FastAPI App 构建 ============
@@ -374,7 +393,7 @@ def _build_orb_html(ws_url: str) -> str:
     """构建悬浮球窗口的内联 HTML（无外部资源，直接连 /ws/assistant 状态通道）。
 
     交互：
-      - 左键点击：播报中→停止播报；否则→唤醒进入聆听（停靠侧边时→弹回原位）。
+      - 左键点击：播报中→停止播报；否则→唤醒进入聆听。
       - 右键：弹出菜单（隐藏悬浮球 / 关闭·开启语音助手）。
     """
     return """<!DOCTYPE html>
@@ -445,7 +464,7 @@ def _build_orb_html(ws_url: str) -> str:
     menu.style.display = 'flex'; });
   document.getElementById('menu-hide').addEventListener('click', function(){
     menu.style.display = 'none';
-    try { window.pywebview.api.hide_to_side(); } catch (_) {} });
+    try { window.pywebview.api.hide_orb(); } catch (_) {} });
   menuToggle.addEventListener('click', function(){
     menu.style.display = 'none';
     try { window.pywebview.api.toggle_assistant(); } catch (_) {} });
@@ -545,7 +564,41 @@ def start_gui():
             
             except Exception as e:
                 # 打印出具体错误，避免下次再被 except 静默吃掉报错导致无法排查
-                print(f"下载文件时发生错误: {e}") 
+                print(f"下载文件时发生错误: {e}")
+                return {"success": False, "error": str(e)}
+
+        def save_text_file(self, content: str, default_name: str = "导出内容.md"):
+            """弹出保存对话框，把文本内容写入用户选择的路径（编辑弹窗「另存为文件」用）。"""
+            try:
+                result = webview.windows[0].create_file_dialog(
+                    dialog_type=webview.SAVE_DIALOG,
+                    save_filename=default_name,
+                    file_types=('Markdown (*.md)', '文本文件 (*.txt)', '所有文件 (*.*)'),
+                )
+                save_path = result[0] if result else None
+                if not save_path:
+                    return {"success": False, "error": "用户取消了保存"}
+                with open(save_path, "w", encoding="utf-8") as f:
+                    f.write(content)
+                return {"success": True, "path": save_path}
+            except Exception as e:
+                print(f"保存文件时发生错误: {e}")
+                return {"success": False, "error": str(e)}
+
+        def show_main_window(self):
+            """唤起主窗口并置前（语音/悬浮球唤醒后，让用户看到对话内容）。"""
+            try:
+                win = webview.windows[0] if webview.windows else None
+                if win is None:
+                    return {"success": False, "error": "主窗口未创建"}
+                win.show()
+                try:
+                    win.restore()  # 若最小化则还原
+                except Exception:
+                    pass
+                return {"success": True}
+            except Exception as e:
+                print(f"唤起主窗口失败: {e}")
                 return {"success": False, "error": str(e)}
 
     # FastAPI 放在守护线程
@@ -628,13 +681,9 @@ def start_gui():
     class OrbApi:
         """悬浮球暴露给前端 JS 的接口。
 
-        左键：播报中→停止播报；否则→唤醒进入聆听；停靠侧边时→弹回原位。
-        右键菜单：隐藏悬浮球（停靠屏幕侧边）/ 关闭·开启语音助手。
+        左键：播报中→停止播报；否则→唤醒进入聆听。
+        右键菜单：隐藏悬浮球（隐藏到托盘）/ 关闭·开启语音助手。
         """
-        def __init__(self):
-            self._docked = False
-            self._normal_pos = None  # (x, y) 停靠前的正常位置
-
         def _assistant(self):
             from backend.voice.assistant import get_assistant
             return get_assistant()
@@ -646,50 +695,20 @@ def start_gui():
             except Exception:
                 pass
 
-        def _screen_width(self):
-            if sys.platform == "win32":
-                try:
-                    import ctypes
-                    return int(ctypes.windll.user32.GetSystemMetrics(0))
-                except Exception:
-                    pass
-            try:
-                import tkinter as tk
-                root = tk.Tk(); root.withdraw()
-                w = root.winfo_screenwidth(); root.destroy()
-                return w
-            except Exception:
-                return 1920
-
         def orb_click(self):
-            """左键点击：停靠→还原；播报中→停止；否则→唤醒进入聆听。"""
-            if self._docked:
-                self._restore()
-                return
+            """左键点击：播报中→停止；否则→唤醒进入聆听。"""
             assistant = self._assistant()
             if assistant.state == "speaking":
                 self._schedule(assistant.stop_speaking())
             elif assistant.enabled:
                 self._schedule(assistant.wake_manually())
 
-        def hide_to_side(self):
-            """隐藏悬浮球：停靠到屏幕右缘，只留一小条可点击（点击弹回）。"""
+        def hide_orb(self):
+            """隐藏悬浮球到系统托盘（托盘菜单「显示悬浮球」可恢复）。"""
             try:
-                if not self._docked:
-                    self._normal_pos = (orb_window.x, orb_window.y)
-                y = self._normal_pos[1] if self._normal_pos else 0
-                orb_window.move(self._screen_width() - 30, y)
-                self._docked = True
+                orb_window.hide()
             except Exception:
                 pass
-
-        def _restore(self):
-            try:
-                if self._normal_pos:
-                    orb_window.move(self._normal_pos[0], self._normal_pos[1])
-            except Exception:
-                pass
-            self._docked = False
 
         def toggle_assistant(self):
             """右击菜单：启用/停用语音助手（实时重启生效）。"""
