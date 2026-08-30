@@ -544,16 +544,24 @@ function onReminder(r: { id: number; content: string }) {
   } catch { /* ignore */ }
 }
 
-// 定时任务完成：追加结果预览到对话 + 浏览器系统通知
-function onScheduledTask(r: { task_id: number; title: string; status: string; output_preview: string }) {
-  if (r.status === 'failed') {
-    if (chatStore.activeChatId) {
-      chatStore.addMessageToActive({ role: 'assistant', content: `⏰ 定时任务「${r.title}」执行失败：${r.output_preview || '未知错误'}` })
+// 定时任务完成：结果已由后端落库为新对话，这里把新对话插入侧边栏 + 浏览器系统通知
+function onScheduledTask(r: { task_id: number; title: string; status: string; output_preview: string; chat_id?: string }) {
+  if (r.chat_id) {
+    // 开了「新建对话」：结果进了新对话，把它插入本地会话列表顶部，不清空当前对话
+    if (!chatStore.chats.some(c => c.id === r.chat_id)) {
+      chatStore.chats.unshift({ id: r.chat_id, title: r.title || '定时任务', messages: [] })
+    }
+  } else {
+    // 关了「新建对话」：回退为追加到当前对话（旧行为）
+    if (r.status === 'failed') {
+      if (chatStore.activeChatId) {
+        chatStore.addMessageToActive({ role: 'assistant', content: `⏰ 定时任务「${r.title}」执行失败：${r.output_preview || '未知错误'}` })
+        nextTick(() => messageListRef.value?.scrollToLatest())
+      }
+    } else if (chatStore.activeChatId && r.output_preview) {
+      chatStore.addMessageToActive({ role: 'assistant', content: `⏰ 定时任务「${r.title}」已完成：\n${r.output_preview}` })
       nextTick(() => messageListRef.value?.scrollToLatest())
     }
-  } else if (chatStore.activeChatId && r.output_preview) {
-    chatStore.addMessageToActive({ role: 'assistant', content: `⏰ 定时任务「${r.title}」已完成：\n${r.output_preview}` })
-    nextTick(() => messageListRef.value?.scrollToLatest())
   }
   try {
     if ('Notification' in window && Notification.permission === 'granted') {

@@ -390,10 +390,13 @@ async def init_db():
             enable_tools INTEGER DEFAULT 1,
             profile_id INTEGER DEFAULT NULL,
             auto_approve INTEGER DEFAULT 1,
+            create_chat INTEGER DEFAULT 1,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    # 旧库迁移：补齐 create_chat 列（方向 C 的任务级开关）
+    await _ensure_column(db, "scheduled_tasks", "create_chat", "INTEGER DEFAULT 1")
     await db.execute(
         "CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_user ON scheduled_tasks(user_id)"
     )

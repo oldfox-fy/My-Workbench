@@ -3,7 +3,7 @@
 
 import { apiFetch } from '@/api/client'
 
-export type ScheduleType = 'once' | 'daily' | 'workdays' | 'weekly' | 'monthly'
+export type ScheduleType = 'once' | 'daily' | 'workdays' | 'weekly' | 'monthly' | 'on_startup'
 
 export interface ScheduledTask {
   id: number
@@ -21,6 +21,7 @@ export interface ScheduledTask {
   enable_tools: number
   profile_id: number | null
   auto_approve: number
+  create_chat: number
   created_at: string
   updated_at: string
   human_readable?: string
@@ -62,6 +63,7 @@ export interface TaskPayload {
   enable_tools?: boolean
   profile_id?: number | null
   auto_approve?: boolean
+  create_chat?: boolean
 }
 
 async function _json<T>(res: Response): Promise<T> {

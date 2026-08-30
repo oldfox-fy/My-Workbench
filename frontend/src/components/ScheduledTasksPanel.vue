@@ -33,6 +33,7 @@
           </n-text>
           <template #action>
             <n-space align="center" justify="end">
+              <n-button text size="small" @click="openEdit(task)">编辑</n-button>
               <n-button text size="small" @click="onRunNow(task)">立即执行</n-button>
               <n-button text size="small" @click="openLogs(task)">日志</n-button>
               <n-popconfirm
@@ -61,11 +62,11 @@
     draggable
     :mask-closable="false"
     style="max-width: 600px; width: 96%;"
-    title="新建定时任务"
-    positive-text="创建"
+    :title="isEdit ? '编辑定时任务' : '新建定时任务'"
+    :positive-text="isEdit ? '保存' : '创建'"
     negative-text="取消"
     :loading="creating"
-    @positive-click="submitCreate"
+    @positive-click="submit"
   >
     <n-space vertical size="large">
       <n-form label-placement="left" label-width="86">
@@ -90,7 +91,7 @@
           <n-select v-model:value="form.schedule_type" :options="scheduleTypeOptions" />
         </n-form-item>
 
-        <n-form-item v-if="form.schedule_type !== 'once'" label="执行时间">
+        <n-form-item v-if="form.schedule_type !== 'once' && form.schedule_type !== 'on_startup'" label="执行时间">
           <n-input v-model:value="form.time_of_day" placeholder="HH:MM，如 08:30" />
         </n-form-item>
 
@@ -110,6 +111,13 @@
           <n-space align="center">
             <n-switch v-model:value="form.auto_approve" />
             <n-text depth="3" style="font-size: 0.75rem">执行时自动放行敏感工具（运行命令/写文件等）</n-text>
+          </n-space>
+        </n-form-item>
+
+        <n-form-item label="新建对话">
+          <n-space align="center">
+            <n-switch v-model:value="form.create_chat" />
+            <n-text depth="3" style="font-size: 0.75rem">结果写入一个新对话（关闭则追加到当前对话）</n-text>
           </n-space>
         </n-form-item>
       </n-form>
@@ -153,6 +161,7 @@ const configStore = useConfigStore()
 
 const scheduleTypeOptions = [
   { label: '一次性', value: 'once' },
+  { label: '启动后', value: 'on_startup' },
   { label: '每天', value: 'daily' },
   { label: '工作日', value: 'workdays' },
   { label: '每周', value: 'weekly' },
@@ -171,6 +180,8 @@ const weekdayOptions = [
 
 const showCreate = ref(false)
 const showLogs = ref(false)
+const editingTask = ref<ScheduledTask | null>(null)
+const isEdit = computed(() => !!editingTask.value)
 const creating = ref(false)
 const parsing = ref(false)
 const loadingRuns = ref(false)
@@ -187,6 +198,7 @@ const form = reactive<{
   monthday: number | null
   run_at: string | null
   auto_approve: boolean
+  create_chat: boolean
 }>({
   prompt: '',
   schedule_type: 'once',
@@ -195,6 +207,7 @@ const form = reactive<{
   monthday: null,
   run_at: null,
   auto_approve: true,
+  create_chat: true,
 })
 
 function buildModelSnapshot(): Record<string, any> | undefined {
@@ -237,6 +250,7 @@ const runColumns = [
 ]
 
 function openCreate() {
+  editingTask.value = null
   nlText.value = ''
   parsePreview.value = ''
   form.prompt = ''
@@ -246,6 +260,22 @@ function openCreate() {
   form.monthday = null
   form.run_at = null
   form.auto_approve = true
+  form.create_chat = true
+  showCreate.value = true
+}
+
+function openEdit(task: ScheduledTask) {
+  editingTask.value = task
+  nlText.value = ''
+  parsePreview.value = ''
+  form.prompt = task.prompt || ''
+  form.schedule_type = task.schedule_type
+  form.time_of_day = task.time_of_day || ''
+  form.weekday = task.weekday
+  form.monthday = task.monthday
+  form.run_at = task.run_at
+  form.auto_approve = !!task.auto_approve
+  form.create_chat = task.create_chat !== 0
   showCreate.value = true
 }
 
@@ -269,26 +299,42 @@ async function onParse() {
   }
 }
 
-async function submitCreate() {
+async function submit() {
   if (!form.prompt.trim()) { message.warning('请填写任务指令'); return false }
   creating.value = true
   try {
-    await store.create({
-      prompt: form.prompt.trim(),
-      schedule_type: form.schedule_type,
-      time_of_day: form.time_of_day || '',
-      weekday: form.weekday,
-      monthday: form.monthday,
-      run_at: form.run_at || null,
-      title: form.prompt.trim().slice(0, 30),
-      model_config: buildModelSnapshot(),
-      enable_tools: true,
-      auto_approve: form.auto_approve,
-    })
-    message.success('任务已创建')
+    if (editingTask.value) {
+      await store.update(editingTask.value.id, {
+        prompt: form.prompt.trim(),
+        schedule_type: form.schedule_type,
+        time_of_day: form.time_of_day || '',
+        weekday: form.weekday,
+        monthday: form.monthday,
+        run_at: form.run_at || null,
+        title: form.prompt.trim().slice(0, 30),
+        auto_approve: form.auto_approve,
+        create_chat: form.create_chat,
+      })
+      message.success('已保存')
+    } else {
+      await store.create({
+        prompt: form.prompt.trim(),
+        schedule_type: form.schedule_type,
+        time_of_day: form.time_of_day || '',
+        weekday: form.weekday,
+        monthday: form.monthday,
+        run_at: form.run_at || null,
+        title: form.prompt.trim().slice(0, 30),
+        model_config: buildModelSnapshot(),
+        enable_tools: true,
+        auto_approve: form.auto_approve,
+        create_chat: form.create_chat,
+      })
+      message.success('任务已创建')
+    }
     showCreate.value = false
   } catch (e: any) {
-    message.error(e.message || '创建失败')
+    message.error(e.message || (editingTask.value ? '保存失败' : '创建失败'))
     return false
   } finally {
     creating.value = false

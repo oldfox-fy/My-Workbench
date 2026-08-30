@@ -568,14 +568,16 @@ async def chat(
 
                     chunk = item
                     yield chunk
+                    # 标记 chunk 可能带前导空白（llm_service 以 "\n<!--token_usage:...-->" 形式产出），先剥离再判断
+                    stripped = chunk.strip() if isinstance(chunk, str) else chunk
                     # 收集非标记文本用于索引
-                    if chunk and not chunk.startswith("<!--"):
+                    if chunk and not stripped.startswith("<!--"):
                         collected_text.append(chunk)
                     # 捕获 token 用量并持久化
-                    elif chunk and chunk.startswith("<!--token_usage:"):
+                    elif isinstance(stripped, str) and stripped.startswith("<!--token_usage:"):
                         try:
                             import json
-                            usage_json_str = chunk.replace("<!--token_usage:", "").replace("-->", "")
+                            usage_json_str = stripped.replace("<!--token_usage:", "").replace("-->", "")
                             usage = json.loads(usage_json_str)
                             user_id = fastapi_request.state.user.get("id") if hasattr(fastapi_request.state, "user") else None
                             if user_id:

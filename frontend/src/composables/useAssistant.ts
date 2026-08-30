@@ -27,13 +27,13 @@ const assistantState = ref<AssistantStateName>('idle')
 const wakeAvailable = ref(false)
 const lastHandsfree = ref<{ transcript: string; answer: string; spoken_locally?: boolean } | null>(null)
 const lastReminder = ref<{ id: number; content: string } | null>(null)
-const lastScheduledTask = ref<{ task_id: number; title: string; status: string; output_preview: string } | null>(null)
+const lastScheduledTask = ref<{ task_id: number; title: string; status: string; output_preview: string; chat_id?: string } | null>(null)
 
 let ws: WebSocket | null = null
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 let answerHandler: ((r: { transcript: string; answer: string; spoken_locally?: boolean }) => void) | null = null
 let reminderHandler: ((r: { id: number; content: string }) => void) | null = null
-let scheduledTaskHandler: ((r: { task_id: number; title: string; status: string; output_preview: string }) => void) | null = null
+let scheduledTaskHandler: ((r: { task_id: number; title: string; status: string; output_preview: string; chat_id?: string }) => void) | null = null
 let started = false
 
 function wsUrl(): string {
@@ -65,6 +65,7 @@ function onWsMessage(ev: MessageEvent) {
       title: String(msg.title || '定时任务'),
       status: String(msg.status || 'success'),
       output_preview: String(msg.output_preview || ''),
+      chat_id: msg.chat_id ? String(msg.chat_id) : undefined,
     }
     lastScheduledTask.value = r
     scheduledTaskHandler?.(r)
@@ -98,7 +99,7 @@ function connect() {
 async function startHandsfree(
   onAnswer?: (r: { transcript: string; answer: string; spoken_locally?: boolean }) => void,
   onReminder?: (r: { id: number; content: string }) => void,
-  onScheduledTask?: (r: { task_id: number; title: string; status: string; output_preview: string }) => void,
+  onScheduledTask?: (r: { task_id: number; title: string; status: string; output_preview: string; chat_id?: string }) => void,
 ) {
   if (onAnswer) answerHandler = onAnswer
   if (onReminder) reminderHandler = onReminder

@@ -47,6 +47,7 @@ class ScheduledTaskIn(BaseModel):
     enable_tools: bool = True
     profile_id: Optional[int] = None
     auto_approve: bool = True
+    create_chat: bool = True
 
 
 class ScheduledTaskPatch(BaseModel):
@@ -62,6 +63,7 @@ class ScheduledTaskPatch(BaseModel):
     enable_tools: Optional[bool] = None
     profile_id: Optional[int] = None
     auto_approve: Optional[bool] = None
+    create_chat: Optional[bool] = None
 
 
 # ── 工具函数 ──
@@ -73,7 +75,7 @@ def _user_id(request: Request) -> int:
 def _normalize_task_data(data: dict) -> dict:
     """把入参规整成 DB 字段，并校验调度类型。"""
     st = data.get("schedule_type") or "once"
-    if st not in ("once", "daily", "workdays", "weekly", "monthly"):
+    if st not in ("once", "daily", "workdays", "weekly", "monthly", "on_startup"):
         st = "once"
     return {
         "title": (data.get("title") or "").strip(),
@@ -182,8 +184,8 @@ async def create_task(body: ScheduledTaskIn, request: Request):
     cur = await db.execute(
         """INSERT INTO scheduled_tasks
            (user_id, title, prompt, schedule_type, time_of_day, weekday, monthday,
-            run_at, next_run_at, status, model_config, enable_tools, profile_id, auto_approve)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)""",
+            run_at, next_run_at, status, model_config, enable_tools, profile_id, auto_approve, create_chat)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)""",
         (
             uid, data["title"] or data["prompt"][:30], data["prompt"],
             data["schedule_type"], data["time_of_day"], data["weekday"], data["monthday"],
@@ -192,6 +194,7 @@ async def create_task(body: ScheduledTaskIn, request: Request):
             1 if body.enable_tools else 0,
             body.profile_id,
             1 if body.auto_approve else 0,
+            1 if body.create_chat else 0,
         ),
     )
     task_id = cur.lastrowid
@@ -239,6 +242,8 @@ async def update_task(task_id: int, body: ScheduledTaskPatch, request: Request):
             merged[k] = 1 if v else 0
         elif k == "auto_approve":
             merged[k] = 1 if v else 0
+        elif k == "create_chat":
+            merged[k] = 1 if v else 0
 
     data = _normalize_task_data({
         "title": merged.get("title"),
@@ -270,6 +275,9 @@ async def update_task(task_id: int, body: ScheduledTaskPatch, request: Request):
     if "auto_approve" in patch:
         sets.append("auto_approve=?")
         vals.append(merged["auto_approve"])
+    if "create_chat" in patch:
+        sets.append("create_chat=?")
+        vals.append(merged["create_chat"])
     sets.append("updated_at=?")
     vals.append(_iso(datetime.now()))
 

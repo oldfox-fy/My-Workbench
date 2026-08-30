@@ -28,7 +28,7 @@ from backend.services.model_router import get_default_model
 from config_loader import config as app_config
 
 # ── 调度类型枚举 ──
-SCHEDULE_TYPES = ("once", "daily", "workdays", "weekly", "monthly")
+SCHEDULE_TYPES = ("once", "daily", "workdays", "weekly", "monthly", "on_startup")
 
 # ── 中文数字 ──
 _CN_DIGIT = {
@@ -40,6 +40,9 @@ _WEEKDAY = {"一": 0, "二": 1, "三": 2, "四": 3, "五": 4, "六": 5, "日": 6
 _WEEK_RE = re.compile(r"(?:周|星期|礼拜)\s*([一二三四五六日天])")
 _PERIOD_ADD12 = {"中午", "下午", "傍晚", "晚上", "夜里", "夜间", "半夜"}
 _DAY_OFFSET = {"今天": 0, "明天": 1, "后天": 2, "大后天": 3}
+# 启动触发（事件触发，非时间触发）与修饰启动的时段词
+_STARTUP_KEYWORDS = ("启动后", "开机后", "打开后", "登录后", "启动时", "开机时", "打开时", "启动的时候", "启动之后", "启动以后")
+_PERIOD_WORDS = ("凌晨", "早晨", "早上", "上午", "中午", "下午", "傍晚", "晚上", "夜里", "夜间", "半夜")
 
 
 def _cn_num(s: str) -> Optional[int]:
@@ -108,6 +111,10 @@ def compute_next_run(
     now = after or datetime.now()
     schedule_type = schedule_type or "once"
 
+    if schedule_type == "on_startup":
+        # 启动触发不依赖时间点，由应用启动事件触发，无 next_run_at
+        return None
+
     if schedule_type == "once":
         dt = _parse_dt(run_at) if run_at else None
         if dt is None:
@@ -149,6 +156,8 @@ def human_readable(task: dict) -> str:
     """把任务调度字段渲染成中文说明。"""
     st = task.get("schedule_type") or "once"
     tod = task.get("time_of_day") or ""
+    if st == "on_startup":
+        return "应用启动后触发"
     if st == "once":
         return f"一次性 · {task.get('run_at') or '（未设置时间）'}"
     if st == "daily":
@@ -242,8 +251,14 @@ def _rule_parse(text: str) -> Optional[dict]:
         time_of_day = f"{tm[0]:02d}:{tm[1]:02d}"
         phrases.append(tm[2])
 
-    # 周期类型
-    if "工作日" in t:
+    # 触发类型：on_startup（事件触发，非时间触发）优先于周期/一次性
+    if any(k in t for k in _STARTUP_KEYWORDS):
+        schedule_type = "on_startup"
+        phrases.append(next(k for k in _STARTUP_KEYWORDS if k in t))
+        for w in _PERIOD_WORDS:
+            if w in t:
+                phrases.append(w)
+    elif "工作日" in t:
         schedule_type = "workdays"
         phrases.append("工作日")
     elif any(k in t for k in ("每天", "每日", "天天")):
@@ -324,11 +339,12 @@ def _rule_parse(text: str) -> Optional[dict]:
 _LLM_PARSE_PROMPT = """你是定时任务解析器。从用户的一句话里，把「要做的事」和「什么时候执行」分开，输出 JSON。
 
 规则：
-- schedule_type 只能是 once / daily / workdays / weekly / monthly
+- schedule_type 只能是 once / daily / workdays / weekly / monthly / on_startup
 - daily/workdays/weekly/monthly 用 time_of_day（HH:MM，24小时制）
 - weekly 用 weekday（0=周一..6=周日）
 - monthly 用 monthday（1..31）
 - once 用 run_at（ISO 格式 "YYYY-MM-DD HH:MM:SS"）
+- on_startup 表示「应用启动后触发」，无需时间字段，time_of_day/weekday/monthday/run_at 均设为 null
 - title 是简短任务名；prompt 是去掉时间描述后的完整指令
 
 只输出 JSON，不要其它文字。示例：
@@ -441,6 +457,15 @@ def _build_messages(task: dict) -> List[dict]:
     sp = BASE_SYSTEM_PROMPT.replace("{{workspace_path}}", backend.workspace_path)
     sp = sp.replace("{{kb_path}}", getattr(backend, "kb_path", "") or backend.workspace_path)
     sp = sp + "\n\n---\n当前时间：" + get_current_time()
+    # 定时任务专属上下文：明确这是无人值守的自动执行，结果会由系统自动通知用户，
+    # 避免模型输出「我无法推送/无法通知/无法新建窗口」之类的自述，或试图自己发通知。
+    sp = sp + (
+        "\n\n---\n【定时任务执行上下文】\n"
+        "你正在由「定时任务」系统自动触发执行（无人值守）。\n"
+        "执行完成后，你的最终回答会被系统自动通知用户并写入对话，"
+        "你无需也无法主动「推送消息」「发送通知」或「新建对话/窗口」。\n"
+        "请直接专注完成用户指令，输出最终结果正文，不要就「如何通知用户」本身进行说明。"
+    )
     return [
         {"role": "system", "content": sp},
         {"role": "user", "content": task.get("prompt") or ""},
@@ -477,6 +502,10 @@ async def _build_task_tools(mcp_manager, skill_registry, enable_tools, profile_i
             tools.extend([d for d in code_defs if d["function"]["name"] in profile_skills])
     else:
         tools = [t for t in local_tools if t["function"]["name"] in default_tools]
+        # 定时任务默认也带上工作台的 MCP 工具 + code 型技能，便于执行联网检索等自动化任务
+        tools.extend(await get_mcp_tools(mcp_manager))
+        if skill_registry:
+            tools.extend(skill_registry.code_tool_definitions())
 
     # 命令/PPT 意图按需注入
     existing = {t["function"]["name"] for t in tools}
@@ -501,6 +530,42 @@ class _TaskRequest:
 
     async def is_disconnected(self) -> bool:
         return False
+
+
+async def _persist_result_chat(task: dict, output_text: str, error_text: str, status: str) -> Optional[str]:
+    """把定时任务执行结果落库为一个新对话（user=任务指令，assistant=结果）。
+
+    方向 C：结果进新会话，而不是塞进用户当前对话，便于用户在新会话里查看与继续。
+    """
+    import uuid
+    user_id = task.get("user_id")
+    prompt = task.get("prompt") or ""
+    title = task.get("title") or "定时任务"
+    content = output_text if status == "success" else (error_text or "执行失败")
+    chat_id = str(uuid.uuid4())
+    now = datetime.now().isoformat()
+    try:
+        db = await get_db()
+        try:
+            await db.execute(
+                "INSERT INTO chats (id, title, created_at, user_id) VALUES (?, ?, ?, ?)",
+                (chat_id, title, now, user_id),
+            )
+            await db.execute(
+                "INSERT INTO messages (chat_id, role, content, file_ref, user_id) VALUES (?, 'user', ?, NULL, ?)",
+                (chat_id, prompt, user_id),
+            )
+            await db.execute(
+                "INSERT INTO messages (chat_id, role, content, file_ref, user_id) VALUES (?, 'assistant', ?, NULL, ?)",
+                (chat_id, content, user_id),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+        return chat_id
+    except Exception as e:
+        logger.warning(f"[ScheduledTask] 结果落库新对话失败：{e}")
+        return None
 
 
 async def execute_task(task_id: int, mcp_manager=None, skill_registry=None) -> Optional[dict]:
@@ -562,6 +627,12 @@ async def execute_task(task_id: int, mcp_manager=None, skill_registry=None) -> O
     await db.commit()
     await db.close()
 
+    # 结果落库为新对话（方向 C，任务级开关 create_chat 控制），并把新会话 id 随广播带给前端
+    if bool(task.get("create_chat", 1)):
+        chat_id = await _persist_result_chat(task, output_text, error_text, status)
+    else:
+        chat_id = None
+
     # 广播 + 系统通知
     title = task.get("title") or "定时任务"
     preview = (output_text or error_text)[:200]
@@ -573,6 +644,7 @@ async def execute_task(task_id: int, mcp_manager=None, skill_registry=None) -> O
             "title": title,
             "status": status,
             "output_preview": preview,
+            "chat_id": chat_id,
             "scheduled_for": task.get("next_run_at"),
         })
     except Exception as e:
@@ -585,6 +657,35 @@ async def execute_task(task_id: int, mcp_manager=None, skill_registry=None) -> O
         pass
 
     return {"id": task_id, "status": status, "output": output_text, "error": error_text}
+
+
+# ── 启动触发 ──
+
+async def _run_startup_task(task_id: int, mcp_manager=None, skill_registry=None):
+    try:
+        await execute_task(task_id, mcp_manager, skill_registry)
+    except Exception as e:
+        logger.warning(f"[ScheduledTask] 启动任务 {task_id} 执行异常：{e}")
+
+
+async def trigger_startup_tasks(mcp_manager=None, skill_registry=None) -> List[int]:
+    """触发所有「应用启动后」类型的 active 任务（应用每次启动时调用一次）。
+
+    这些任务不依赖 next_run_at，由启动事件触发；结果照常落库/广播/通知。
+    不阻塞启动：逐个用 asyncio.create_task 后台执行。返回触发的任务 id 列表。
+    """
+    db = await get_db()
+    cur = await db.execute(
+        "SELECT id FROM scheduled_tasks WHERE status='active' AND schedule_type='on_startup'"
+    )
+    rows = await cur.fetchall()
+    await db.close()
+    ids = [r["id"] for r in rows]
+    for tid in ids:
+        asyncio.create_task(_run_startup_task(tid, mcp_manager, skill_registry))
+    if ids:
+        logger.info(f"[ScheduledTask] 已触发 {len(ids)} 个「启动后」任务")
+    return ids
 
 
 # ── 调度器 ──
@@ -636,6 +737,9 @@ class ScheduledTaskScheduler:
                     # 推进下次触发时间（一次性 → completed；循环 → 顺延到未来）
                     if t["schedule_type"] == "once":
                         await self._set(t["id"], status="completed", next_run_at=None)
+                    elif t["schedule_type"] == "on_startup":
+                        # 启动触发任务不推进、不改状态（每次启动由 trigger_startup_tasks 触发）
+                        continue
                     else:
                         nxt = compute_next_run(
                             t["schedule_type"], t.get("time_of_day"),

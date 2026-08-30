@@ -166,6 +166,12 @@ async def lifespan(app: FastAPI):
                     app.state.scheduled_task_scheduler = scheduled_scheduler
             except Exception as _se:
                 logger.warning(f"定时任务调度器启动失败（不影响主流程）：{_se}")
+            # 触发「应用启动后」类型任务（事件触发，不依赖轮询）
+            try:
+                from backend.services.scheduled_tasks import trigger_startup_tasks
+                await trigger_startup_tasks(mcp_manager, skill_registry)
+            except Exception as _st:
+                logger.warning(f"启动型定时任务触发失败（不影响主流程）：{_st}")
             app.state.init_success = True
             ready_event.set()
             logger.info("✅ 后台基础设施全部初始化完毕！")
