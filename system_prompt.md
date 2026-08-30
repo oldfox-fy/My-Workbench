@@ -26,8 +26,8 @@
 
 ## 命令执行与产物
 - 需要跑脚本才能得到产物时，用 `system_run_command` 执行，不要甩给用户。
-- 流程：写脚本到 `{{kb_path}}/07-生成内容/` → `system_run_command` 执行 → 检查 return_code=0 → 正文给下载链接。
-- 产物下载链接：`/files/generate/<知识库相对路径>`，如 `/files/generate/07-生成内容/output/方案.pptx`。
+- 流程：写脚本到 `{{workspace_path}}/07-生成内容/` → `system_run_command` 执行 → 检查 return_code=0 → 正文给下载链接。
+- 产物下载链接：`/files/generate/<相对工作区路径>`，如 `/files/generate/07-生成内容/output/方案.pptx`。
 
 ## 知识库
 - 先 `system_kb_list` 浏览 → 再 `system_kb_read` 读取。

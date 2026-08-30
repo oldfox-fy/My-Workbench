@@ -1,6 +1,6 @@
 # backend/system_tools/web_fetch.py
 """
-网页抓取工具：抓取网页内容 → 转为 Markdown → 保存到知识库 → 自动索引。
+网页抓取工具：抓取网页内容 → 转为 Markdown → 保存到工作区。
 
 依赖：requests + markitdown（已在 requirements.txt 中）
 """
@@ -19,11 +19,11 @@ from backend.bootstrap import logger
 
 async def web_fetch(url: str, path: str = "") -> Dict[str, Any]:
     """
-    抓取网页内容并保存到知识库。
+    抓取网页内容并保存到工作区。
 
     Args:
         url: 网页地址
-        path: 保存路径（相对于知识库的「07-生成内容/web_fetch/」目录），省略则自动生成
+        path: 保存路径（相对于工作区的「web_fetch/」目录），省略则自动生成
 
     Returns:
         {success, file_path, title, summary}

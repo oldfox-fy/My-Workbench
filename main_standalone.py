@@ -381,7 +381,7 @@ kb_index:
     function_name: todo
   - name: system_web_fetch
     title: 网页抓取
-    description: 抓取网页内容并保存到知识库。自动将 HTML 转为 Markdown 格式。
+    description: 抓取网页内容并保存到工作区。自动将 HTML 转为 Markdown 格式。
     parameters:
       type: object
       properties:
@@ -449,8 +449,8 @@ kb_index:
 
 ## 命令执行与产物
 - 需要跑脚本才能得到产物时，用 `system_run_command` 执行，不要甩给用户。
-- 流程：写脚本到 `{{kb_path}}/07-生成内容/` → `system_run_command` 执行 → 检查 return_code=0 → 正文给下载链接。
-- 产物下载链接：`/files/generate/<知识库相对路径>`。
+- 流程：写脚本到 `{{workspace_path}}/07-生成内容/` → `system_run_command` 执行 → 检查 return_code=0 → 正文给下载链接。
+- 产物下载链接：`/files/generate/<相对工作区路径>`。
 
 ## 知识库
 - 先 `system_kb_list` 浏览 → 再 `system_kb_read` 读取。
