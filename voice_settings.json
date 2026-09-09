@@ -1,5 +1,5 @@
 {
-  "enabled": true,
+  "enabled": false,
   "wake_mode": "whisper",
   "wake_word": "你好，海之芯",
   "whisper_model": "small",

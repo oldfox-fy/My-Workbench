@@ -8,14 +8,24 @@ Skill 技能管理接口：前台可视化注册 / 启用禁用 / 编辑 / 删�
 所有写操作后会热重载注册表（app.state.skill_registry），无需重启服务。
 另外附带本机身份（管理员/普通用户）读写接口。
 """
+import io
+import json
+import os
 import re
+import zipfile
+from pathlib import Path
+
+import httpx
 from fastapi import APIRouter, HTTPException, Depends, Request, UploadFile, File
 from fastapi.responses import StreamingResponse
 from urllib.parse import quote
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 
+import backend
+from backend.bootstrap import logger
 from backend.db import skills as skills_db
+from backend.db.kb_settings import get_setting, set_setting
 from backend.auth import get_current_user, get_current_admin
 from backend.services import skill_package
 
@@ -43,6 +53,72 @@ class ToggleRequest(BaseModel):
 
 class RoleRequest(BaseModel):
     role: str
+
+
+class SkillHubInstallRequest(BaseModel):
+    slug: str                            # 技能 slug，如 lux3d-cn
+    namespace: str = ""                  # 命名空间 handle，如 user_97275c6e
+    api_key: str = ""
+
+
+class ApiKeyRequest(BaseModel):
+    api_key: str = ""
+
+
+# skillhub.cn 后端 API（与 npm 的 skillhub CLI 不同——那是国际站 skills.palebluedot.live）
+_SKILLHUB_API = "https://api.skillhub.cn"
+_SKILLHUB_HEADERS = {
+    "User-Agent": "MyWorkbench/1.0",
+    "Referer": "https://skillhub.cn/",
+}
+# slug / namespace 仅允许安全字符（避免路径/URL 注入）
+_SLUG_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def _sanitize_name(name: str) -> str:
+    """把 SkillHub 技能名规整为 My Workbench 合法标识（字母开头，字母/数字/下划线/连字符）。"""
+    name = re.sub(r"[^A-Za-z0-9_-]", "-", (name or "").strip()).strip("-")
+    if not name:
+        name = "skillhub"
+    if name[0].isdigit():
+        name = "sk_" + name
+    if not _NAME_RE.match(name):
+        name = "skillhub"
+    return name
+
+
+async def _download_skillhub(slug: str, namespace: str) -> bytes:
+    """从 skillhub.cn 下载技能 zip（跟随 302 重定向到 COS）。返回 zip 字节。"""
+    async with httpx.AsyncClient(follow_redirects=True, timeout=60.0) as client:
+        r = await client.get(
+            f"{_SKILLHUB_API}/api/v1/download",
+            params={"slug": slug, "namespace": namespace},
+            headers=_SKILLHUB_HEADERS,
+        )
+        r.raise_for_status()
+        return r.content
+
+
+def _extract_skill_zip(zip_bytes: bytes, dest_dir: str) -> None:
+    """安全解压技能 zip 到 dest_dir（防 zip-slip：拒绝绝对路径 / 目录穿越 / 盘符）。"""
+    os.makedirs(dest_dir, exist_ok=True)
+    dest_abs = os.path.abspath(dest_dir)
+    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+        for info in zf.infolist():
+            name = info.filename
+            if not name or name.endswith(("/", "\\")):
+                continue
+            norm = name.replace("\\", "/")
+            if norm.startswith("/") or re.match(r"^[A-Za-z]:", norm) or ".." in norm.split("/"):
+                logger.warning(f"[skillhub] 跳过可疑压缩包条目: {name}")
+                continue
+            target = os.path.abspath(os.path.join(dest_dir, *norm.split("/")))
+            if target != dest_abs and not target.startswith(dest_abs + os.sep):
+                logger.warning(f"[skillhub] 跳过越界压缩包条目: {name}")
+                continue
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            with zf.open(info) as src, open(target, "wb") as dst:
+                dst.write(src.read())
 
 
 def _get_registry(request: Request):
@@ -158,6 +234,156 @@ async def import_package(request: Request, file: UploadFile = File(...), overwri
     await _reload(request)
     return skill
 
+
+
+@router.get("/skillhub/search")
+async def search_skillhub(q: str = ""):
+    """搜索 skillhub.cn 技能（直连其 API，非 npm 的 skillhub CLI / 国际站）。"""
+    q = (q or "").strip()
+    if not q:
+        return {"skills": []}
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            # 注意：skillhub.cn 的搜索参数是 keyword（q 会被忽略，返回默认推荐列表）
+            r = await client.get(
+                f"{_SKILLHUB_API}/api/skills",
+                params={"keyword": q, "page": 1, "pageSize": 30},
+                headers=_SKILLHUB_HEADERS,
+            )
+            r.raise_for_status()
+            data = r.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(502, f"搜索 SkillHub 失败（HTTP {e.response.status_code}）")
+    except Exception as e:
+        raise HTTPException(502, f"搜索 SkillHub 失败：{e}")
+
+    skills = ((data or {}).get("data") or {}).get("skills") or []
+    out = []
+    for s in skills:
+        ns = s.get("namespace") or {}
+        labels = s.get("labels") or {}
+        out.append({
+            "slug": s.get("slug", ""),
+            "name": s.get("name") or s.get("slug") or "",
+            "namespace": ns.get("handle", ""),
+            "canonical": ns.get("canonicalName", ""),
+            "description": (s.get("description") or "").strip(),
+            "requires_api_key": str(labels.get("requires_api_key", "")).lower() == "true",
+            "version": s.get("version", ""),
+            "category": s.get("category", ""),
+        })
+    return {"skills": out}
+
+
+@router.post("/skillhub/install")
+async def install_skillhub(req: SkillHubInstallRequest, request: Request):
+    """从 skillhub.cn 安装技能：下载 zip → 解压到工作区 skills/<slug>/ → 注册为 prompt 型技能。"""
+    slug = (req.slug or "").strip()
+    namespace = (req.namespace or "").strip()
+    if not slug or not namespace:
+        raise HTTPException(400, "缺少技能标识（slug 或 namespace）。请先在「搜索技能」里找到目标技能再安装")
+    if not _SLUG_RE.match(slug) or not _SLUG_RE.match(namespace):
+        raise HTTPException(400, "技能标识包含非法字符（仅允许字母、数字、.、_、-）")
+
+    workspace = backend.get_user_workspace_path() or backend.workspace_path
+    skills_root = os.path.join(workspace, "skills")
+    os.makedirs(skills_root, exist_ok=True)
+    dest_dir = os.path.join(skills_root, slug)
+
+    # 下载技能 zip
+    try:
+        zip_bytes = await _download_skillhub(slug, namespace)
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            raise HTTPException(404, f"技能不存在或已下架（slug={slug}, namespace={namespace}）")
+        raise HTTPException(502, f"下载技能失败（HTTP {e.response.status_code}）")
+    except Exception as e:
+        raise HTTPException(502, f"下载技能失败：{e}")
+
+    if not zip_bytes:
+        raise HTTPException(502, "下载到的技能包为空")
+
+    # 解压到工作区 skills/<slug>/
+    if os.path.isdir(dest_dir):
+        raise HTTPException(409, f"技能目录已存在：{dest_dir}。请先删除同名技能再重装")
+    try:
+        _extract_skill_zip(zip_bytes, dest_dir)
+    except zipfile.BadZipFile:
+        raise HTTPException(400, "下载的技能包不是有效的 zip")
+    except OSError as e:
+        raise HTTPException(500, f"写入技能文件失败：{e}")
+
+    # 解析 SKILL.md
+    try:
+        parsed = skill_package.parse_skill_dir(dest_dir)
+    except ValueError as e:
+        raise HTTPException(400, f"解析技能失败：{e}")
+
+    # 技能标识以 slug 为准（与目录名一致），并规整为合法 name
+    parsed["name"] = _sanitize_name(slug)
+
+    existing = await skills_db.get_skill_by_name(parsed["name"])
+    if existing:
+        raise HTTPException(409, f"技能标识「{parsed['name']}」已存在，请先删除同名技能再重装")
+
+    user_id = request.state.user["id"]
+
+    api_key = (req.api_key or "").strip()
+    if api_key:
+        cfg_path = os.path.join(dest_dir, "config.json")
+        try:
+            with open(cfg_path, "w", encoding="utf-8") as f:
+                json.dump({"api_key": api_key}, f, ensure_ascii=False)
+        except OSError as e:
+            logger.warning(f"[skillhub] 写入 config.json 失败: {e}")
+        parsed["instruction"] = (parsed["instruction"] or "") + (
+            f"\n\n本技能需要 API Key，已保存在 `{cfg_path}`（键 `api_key`）。"
+            "执行技能脚本前请先读取该 key，并按 SKILL.md 说明注入（通常是环境变量）。"
+        )
+
+    # 持久化到 app_settings，便于后续「改 key」
+    await set_setting(f"skillhub_dir:{parsed['name']}", dest_dir, user_id)
+    if api_key:
+        await set_setting(f"skill_api_key:{parsed['name']}", api_key, user_id)
+
+    parsed["user_id"] = user_id
+    skill = await skills_db.create_skill(parsed)
+    await _reload(request)
+    return skill
+
+
+@router.get("/api-keys/{name}")
+async def get_api_key(name: str, request: Request):
+    """读取某个技能的 API Key（仅当前用户自己的，供编辑框预填）。"""
+    user_id = request.state.user["id"]
+    key = await get_setting(f"skill_api_key:{name}", user_id)
+    return {"name": name, "api_key": key or ""}
+
+
+@router.put("/api-keys/{name}")
+async def set_api_key(name: str, req: ApiKeyRequest, request: Request):
+    """设置 / 更新 / 清除某个技能的 API Key（写 app_settings，并同步重写技能目录的 config.json）。"""
+    api_key = (req.api_key or "").strip()
+    user_id = request.state.user["id"]
+    await set_setting(f"skill_api_key:{name}", api_key, user_id)
+
+    # 若该技能有 SkillHub 安装目录，同步更新 config.json 供脚本读取
+    skill_dir = await get_setting(f"skillhub_dir:{name}", user_id)
+    if skill_dir and os.path.isdir(skill_dir):
+        cfg_path = os.path.join(skill_dir, "config.json")
+        try:
+            if api_key:
+                with open(cfg_path, "w", encoding="utf-8") as f:
+                    json.dump({"api_key": api_key}, f, ensure_ascii=False)
+            else:
+                try:
+                    os.remove(cfg_path)
+                except OSError:
+                    pass
+        except OSError as e:
+            logger.warning(f"[skillhub] 更新 config.json 失败: {e}")
+
+    return {"status": "ok", "name": name, "has_key": bool(api_key)}
 
 
 @router.put("/{skill_id}")

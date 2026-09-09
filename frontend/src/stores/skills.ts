@@ -21,6 +21,18 @@ export interface Skill {
 
 export type SkillPayload = Omit<Skill, 'id'>
 
+// SkillHub 搜索结果条目。
+export interface SkillHubSearchItem {
+  slug: string
+  name: string
+  namespace: string
+  canonical: string
+  description: string
+  requires_api_key: boolean
+  version: string
+  category: string
+}
+
 export const useSkillStore = defineStore('skill', () => {
   const skills = ref<Skill[]>([])
   const loading = ref(false)
@@ -118,10 +130,56 @@ export const useSkillStore = defineStore('skill', () => {
     return `/api/skills/${id}/export`
   }
 
+  // 搜索 skillhub.cn 技能。
+  async function searchSkillHub(q: string): Promise<SkillHubSearchItem[]> {
+    const res = await apiFetch(`/api/skills/skillhub/search?q=${encodeURIComponent(q)}`)
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) throw new Error(data.detail || '搜索失败')
+    return data.skills || []
+  }
+
+  // 从 skillhub.cn 安装技能：下载 zip → 解压 → 注册为 prompt 型 → 存 API key。
+  async function installSkillHubSkill(slug: string, namespace: string, apiKey = ''): Promise<Skill> {
+    const res = await apiFetch('/api/skills/skillhub/install', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ slug, namespace, api_key: apiKey })
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) {
+      const err = new Error(data.detail || '安装失败') as Error & { conflict?: boolean }
+      err.conflict = res.status === 409
+      throw err
+    }
+    await loadSkills()
+    return data
+  }
+
+  // 读取某个技能的 API Key（供编辑框预填）。
+  async function getSkillApiKey(name: string): Promise<string> {
+    const res = await apiFetch(`/api/skills/api-keys/${encodeURIComponent(name)}`)
+    const data = await res.json().catch(() => ({}))
+    return data.api_key || ''
+  }
+
+  // 设置 / 更新 / 清除某个技能的 API Key（后端写 app_settings + 重写 config.json）。
+  async function setSkillApiKey(name: string, apiKey: string): Promise<void> {
+    const res = await apiFetch(`/api/skills/api-keys/${encodeURIComponent(name)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ api_key: apiKey })
+    })
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}))
+      throw new Error(data.detail || '设置 API Key 失败')
+    }
+  }
+
   return {
     skills, loading, userRole, isAdmin,
     loadSkills, loadUserRole, setUserRole,
     saveSkill, toggleSkill, deleteSkill,
-    importSkillPackage, exportSkillUrl
+    importSkillPackage, exportSkillUrl,
+    searchSkillHub, installSkillHubSkill, getSkillApiKey, setSkillApiKey
   }
 })

@@ -21,6 +21,7 @@ SKILL.md 的 frontmatter 字段映射到数据模型（backend/db/skills.py）�
 import io
 import os
 import zipfile
+from pathlib import Path
 from typing import Any, Dict, List
 
 import yaml
@@ -162,6 +163,66 @@ def parse_skill_zip(raw: bytes) -> Dict[str, Any]:
             "parameters": parameters,
             "isolated": bool(meta.get("isolated", False)),
         }
+
+
+def find_skill_md(dir_path: str) -> str:
+    """在技能目录内定位 SKILL.md（支持直接位于根目录或任意子目录）。返回绝对路径。"""
+    root = Path(dir_path)
+    if not root.is_dir():
+        raise ValueError("技能目录不存在")
+    candidates = [
+        p for p in root.rglob("*")
+        if p.is_file() and p.name.lower() in _SKILL_MD_NAMES
+    ]
+    if not candidates:
+        raise ValueError("技能目录内缺少 SKILL.md")
+    # 优先取层级最浅的 SKILL.md（避免误取 references 里的示例文件）
+    return str(sorted(candidates, key=lambda p: len(p.parts))[0])
+
+
+def parse_skill_dir(dir_path: str) -> Dict[str, Any]:
+    """
+    解析 SkillHub 安装出的技能目录（<dir>/<skill-name>/SKILL.md + 脚本/资源），
+    返回与 SkillRequest 同构的 dict。
+
+    Claude Code 技能的 SKILL.md frontmatter 与 My Workbench 略有差异，此处做兼容映射：
+    - skill_type 恒为 prompt（SkillHub 技能是 Claude Code 技能，不在 My Workbench 沙箱内跑）
+    - tools 优先取 frontmatter 的 tools / allowed-tools，缺省给命令执行 + 抓取能力
+    - instruction 取 frontmatter 显式指令或正文（markdown 说明）
+    """
+    md_path = find_skill_md(dir_path)
+    meta, body = _split_frontmatter(Path(md_path).read_text(encoding="utf-8-sig"))
+
+    name = str(meta.get("name", "")).strip()
+    if not name:
+        # 回退：用 SKILL.md 所在目录名作为技能名
+        name = Path(md_path).parent.name.strip()
+
+    title = str(meta.get("title", "") or name).strip()
+    description = str(meta.get("description", "") or "")
+
+    instruction = meta.get("instruction")
+    instruction = str(instruction) if instruction is not None else body
+
+    # 只尊重 My Workbench 的 tools 约定；Claude Code 的 allowed-tools（如 Bash/Read）
+    # 是另一套工具名，不直接映射。缺省时给「跑脚本 + 抓取 + 读文件」能力，
+    # 覆盖 SkillHub 技能最常见的执行脚本 / 调 API / 读 config.json 场景。
+    tools = _as_str_list(meta.get("tools"))
+    if not tools:
+        tools = ["system_run_command", "system_web_fetch", "system_read_file"]
+
+    return {
+        "name": name,
+        "title": title,
+        "description": description,
+        "skill_type": "prompt",
+        "enabled": True,
+        "instruction": instruction or "",
+        "tools": tools,
+        "code": "",
+        "parameters": {},
+        "isolated": False,
+    }
 
 
 def build_skill_zip(skill: Dict[str, Any]) -> bytes:

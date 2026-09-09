@@ -111,6 +111,49 @@
               @change="onImportSkillFile"
             />
 
+            <n-divider />
+            <n-card size="small" title="SkillHub 商店">
+              <n-text depth="3" style="font-size: 0.78rem">
+                从 <a href="https://skillhub.cn/" target="_blank" rel="noopener">skillhub.cn</a> 搜索并安装技能到工作区。
+                需要 API Key 的技能安装时提示填写，之后可在技能卡片的「Key」中修改。
+              </n-text>
+              <n-space vertical :size="8" style="margin-top: 8px">
+                <n-space :size="8">
+                  <n-input v-model:value="skillhubQuery" placeholder="搜索技能，如 lux3d / 3d / pdf"
+                    style="flex:1" @keyup.enter="searchSkillHub" />
+                  <n-button type="primary" :loading="skillhubSearching" @click="searchSkillHub">搜索</n-button>
+                </n-space>
+                <div v-if="skillhubResults.length" style="max-height: 240px; overflow-y: auto">
+                  <n-space vertical :size="6">
+                    <div
+                      v-for="item in skillhubResults"
+                      :key="item.slug + item.namespace"
+                      style="border: 1px solid rgba(128,128,128,0.25); border-radius: 6px; padding: 6px 8px"
+                    >
+                      <n-space align="center" justify="space-between">
+                        <n-space vertical :size="2" style="flex:1; min-width:0">
+                          <n-space align="center" :size="6">
+                            <n-text strong style="font-size: 0.82rem">{{ item.name }}</n-text>
+                            <n-tag v-if="item.requires_api_key" size="tiny" type="warning">需要 Key</n-tag>
+                          </n-space>
+                          <n-text depth="3" style="font-size: 0.72rem; word-break: break-all">{{ item.canonical }}</n-text>
+                          <n-text depth="3" style="font-size: 0.72rem">{{ (item.description || '').slice(0, 80) }}</n-text>
+                        </n-space>
+                        <n-button
+                          size="tiny"
+                          type="primary"
+                          :loading="skillhubInstallingSlug === item.slug + item.namespace"
+                          @click="installFromResult(item)"
+                        >安装</n-button>
+                      </n-space>
+                    </div>
+                  </n-space>
+                </div>
+                <n-text v-else-if="skillhubSearched" depth="3" style="font-size: 0.78rem">未找到相关技能。</n-text>
+              </n-space>
+            </n-card>
+            <n-divider />
+
             <n-grid :cols="2" :x-gap="12" :y-gap="12">
               <n-gi v-for="skill in pagedSkills" :key="skill.id">
                 <n-card size="small" hoverable class="item-card">
@@ -137,6 +180,8 @@
                     <n-space align="center" justify="end">
                       <n-button text size="small" @click="editSkill(skill)"
                         :disabled="skill.skill_type === 'code' && !skillStore.isAdmin()">编辑</n-button>
+                      <n-button text size="small" v-if="skill.skill_type === 'prompt'"
+                        @click="openApiKeyDialog(skill)">Key</n-button>
                       <n-button text size="small" @click="onExportSkill(skill)">导出</n-button>
                       <n-popconfirm
                         @positive-click="() => onDeleteSkill(skill)"
@@ -796,6 +841,64 @@
       </n-form-item>
     </n-form>
   </n-modal>
+
+  <!-- 设置技能 API Key -->
+  <n-modal
+    v-model:show="apiKeyModalVisible"
+    :auto-focus="false"
+    preset="dialog"
+    draggable
+    :mask-closable="false"
+    style="max-width:460px;width:96%;"
+    title="设置 API Key"
+    positive-text="保存"
+    negative-text="取消"
+    @positive-click="saveApiKey"
+    @negative-click="apiKeyModalVisible = false"
+  >
+    <n-form :model="apiKeyForm" label-placement="left" label-width="80">
+      <n-form-item label="技能">
+        <n-text>{{ apiKeyForm.title }}（{{ apiKeyForm.name }}）</n-text>
+      </n-form-item>
+      <n-form-item label="API Key">
+        <n-input
+          v-model:value="apiKeyForm.apiKey"
+          type="password"
+          show-password-on="click"
+          placeholder="留空保存则清除 Key"
+        />
+      </n-form-item>
+    </n-form>
+  </n-modal>
+
+  <!-- 安装需要 Key 的 SkillHub 技能：先填 Key 再安装 -->
+  <n-modal
+    v-model:show="installKeyModalVisible"
+    :auto-focus="false"
+    preset="dialog"
+    draggable
+    :mask-closable="false"
+    style="max-width:460px;width:96%;"
+    title="填写 API Key"
+    positive-text="安装"
+    negative-text="取消"
+    @positive-click="confirmInstallKey"
+    @negative-click="installKeyModalVisible = false"
+  >
+    <n-form :model="installKeyForm" label-placement="left" label-width="80">
+      <n-form-item label="技能">
+        <n-text>{{ installTarget?.name || '' }}</n-text>
+      </n-form-item>
+      <n-form-item label="API Key">
+        <n-input
+          v-model:value="installKeyForm.apiKey"
+          type="password"
+          show-password-on="click"
+          placeholder="留空可先安装，之后在技能卡片「Key」中补填"
+        />
+      </n-form-item>
+    </n-form>
+  </n-modal>
 </template>
 
 <script setup lang="ts">
@@ -812,7 +915,7 @@ import { useChatStore } from '@/stores/chat'
 import { useConfigStore, MODEL_ROLES, ROLE_CAPABILITY, type ModelConfig } from '@/stores/config'
 import { useProfileStore, VIRTUAL_PROFILE_ID, type Profile } from '@/stores/profiles'
 import { useMcpStore, type MCPServer } from '@/stores/mcp'
-import { useSkillStore, type Skill, type SkillType } from '@/stores/skills'
+import { useSkillStore, type Skill, type SkillType, type SkillHubSearchItem } from '@/stores/skills'
 import { useAuthStore } from '@/stores/auth'
 import { apiFetch } from '@/api/client'
 import mSvg from '@/components/mSvg.vue'
@@ -1568,6 +1671,99 @@ function onExportSkill(skill: Skill) {
   document.body.appendChild(a)
   a.click()
   document.body.removeChild(a)
+}
+
+// ---------- SkillHub 商店：搜索 + 安装 ----------
+const skillhubQuery = ref('')
+const skillhubSearching = ref(false)
+const skillhubSearched = ref(false)
+const skillhubResults = ref<SkillHubSearchItem[]>([])
+const skillhubInstallingSlug = ref('')   // 正在安装的条目键（slug + namespace）
+
+async function searchSkillHub() {
+  const q = skillhubQuery.value.trim()
+  if (!q) {
+    message.warning('请输入搜索关键词')
+    return
+  }
+  skillhubSearching.value = true
+  skillhubSearched.value = true
+  try {
+    skillhubResults.value = await skillStore.searchSkillHub(q)
+    if (!skillhubResults.value.length) message.info('未找到相关技能')
+  } catch (e: any) {
+    message.error(e.message || '搜索失败')
+    skillhubResults.value = []
+  } finally {
+    skillhubSearching.value = false
+  }
+}
+
+// 需要 Key 的技能：先弹出填 Key 对话框；否则直接安装。
+function installFromResult(item: SkillHubSearchItem) {
+  if (item.requires_api_key) {
+    installTarget.value = item
+    installKeyForm.apiKey = ''
+    installKeyModalVisible.value = true
+  } else {
+    doInstall(item, '')
+  }
+}
+
+async function doInstall(item: SkillHubSearchItem, apiKey: string) {
+  const key = item.slug + item.namespace
+  skillhubInstallingSlug.value = key
+  try {
+    const skill = await skillStore.installSkillHubSkill(item.slug, item.namespace, apiKey)
+    message.success(`已安装技能「${skill.title}」`)
+    skillhubResults.value = []
+  } catch (e: any) {
+    if (e.conflict) {
+      message.warning(e.message || '同名技能已存在，请先删除后再安装')
+    } else {
+      message.error(e.message || '安装失败')
+    }
+  } finally {
+    skillhubInstallingSlug.value = ''
+  }
+}
+
+// 安装需 Key 技能的确认对话框
+const installKeyModalVisible = ref(false)
+const installTarget = ref<SkillHubSearchItem | null>(null)
+const installKeyForm = reactive({ apiKey: '' })
+
+function confirmInstallKey() {
+  const item = installTarget.value
+  installKeyModalVisible.value = false
+  if (item) doInstall(item, installKeyForm.apiKey.trim())
+}
+
+// ---------- 技能 API Key 设置 ----------
+const apiKeyModalVisible = ref(false)
+const apiKeyForm = reactive({ name: '', title: '', apiKey: '' })
+
+async function openApiKeyDialog(skill: Skill) {
+  apiKeyForm.name = skill.name
+  apiKeyForm.title = skill.title
+  apiKeyForm.apiKey = ''
+  apiKeyModalVisible.value = true
+  try {
+    apiKeyForm.apiKey = await skillStore.getSkillApiKey(skill.name)
+  } catch {
+    apiKeyForm.apiKey = ''
+  }
+}
+
+async function saveApiKey() {
+  try {
+    await skillStore.setSkillApiKey(apiKeyForm.name, apiKeyForm.apiKey.trim())
+    message.success(apiKeyForm.apiKey.trim() ? 'API Key 已保存' : '已清除 API Key')
+    apiKeyModalVisible.value = false
+  } catch (e: any) {
+    message.error(e.message || '保存失败')
+    return false
+  }
 }
 
 const skillForm = reactive<{
