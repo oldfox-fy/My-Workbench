@@ -737,12 +737,16 @@ def start_gui():
 
     def _start_tray():
         import pystray
-        menu = pystray.Menu(
+        items = [
             pystray.MenuItem("显示主窗口", lambda icon, item: _show_main(), default=True),
-            pystray.MenuItem("显示悬浮球", lambda icon, item: _show_orb()),
+        ]
+        if orb_window is not None:
+            items.append(pystray.MenuItem("显示悬浮球", lambda icon, item: _show_orb()))
+        items += [
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("退出", lambda icon, item: do_quit()),
-        )
+        ]
+        menu = pystray.Menu(*items)
         return pystray.Icon("MyWorkbench", _make_tray_image(), "My Workbench", menu)
 
     # 主窗口（silent 模式启动即隐藏，开机常驻）
@@ -758,18 +762,19 @@ def start_gui():
     )
     main_window.events.closing += on_main_closing
 
-    # 悬浮球（无边框、透明、置顶、可拖动；左键唤醒/停止，右键菜单）
-    orb_window = webview.create_window(
-        title="",
-        html=_build_orb_html(f"ws://127.0.0.1:{SERVER_PORT}/ws/assistant"),
-        width=96, height=150,
-        frameless=True,
-        transparent=True,
-        on_top=True,
-        easy_drag=True,
-        js_api=OrbApi(),
-    )
-    orb_window.events.closing += on_orb_closing
+    # 悬浮球（仅语音助手启用时显示；无边框、透明、置顶、可拖动；左键唤醒/停止，右键菜单）
+    if getattr(config, "voice_assistant_enabled", True):
+        orb_window = webview.create_window(
+            title="",
+            html=_build_orb_html(f"ws://127.0.0.1:{SERVER_PORT}/ws/assistant"),
+            width=96, height=150,
+            frameless=True,
+            transparent=True,
+            on_top=True,
+            easy_drag=True,
+            js_api=OrbApi(),
+        )
+        orb_window.events.closing += on_orb_closing
 
     # 系统托盘（独立线程跑 pystray 主循环）
     tray_icon = _start_tray()

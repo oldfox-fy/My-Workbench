@@ -198,37 +198,37 @@ async def _llm_classify(user_message: str, llm_service=None) -> Tuple[str, float
 
 _INTENT_PARAMS = {
     "simple_qa": {
-        "max_steps": 3,
+        "max_steps": 25,
         "max_tokens": 4096,
         "auto_inject_tools": [],
         "prompt_style": "concise",
     },
     "kb_query": {
-        "max_steps": 25,
+        "max_steps": 80,
         "max_tokens": 8192,
         "auto_inject_tools": ["system_kb_search"],
         "prompt_style": "kb",
     },
     "deep_research": {
-        "max_steps": 25,
+        "max_steps": 80,
         "max_tokens": 16384,
         "auto_inject_tools": ["system_kb_search"],
         "prompt_style": "standard",
     },
     "code_task": {
-        "max_steps": 15,
+        "max_steps": 80,
         "max_tokens": 8192,
         "auto_inject_tools": ["system_run_command"],
         "prompt_style": "code",
     },
     "content_create": {
-        "max_steps": 40,
+        "max_steps": 80,
         "max_tokens": 16384,
         "auto_inject_tools": ["system_generate_pptx", "system_run_command"],
         "prompt_style": "standard",
     },
     "standard": {
-        "max_steps": 25,
+        "max_steps": 80,
         "max_tokens": 16384,
         "auto_inject_tools": [],
         "prompt_style": "standard",
@@ -275,7 +275,7 @@ async def detect_intent(
     if not user_text:
         return IntentResult(
             intent="standard", confidence="fallback",
-            max_steps=25, max_tokens=16384,
+            max_steps=80, max_tokens=16384,
             auto_inject_tools=[], prompt_style="standard",
             reasoning="无用户文本，使用默认模式",
         )
