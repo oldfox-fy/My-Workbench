@@ -3,6 +3,25 @@
     <n-drawer-content title=" 使用统计" closable>
       <div v-if="loading" style="text-align:center;padding:40px"><n-spin size="large" /></div>
       <div v-else class="stats-body">
+        <!-- 时间筛选 -->
+        <div class="filter-row">
+          <n-radio-group v-model:value="period" size="small">
+            <n-radio-button value="all">全部</n-radio-button>
+            <n-radio-button value="day">日</n-radio-button>
+            <n-radio-button value="month">月</n-radio-button>
+            <n-radio-button value="year">年</n-radio-button>
+          </n-radio-group>
+          <n-date-picker
+            v-if="period !== 'all'"
+            v-model:value="pickerValue"
+            :type="pickerType"
+            size="small"
+            clearable
+            style="width: 150px"
+          />
+        </div>
+        <div class="filter-label">{{ filterLabel }}</div>
+
         <!-- 概览卡片 -->
         <n-grid cols="2" :x-gap="8" :y-gap="8">
           <n-gi><n-card size="small" title="对话"><div class="stat-num">{{ data?.chats || 0 }}</div></n-card></n-gi>
@@ -62,7 +81,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
-import { NDrawer, NDrawerContent, NGrid, NGi, NCard, NTag, NSpin, NText } from 'naive-ui'
+import { NDrawer, NDrawerContent, NGrid, NGi, NCard, NTag, NSpin, NText, NDatePicker, NRadioGroup, NRadioButton } from 'naive-ui'
 import { apiFetch } from '@/api/client'
 
 const props = defineProps<{ show: boolean }>()
@@ -86,6 +105,37 @@ interface StatsData {
 const data = ref<StatsData | null>(null)
 const loading = ref(false)
 
+// 时间筛选：默认按「日」显示当天
+const period = ref<'all' | 'day' | 'month' | 'year'>('day')
+const pickerValue = ref<number | null>(Date.now())
+
+const pickerType = computed<'date' | 'month' | 'year'>(() => {
+  if (period.value === 'year') return 'year'
+  if (period.value === 'month') return 'month'
+  return 'date'
+})
+
+const filterLabel = computed(() => {
+  if (period.value === 'all') return '统计范围：全部时间'
+  const d = new Date(pickerValue.value || Date.now())
+  const y = d.getFullYear()
+  const m = d.getMonth() + 1
+  const day = d.getDate()
+  if (period.value === 'year') return `统计范围：${y} 年`
+  if (period.value === 'month') return `统计范围：${y} 年 ${m} 月`
+  return `统计范围：${y} 年 ${m} 月 ${day} 日`
+})
+
+function formatDate(): string {
+  const d = new Date(pickerValue.value || Date.now())
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  if (period.value === 'year') return String(y)
+  if (period.value === 'month') return `${y}-${m}`
+  return `${y}-${m}-${day}`
+}
+
 const successRate = computed(() => {
   const tc = data.value?.tool_calls
   if (!tc || tc.total === 0) return 100
@@ -99,20 +149,26 @@ function fmtTokens(n: number | undefined): string {
   return String(n)
 }
 
-watch(() => props.show, async (v) => {
-  if (v) {
-    loading.value = true
-    try {
-      const resp = await apiFetch('/api/tool-calls/stats')
-      data.value = await resp.json()
-    } catch { data.value = null }
-    loading.value = false
-  }
+async function loadStats() {
+  loading.value = true
+  try {
+    const params = new URLSearchParams({ period: period.value })
+    if (period.value !== 'all') params.set('date', formatDate())
+    const resp = await apiFetch(`/api/tool-calls/stats?${params}`)
+    data.value = await resp.json()
+  } catch { data.value = null }
+  loading.value = false
+}
+
+watch([() => props.show, period, pickerValue], () => {
+  if (props.show) loadStats()
 })
 </script>
 
 <style scoped>
 .stats-body { padding-bottom: 40px; }
+.filter-row { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.filter-label { font-size: 12px; color: var(--text-secondary); margin-bottom: 12px; }
 .stat-num { font-size: 28px; font-weight: 700; }
 .empty { color: var(--text-secondary); font-size: 13px; text-align: center; padding: 16px; }
 .tool-row { display: flex; align-items: center; gap: 8px; padding: 4px 0; }

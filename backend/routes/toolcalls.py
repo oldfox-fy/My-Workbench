@@ -1,4 +1,5 @@
 # backend/routes/tool_calls.py
+from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, HTTPException, Request
 from backend.database import get_db
 from backend.db.tool_calls import (
@@ -17,24 +18,80 @@ router = APIRouter(prefix="/api/tool-calls", tags=["tool-calls"])
 # ──────────── 使用统计 ────────────
 # 注意：/stats 必须在 /{call_id} 之前注册，否则 "stats" 会被当作 call_id 参数匹配
 
+def _period_utc_range(period: str, date_str: str) -> tuple:
+    """
+    按「本地日历」的 日/月/年 周期，换算成 UTC 时间窗 [start, end)。
+    数据库 created_at 由 SQLite CURRENT_TIMESTAMP 生成（UTC），故比较需用 UTC。
+    """
+    local_tz = datetime.now().astimezone().tzinfo
+    now_local = datetime.now(local_tz)
+
+    if period == "year":
+        y = int(date_str) if date_str else now_local.year
+        start = datetime(y, 1, 1, tzinfo=local_tz)
+        end = datetime(y + 1, 1, 1, tzinfo=local_tz)
+    elif period == "month":
+        if date_str:
+            y, m = map(int, date_str.split("-"))
+        else:
+            y, m = now_local.year, now_local.month
+        start = datetime(y, m, 1, tzinfo=local_tz)
+        end = datetime(y + 1, 1, 1, tzinfo=local_tz) if m == 12 else datetime(y, m + 1, 1, tzinfo=local_tz)
+    else:  # day
+        if date_str:
+            y, m, d = map(int, date_str.split("-"))
+        else:
+            y, m, d = now_local.year, now_local.month, now_local.day
+        start = datetime(y, m, d, tzinfo=local_tz)
+        end = start + timedelta(days=1)
+
+    return (
+        start.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+        end.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+    )
+
+
 @router.get("/stats")
-async def get_stats(request: Request):
-    """聚合使用统计：Token 消耗、工具调用、对话数据（按用户隔离）。"""
+async def get_stats(request: Request, period: str = "day", date: str = ""):
+    """
+    聚合使用统计：Token 消耗、工具调用、对话数据（按用户隔离）。
+    period: all | day | month | year（默认 day=当日）。
+    date:   对应周期字符串，如 day="2026-11-10"、month="2026-11"、year="2026"；缺省取当日。
+    """
     user_id = request.state.user["id"]
+    period = (period or "day").lower()
+
+    range_clause = ""
+    range_params: tuple = ()
+    start_ts = end_ts = None
+    if period != "all":
+        if period not in ("day", "month", "year"):
+            period = "day"
+        start_ts, end_ts = _period_utc_range(period, date)
+        range_clause = " AND created_at >= ? AND created_at < ?"
+        range_params = (start_ts, end_ts)
+
     db = await get_db()
     try:
         # 对话总数
-        cur = await db.execute("SELECT COUNT(*) FROM chats WHERE user_id = ?", (user_id,))
+        cur = await db.execute(
+            f"SELECT COUNT(*) FROM chats WHERE user_id = ?{range_clause}",
+            (user_id, *range_params),
+        )
         chat_count = (await cur.fetchone())[0]
 
         # 消息总数
-        cur = await db.execute("SELECT COUNT(*) FROM messages WHERE user_id = ?", (user_id,))
+        cur = await db.execute(
+            f"SELECT COUNT(*) FROM messages WHERE user_id = ?{range_clause}",
+            (user_id, *range_params),
+        )
         msg_count = (await cur.fetchone())[0]
 
         # 工具调用总数 + 成功/失败
         cur = await db.execute(
-            "SELECT COUNT(*), SUM(CASE WHEN status='success' THEN 1 ELSE 0 END), SUM(CASE WHEN status='error' THEN 1 ELSE 0 END) FROM tool_calls WHERE user_id = ?",
-            (user_id,),
+            f"SELECT COUNT(*), SUM(CASE WHEN status='success' THEN 1 ELSE 0 END), "
+            f"SUM(CASE WHEN status='error' THEN 1 ELSE 0 END) FROM tool_calls WHERE user_id = ?{range_clause}",
+            (user_id, *range_params),
         )
         row = await cur.fetchone()
         tool_total = row[0] or 0
@@ -43,16 +100,19 @@ async def get_stats(request: Request):
 
         # TOP 10 工具
         cur = await db.execute(
-            "SELECT tool_name, COUNT(*) c FROM tool_calls WHERE user_id = ? GROUP BY tool_name ORDER BY c DESC LIMIT 10",
-            (user_id,),
+            f"SELECT tool_name, COUNT(*) c FROM tool_calls WHERE user_id = ?{range_clause} "
+            f"GROUP BY tool_name ORDER BY c DESC LIMIT 10",
+            (user_id, *range_params),
         )
         tool_top = [{"name": r[0], "count": r[1]} for r in await cur.fetchall()]
 
         # Token 消耗统计
-        token_stats = await get_user_token_stats(user_id)
-        token_by_model = await get_token_breakdown_by_model(user_id)
+        token_stats = await get_user_token_stats(user_id, start_ts, end_ts)
+        token_by_model = await get_token_breakdown_by_model(user_id, start_ts, end_ts)
 
         return {
+            "period": period,
+            "date": date,
             "chats": chat_count,
             "messages": msg_count,
             "tool_calls": {"total": tool_total, "success": tool_success, "error": tool_error},

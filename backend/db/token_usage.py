@@ -31,19 +31,23 @@ async def record_token_usage(
         await db.close()
 
 
-async def get_user_token_stats(user_id: int) -> Dict[str, Any]:
-    """获取指定用户的 token 统计。"""
+async def get_user_token_stats(user_id: int,
+                               start_ts: Optional[str] = None,
+                               end_ts: Optional[str] = None) -> Dict[str, Any]:
+    """获取指定用户的 token 统计，可按 created_at 时间范围过滤（半开区间 [start, end)）。"""
     db = await get_db()
     try:
-        cursor = await db.execute(
-            """SELECT
-                 COUNT(*) as request_count,
-                 COALESCE(SUM(prompt_tokens), 0) as total_prompt,
-                 COALESCE(SUM(completion_tokens), 0) as total_completion,
-                 COALESCE(SUM(total_tokens), 0) as total_all
-               FROM token_usage WHERE user_id = ?""",
-            (user_id,),
-        )
+        sql = """SELECT
+                   COUNT(*) as request_count,
+                   COALESCE(SUM(prompt_tokens), 0) as total_prompt,
+                   COALESCE(SUM(completion_tokens), 0) as total_completion,
+                   COALESCE(SUM(total_tokens), 0) as total_all
+                 FROM token_usage WHERE user_id = ?"""
+        params: list = [user_id]
+        if start_ts and end_ts:
+            sql += " AND created_at >= ? AND created_at < ?"
+            params += [start_ts, end_ts]
+        cursor = await db.execute(sql, params)
         row = await cursor.fetchone()
         return {
             "request_count": row[0] or 0,
@@ -55,18 +59,22 @@ async def get_user_token_stats(user_id: int) -> Dict[str, Any]:
         await db.close()
 
 
-async def get_token_breakdown_by_model(user_id: int) -> list:
-    """按模型拆分指定用户的 token 消耗（用于 TOP N 展示）。"""
+async def get_token_breakdown_by_model(user_id: int,
+                                      start_ts: Optional[str] = None,
+                                      end_ts: Optional[str] = None) -> list:
+    """按模型拆分指定用户的 token 消耗（用于 TOP N 展示），可按时间范围过滤。"""
     db = await get_db()
     try:
-        cursor = await db.execute(
-            """SELECT model_name,
-                 COUNT(*) as cnt,
-                 COALESCE(SUM(total_tokens), 0) as total
-               FROM token_usage WHERE user_id = ?
-               GROUP BY model_name ORDER BY total DESC LIMIT 10""",
-            (user_id,),
-        )
+        sql = """SELECT model_name,
+                   COUNT(*) as cnt,
+                   COALESCE(SUM(total_tokens), 0) as total
+                 FROM token_usage WHERE user_id = ?"""
+        params: list = [user_id]
+        if start_ts and end_ts:
+            sql += " AND created_at >= ? AND created_at < ?"
+            params += [start_ts, end_ts]
+        sql += " GROUP BY model_name ORDER BY total DESC LIMIT 10"
+        cursor = await db.execute(sql, params)
         rows = await cursor.fetchall()
         return [{"model": r[0] or "unknown", "count": r[1], "total_tokens": r[2]} for r in rows]
     finally:
