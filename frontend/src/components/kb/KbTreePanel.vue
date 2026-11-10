@@ -82,6 +82,44 @@
         @keydown.enter="doCreate"
       />
     </n-modal>
+
+    <!-- 查看分块 -->
+    <n-modal
+      v-model:show="chunksModal.show"
+      preset="card"
+      :title="`分块预览 · ${chunksModal.title}`"
+      style="width: 680px; max-width: 92vw;"
+      :auto-focus="false"
+    >
+      <n-spin :show="chunksLoading">
+        <n-scrollbar style="max-height: 60vh;">
+          <div v-if="chunks.length === 0 && !chunksLoading" class="kb-chunks-empty">
+            该文件尚未建立索引（或没有可切分的内容）。可到「设置 → 知识库」重建索引。
+          </div>
+          <div v-for="(c, i) in chunks" :key="i" class="kb-chunk-item">
+            <div class="kb-chunk-head">
+              <span class="kb-chunk-index">#{{ c.chunk_index + 1 }}</span>
+              <span v-if="c.heading_path" class="kb-chunk-heading">{{ c.heading_path }}</span>
+              <span v-if="c.page_number != null" class="kb-chunk-page">第 {{ c.page_number }} 页</span>
+              <n-tag size="tiny" :bordered="false">{{ c.chunk_type }}</n-tag>
+            </div>
+            <div class="kb-chunk-content">{{ c.content }}</div>
+          </div>
+        </n-scrollbar>
+      </n-spin>
+    </n-modal>
+
+    <!-- 右键上下文菜单 -->
+    <n-dropdown
+      placement="bottom-start"
+      trigger="manual"
+      :show="ctxMenu.show"
+      :x="ctxMenu.x"
+      :y="ctxMenu.y"
+      :options="ctxOptions as any"
+      @select="onCtxSelect"
+      @clickoutside="closeCtxMenu"
+    />
   </div>
 </template>
 
@@ -90,7 +128,7 @@ import { ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   NButton, NIcon, NText, NTree, NScrollbar, NSpin, NEmpty,
-  NInput, NModal, useMessage, useDialog
+  NInput, NModal, NDropdown, NTag, useMessage, useDialog
 } from 'naive-ui'
 import type { TreeOption } from 'naive-ui'
 import { h } from 'vue'
@@ -99,8 +137,9 @@ import {
   DocumentTextOutline, RefreshOutline, LockClosedOutline, GitNetworkOutline
 } from '@vicons/ionicons5'
 import { useKnowledgeStore, type KbTreeNode } from '@/stores/knowledge'
+import { getChunks, type KbChunk } from '@/api/knowledge'
 
-defineProps<{ showClose?: boolean; width?: number }>()
+const props = defineProps<{ showClose?: boolean; width?: number }>()
 const emit = defineEmits<{ (e: 'close'): void }>()
 
 const router = useRouter()
@@ -121,6 +160,7 @@ async function selectFolder() {
       const ok = await kbStore.setRoot(folder)
       if (ok) {
         kbStore.resetSelection()
+        kbStore.clearChatFile()
         await kbStore.loadTree()
         message.success('知识库目录已设置')
       } else {
@@ -148,24 +188,14 @@ function renderLabel({ option }: { option: TreeOption }) {
   return node.label
 }
 
-// 目录树节点：右键删除（只读节点阻止删除）
+// 目录树节点：左键选中，右键弹出菜单
 function nodeProps({ option }: { option: TreeOption }) {
   const node = option as unknown as KbTreeNode
-  if (node.readonly) {
-    return {
-      oncontextmenu(e: MouseEvent) {
-        e.preventDefault()
-        message.warning('「' + node.label + '」位于只读目录（公共基础），不可删除')
-      },
-      title: '只读目录，不可删除'
-    }
-  }
   return {
     oncontextmenu(e: MouseEvent) {
-      e.preventDefault()
-      confirmDelete(node)
+      openCtxMenu(e, node)
     },
-    title: node.isDir ? '右键删除文件夹' : '右键删除，单击查看'
+    title: node.isDir ? '右键打开菜单' : '单击选中（供对话读取），右键打开菜单'
   }
 }
 
@@ -178,10 +208,118 @@ async function onSelect(_keys: Array<string | number>, _opt: unknown, meta: { no
     kbStore.selectedKey = key
     return
   }
+  // 独立知识库整页（移动端 /knowledge，无 showClose）：没有右键菜单，点击直接打开查看
+  if (!props.showClose) {
+    try {
+      await kbStore.openFile(key, !!node.editable)
+    } catch (e: any) {
+      message.error(e.message || '读取失败')
+    }
+    return
+  }
+  // 桌面端内嵌于对话（showClose=true）：左键单击仅选中，登记为“对话引用文件”（选中其它文件自动切换），不打开预览
+  kbStore.selectedKey = key
+  kbStore.selectFileForChat(key, node.label)
+}
+
+// ---------- 右键上下文菜单 ----------
+const ctxMenu = ref<{ show: boolean; x: number; y: number; node: KbTreeNode | null }>({
+  show: false, x: 0, y: 0, node: null,
+})
+
+const ctxOptions = computed(() => {
+  const node = ctxMenu.value.node
+  if (!node) return []
+  if (node.isDir) {
+    return [
+      { label: '复制路径', key: 'copy' },
+      { label: '删除文件夹', key: 'delete', disabled: !!node.readonly },
+    ]
+  }
+  return [
+    { label: '打开文件', key: 'open' },
+    { label: '查看分块', key: 'chunks' },
+    { label: '复制路径', key: 'copy' },
+    { label: '删除文件', key: 'delete', disabled: !!node.readonly },
+  ]
+})
+
+function openCtxMenu(e: MouseEvent, node: KbTreeNode) {
+  e.preventDefault()
+  e.stopPropagation()
+  ctxMenu.value = { show: true, x: e.clientX, y: e.clientY, node }
+}
+
+function closeCtxMenu() {
+  ctxMenu.value.show = false
+  ctxMenu.value.node = null
+}
+
+function kbAbsPath(key: string): string {
+  const root = (kbStore.root || '').replace(/[\\/]+$/, '')
+  if (!root) return key
+  const isWin = /win/i.test(navigator.platform || '') || /windows/i.test(navigator.userAgent)
+  const sep = isWin ? '\\' : '/'
+  return `${root}${sep}${key.replace(/\//g, sep)}`
+}
+
+async function copyPath(node: KbTreeNode) {
+  const abs = kbAbsPath(String(node.key))
   try {
-    await kbStore.openFile(key, !!node.editable)
+    await navigator.clipboard.writeText(abs)
+    message.success('路径已复制')
+  } catch {
+    // 回退：execCommand
+    try {
+      const ta = document.createElement('textarea')
+      ta.value = abs
+      document.body.appendChild(ta)
+      ta.select()
+      document.execCommand('copy')
+      document.body.removeChild(ta)
+      message.success('路径已复制')
+    } catch {
+      message.error('复制失败')
+    }
+  }
+}
+
+async function onCtxSelect(key: string) {
+  const node = ctxMenu.value.node
+  if (!node) return
+  const nodeKey = String(node.key)
+  if (key === 'open') {
+    try {
+      await kbStore.openFile(nodeKey, !!node.editable)
+    } catch (e: any) {
+      message.error(e.message || '读取失败')
+    }
+  } else if (key === 'chunks') {
+    openChunks(node)
+  } else if (key === 'copy') {
+    await copyPath(node)
+  } else if (key === 'delete') {
+    confirmDelete(node)
+  }
+  closeCtxMenu()
+}
+
+// ---------- 查看分块 ----------
+const chunksModal = ref<{ show: boolean; title: string }>({ show: false, title: '' })
+const chunks = ref<KbChunk[]>([])
+const chunksLoading = ref(false)
+
+async function openChunks(node: KbTreeNode) {
+  const key = String(node.key)
+  chunksModal.value = { show: true, title: node.label }
+  chunks.value = []
+  chunksLoading.value = true
+  try {
+    chunks.value = await getChunks(key)
   } catch (e: any) {
-    message.error(e.message || '读取失败')
+    message.error(e.message || '获取分块失败')
+  } finally {
+    chunksLoading.value = false
   }
 }
 
@@ -259,6 +397,12 @@ function confirmDelete(node: KbTreeNode) {
             (node.isDir && kbStore.currentPath.startsWith(node.key + '/'))) {
           kbStore.resetSelection()
         }
+        // 若被删除的正是当前“对话引用文件”，同步清除
+        if (kbStore.selectedChatFile &&
+            (kbStore.selectedChatFile.path === node.key ||
+             (node.isDir && kbStore.selectedChatFile.path.startsWith(node.key + '/')))) {
+          kbStore.clearChatFile()
+        }
         await kbStore.loadTree()
         message.success('已删除')
       } catch (e: any) {
@@ -311,5 +455,47 @@ function confirmDelete(node: KbTreeNode) {
   align-items: center;
   justify-content: center;
   padding: 20px;
+}
+
+/* 分块预览 */
+.kb-chunks-empty {
+  padding: 20px;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  text-align: center;
+}
+.kb-chunk-item {
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--bg-secondary, rgba(255,255,255,0.04));
+  margin-bottom: 8px;
+}
+.kb-chunk-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 5px;
+}
+.kb-chunk-index {
+  font-weight: 700;
+  font-size: 0.75rem;
+  color: var(--accent-color, #4a7cf7);
+}
+.kb-chunk-heading {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.kb-chunk-page {
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+}
+.kb-chunk-content {
+  font-size: 0.8rem;
+  color: var(--text-primary);
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 </style>

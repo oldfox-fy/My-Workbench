@@ -1,5 +1,6 @@
 import { ref } from 'vue'
 import { useChatStore, type Message } from '@/stores/chat'
+import { useKnowledgeStore } from '@/stores/knowledge'
 import { useConfigStore } from '@/stores/config'
 import { useProfileStore, VIRTUAL_PROFILE_ID } from '@/stores/profiles'
 import { useSkillStore } from '@/stores/skills'
@@ -168,6 +169,10 @@ export function useChat() {
     const chatId = chatStore.activeChatId
 
     const displayContent = currentInput.value.trim()
+
+    // 当前左键选中的知识库文件（供后续对话读取）
+    const kbFile = useKnowledgeStore().selectedChatFile
+
     const userMsg: Message = {
       id: Date.now(),
       role: 'user',
@@ -180,6 +185,7 @@ export function useChat() {
               url: f.url,
             }))
           : null,
+      kb_file: kbFile ? { path: kbFile.path, label: kbFile.label } : null,
     }
 
     chatStore.addMessageToLocal(userMsg)

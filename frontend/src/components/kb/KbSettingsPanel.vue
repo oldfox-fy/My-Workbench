@@ -76,6 +76,61 @@
 
     <n-divider style="margin: 4px 0" />
 
+    <!-- ========== 分块参数 ========== -->
+    <h4 style="margin: 0">分块参数</h4>
+
+    <n-text depth="3" style="font-size: 0.8rem">
+      控制文档切分粒度。修改后需「全量重建」或重新索引对应文件才会生效。
+    </n-text>
+
+    <n-form label-placement="left" label-width="110" size="small">
+      <n-form-item label="单块最大字符">
+        <n-input-number v-model:value="chunkForm.chunk_max_chars" :min="50" :max="100000" :step="50" />
+      </n-form-item>
+      <n-form-item label="重叠字符数">
+        <n-input-number v-model:value="chunkForm.chunk_overlap" :min="0" :max="chunkForm.chunk_max_chars - 1" :step="10" />
+      </n-form-item>
+      <n-form-item label="过短块阈值">
+        <n-input-number v-model:value="chunkForm.chunk_min_chars" :min="1" :max="chunkForm.chunk_max_chars" :step="10" />
+      </n-form-item>
+    </n-form>
+
+    <n-space>
+      <n-button size="small" type="primary" :loading="chunkSaving" @click="onChunkSave">保存分块参数</n-button>
+    </n-space>
+
+    <n-divider style="margin: 4px 0" />
+
+    <!-- ========== OCR 状态 ========== -->
+    <h4 style="margin: 0">OCR（扫描件识别）</h4>
+
+    <n-text depth="3" style="font-size: 0.8rem">
+      当 PDF 无文字层时自动 OCR 提取文字供检索。需本机安装 Tesseract OCR（含中文语言包）。
+    </n-text>
+
+    <n-descriptions v-if="ocr" :column="1" size="small" label-placement="top" bordered>
+      <n-descriptions-item label="Tesseract 引擎">
+        <n-tag :type="ocr.tesseract_available ? 'success' : 'error'" size="small">
+          {{ ocr.tesseract_available ? '已安装' : '未安装' }}
+          <template v-if="ocr.tesseract_available && ocr.ocr_languages.length">
+            （{{ ocr.ocr_languages.join(', ') }}）
+          </template>
+        </n-tag>
+      </n-descriptions-item>
+      <n-descriptions-item label="PDF 文字层解析（pdfplumber）">
+        <n-tag :type="ocr.pdfplumber_available ? 'success' : 'error'" size="small">
+          {{ ocr.pdfplumber_available ? '可用' : '不可用' }}
+        </n-tag>
+      </n-descriptions-item>
+    </n-descriptions>
+
+    <n-alert v-if="ocr && !ocr.tesseract_available" type="warning" size="small" title="Tesseract 未安装">
+      扫描版 PDF 将无法被检索。请下载安装 Tesseract（Windows 推荐 UB-Mannheim 发行版），
+      安装时勾选中文语言包 chi_sim，并确认 tesseract.exe 已加入系统 PATH，然后重启本应用。
+    </n-alert>
+
+    <n-divider style="margin: 4px 0" />
+
     <!-- ========== 索引管理 ========== -->
     <h4 style="margin: 0">索引管理</h4>
 
@@ -117,13 +172,14 @@ import { ref, reactive, computed, onMounted } from 'vue'
 import {
   NSpace, NText, NForm, NFormItem, NRadioGroup, NRadio, NInput,
   NButton, NAlert, NDivider, NDescriptions, NDescriptionsItem,
-  NPopconfirm, NSwitch, useMessage,
+  NPopconfirm, NSwitch, NInputNumber, NTag, useMessage,
 } from 'naive-ui'
 import {
   getEmbeddingConfig, saveEmbeddingConfig, testEmbeddingConfig,
   getRerankerConfig, saveRerankerConfig, testRerankerConfig,
-  getIndexStatus, rebuildIndex, type EmbeddingConfig, type IndexStatus,
-  type RerankerConfig,
+  getIndexStatus, rebuildIndex, getChunkingConfig, saveChunkingConfig,
+  getOcrStatus, type EmbeddingConfig, type IndexStatus, type RerankerConfig,
+  type ChunkingConfig, type OcrStatus,
 } from '@/api/knowledge'
 
 const message = useMessage()
@@ -220,6 +276,48 @@ async function onRerankerSave() {
   }
 }
 
+// ── 分块参数 ──
+const chunkForm = reactive<ChunkingConfig>({
+  chunk_max_chars: 800,
+  chunk_overlap: 100,
+  chunk_min_chars: 30,
+})
+
+const chunkSaving = ref(false)
+
+async function loadChunkConfig() {
+  try {
+    const cfg = await getChunkingConfig()
+    Object.assign(chunkForm, cfg)
+  } catch (e: any) {
+    console.warn('加载分块参数失败', e)
+  }
+}
+
+async function onChunkSave() {
+  chunkSaving.value = true
+  try {
+    const saved = await saveChunkingConfig({ ...chunkForm })
+    Object.assign(chunkForm, saved)
+    message.success('分块参数已保存')
+  } catch (e: any) {
+    message.error(e.message || '保存失败')
+  } finally {
+    chunkSaving.value = false
+  }
+}
+
+// ── OCR 状态 ──
+const ocr = ref<OcrStatus | null>(null)
+
+async function loadOcrStatus() {
+  try {
+    ocr.value = await getOcrStatus()
+  } catch (e: any) {
+    console.warn('获取 OCR 状态失败', e)
+  }
+}
+
 async function loadConfig() {
   try {
     const cfg = await getEmbeddingConfig()
@@ -286,6 +384,8 @@ async function onRebuild(full: boolean) {
 onMounted(async () => {
   await loadConfig()
   await loadRerankerConfig()
+  await loadChunkConfig()
+  await loadOcrStatus()
   await refreshStatus()
 })
 </script>

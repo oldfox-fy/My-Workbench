@@ -4,6 +4,8 @@
 所有文件操作均通过 validate_path 限制在知识库根目录内，防止路径遍历。
 """
 import os
+import re
+import time
 import shutil
 import asyncio
 import mimetypes
@@ -156,6 +158,10 @@ class DeleteRequest(BaseModel):
 class SidecarSaveRequest(BaseModel):
     path: str      # 目标资源（被附注的文件）相对根目录路径
     content: str
+
+class UrlImportRequest(BaseModel):
+    url: str
+    subdir: Optional[str] = "网页收藏"
 
 
 # ──────────────────────── 工具函数 ────────────────────────
@@ -491,6 +497,100 @@ async def delete_entry(req: DeleteRequest):
     except OSError as e:
         raise HTTPException(400, f"删除失败：{e}")
     return {"status": "ok"}
+
+
+# ──────────── 网页导入与分块预览 ────────────
+
+@router.post("/url/import")
+async def import_url(req: UrlImportRequest, request: Request):
+    """抓取网页正文 → 转为 Markdown → 保存到知识库并触发增量索引。"""
+    url = (req.url or "").strip()
+    if not url.startswith(("http://", "https://")):
+        raise HTTPException(400, "url 必须以 http:// 或 https:// 开头")
+
+    root = _get_root()
+    subdir = (req.subdir or "网页收藏").strip().strip("/\\") or "网页收藏"
+    if any(c in subdir for c in ['/', '\\', ':', '*', '?', '"', '<', '>', '|']):
+        raise HTTPException(400, "子目录名称非法")
+
+    dest_dir = root / subdir
+    if _is_under_readonly_dir(dest_dir, root):
+        raise HTTPException(403, "该位置位于只读目录（公共基础）下，不可导入")
+
+    # 网络 I/O + markitdown 解析放入线程池，避免阻塞事件循环
+    loop = asyncio.get_running_loop()
+
+    def _fetch():
+        import io as _io
+        import requests as _requests
+        from markitdown import MarkItDown
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        resp = _requests.get(url, headers=headers, timeout=30, allow_redirects=True)
+        resp.raise_for_status()
+        md = MarkItDown()
+        result = md.convert(_io.BytesIO(resp.content), file_extension=".html", url=url)
+        content = result.text_content if hasattr(result, "text_content") else str(result)
+        return resp.text, content
+
+    try:
+        raw_html, content = await loop.run_in_executor(None, _fetch)
+    except Exception as e:
+        raise HTTPException(400, f"网页抓取失败：{e}")
+
+    if not content or not content.strip():
+        raise HTTPException(400, "网页未能提取到有效正文内容")
+
+    # 解析标题
+    title = ""
+    m = re.search(r"<title>(.*?)</title>", raw_html, re.IGNORECASE)
+    if m:
+        title = m.group(1).strip()
+    if not title:
+        m = re.search(r"^#\s+(.+)", content, re.MULTILINE)
+        if m:
+            title = m.group(1).strip()
+    if not title:
+        title = url.split("/")[-1] or "web_page"
+    title = re.sub(r'[\\/:*?"<>|]', "_", title).strip()[:80] or "web_page"
+
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    filename = f"{title}_{time.strftime('%Y%m%d-%H%M%S')}.md"
+    filepath = dest_dir / filename
+
+    full_content = (
+        f"# {title}\n\n"
+        f"> 来源: {url}\n"
+        f"> 抓取时间: {time.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+        f"---\n\n{content}"
+    )
+    await asyncio.to_thread(filepath.write_text, full_content, encoding="utf-8")
+
+    rel = os.path.relpath(filepath, root).replace(os.sep, "/")
+
+    # 后台触发增量索引（未配置 embedding 时静默跳过，用户可稍后重建）
+    user_id = request.state.user["id"]
+    from backend.services import kb_indexer
+
+    async def _index_later():
+        try:
+            await kb_indexer.rebuild(full=False, user_id=user_id, kb_path=str(root))
+        except Exception:
+            pass
+
+    asyncio.create_task(_index_later())
+
+    return {"status": "ok", "path": rel, "title": title, "message": f"已导入并保存到知识库：{rel}"}
+
+
+@router.get("/chunks")
+async def get_chunks(path: str):
+    """返回某文件的分块列表（只读预览，供「查看分块」）。"""
+    root = _get_root()
+    safe_path = _safe(path, root)
+    rel = os.path.relpath(safe_path, root).replace(os.sep, "/")
+    from backend.db import kb_chunks
+    chunks = await kb_chunks.list_chunks(rel)
+    return {"path": rel, "chunks": chunks}
 
 
 # ──────────── 标签系统 ────────────

@@ -44,9 +44,27 @@
               <div class="kb-search-file">
                 📄 {{ hit.file_path }}
                 <span v-if="hit.heading_path" class="kb-search-heading"> · {{ hit.heading_path }}</span>
+                <span v-if="hit.source" class="kb-search-source">{{ sourceLabel(hit.source) }}</span>
               </div>
-              <div class="kb-search-snippet">{{ snippet(hit.content) }}</div>
+              <div class="kb-search-snippet" v-html="displaySnippet(hit)"></div>
             </div>
+          </div>
+        </n-popover>
+
+        <!-- 导入网页 -->
+        <n-popover trigger="manual" :show="showUrlImport" placement="bottom-end" :width="360" raw @clickoutside="showUrlImport = false">
+          <template #trigger>
+            <n-button text class="icon-btn" title="导入网页到知识库" @click="showUrlImport = !showUrlImport">
+              <template #icon><n-icon :size="18"><GlobeOutline /></n-icon></template>
+            </n-button>
+          </template>
+          <div class="kb-url-import">
+            <div class="kb-url-import-title">导入网页到知识库</div>
+            <n-input v-model:value="urlImport.url" size="small" placeholder="https://…" />
+            <n-input v-model:value="urlImport.subdir" size="small" placeholder="保存目录（默认：网页收藏）" style="margin-top:8px" />
+            <n-button size="small" type="primary" block :loading="urlImporting" style="margin-top:8px" @click="doImportUrl">
+              抓取并保存
+            </n-button>
           </div>
         </n-popover>
 
@@ -102,13 +120,13 @@
 import { onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { NButton, NIcon, NText, NScrollbar, NInput, NPopover, NPopconfirm, useMessage } from 'naive-ui'
-import { ArrowBackOutline, LibraryOutline, SearchOutline, GitNetworkOutline, PricetagsOutline } from '@vicons/ionicons5'
+import { ArrowBackOutline, LibraryOutline, SearchOutline, GitNetworkOutline, PricetagsOutline, GlobeOutline } from '@vicons/ionicons5'
 import { MarkdownRender } from 'markstream-vue'
 import 'markstream-vue/index.css'
 import { useConfigStore } from '@/stores/config'
 import { useKnowledgeStore } from '@/stores/knowledge'
 import { useResizeHandle } from '@/composables/useResizeHandle'
-import { kbSearch, type SearchHit } from '@/api/knowledge'
+import { kbSearch, importUrl, type SearchHit } from '@/api/knowledge'
 import { apiFetch } from '@/api/client'
 import KbTreePanel from '@/components/kb/KbTreePanel.vue'
 import KbContentPanel from '@/components/kb/KbContentPanel.vue'
@@ -134,9 +152,50 @@ const searchHits = ref<SearchHit[]>([])
 const searching = ref(false)
 const showResults = ref(false)
 
-function snippet(text: string): string {
-  const t = text.replace(/\s+/g, ' ').trim()
-  return t.length > 120 ? t.slice(0, 120) + '…' : t
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
+function displaySnippet(hit: SearchHit): string {
+  const raw = hit.snippet || hit.content || ''
+  // 先整体转义（安全），再把 FTS 的 <mark> 标签还原用于高亮
+  const escaped = escapeHtml(raw)
+  return escaped.replace(/&lt;mark&gt;/g, '<mark>').replace(/&lt;\/mark&gt;/g, '</mark>')
+}
+
+function sourceLabel(s: string): string {
+  if (!s) return ''
+  return s.split('+').map(p => (p === 'semantic' ? '语义' : p === 'keyword' ? '关键词' : p)).join('+')
+}
+
+async function clearSearch() {
+  searchHits.value = []
+  showResults.value = false
+}
+
+// ---------- 网页导入 ----------
+const showUrlImport = ref(false)
+const urlImporting = ref(false)
+const urlImport = ref({ url: '', subdir: '网页收藏' })
+
+async function doImportUrl() {
+  const url = urlImport.value.url.trim()
+  if (!url) {
+    message.warning('请输入网页地址')
+    return
+  }
+  urlImporting.value = true
+  try {
+    const r = await importUrl(url, urlImport.value.subdir || '网页收藏')
+    message.success(`已导入「${r.title}」`)
+    showUrlImport.value = false
+    urlImport.value.url = ''
+    await kbStore.loadTree()
+  } catch (e: any) {
+    message.error(e.message || '导入失败')
+  } finally {
+    urlImporting.value = false
+  }
 }
 
 async function doSearch() {
@@ -153,11 +212,6 @@ async function doSearch() {
   } finally {
     searching.value = false
   }
-}
-
-function clearSearch() {
-  searchHits.value = []
-  showResults.value = false
 }
 
 // ---------- 自动标签 ----------
@@ -357,9 +411,35 @@ onMounted(async () => {
   word-break: break-all;
 }
 .kb-search-heading { font-weight: 400; color: var(--text-secondary); }
+.kb-search-source {
+  margin-left: 6px;
+  font-size: 0.66rem;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(74, 124, 247, 0.18);
+  color: var(--accent-color, #4a7cf7);
+}
 .kb-search-snippet {
   font-size: 0.75rem;
   color: var(--text-secondary);
   line-height: 1.4;
+}
+.kb-search-snippet :deep(mark) {
+  background: rgba(255, 196, 0, 0.35);
+  color: inherit;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+.kb-url-import {
+  padding: 8px;
+  background: var(--bg-secondary, #1e1e1e);
+  border: var(--glass-border);
+  border-radius: 10px;
+}
+.kb-url-import-title {
+  font-size: 0.82rem;
+  font-weight: 700;
+  margin-bottom: 8px;
+  color: var(--text-primary);
 }
 </style>

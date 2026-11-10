@@ -23,7 +23,7 @@ from backend.db.kb_settings import (
 from backend.services.embedding import probe_config
 from backend.services.reranker import probe_reranker_config
 from backend.db import kb_chunks, vec_store
-from backend.services import kb_indexer, kb_graph
+from backend.services import kb_indexer, kb_graph, kb_chunking
 from backend.services.kb_indexer import KbNotConfiguredError, IndexInProgressError
 from backend.bootstrap import logger
 
@@ -58,6 +58,13 @@ class SearchIn(BaseModel):
     query: str
     top_k: int = 8
     use_rerank: bool = False
+    method: str = "semantic"   # semantic | keyword | hybrid
+
+
+class ChunkingConfigIn(BaseModel):
+    chunk_max_chars: Optional[int] = None
+    chunk_overlap: Optional[int] = None
+    chunk_min_chars: Optional[int] = None
 
 
 # ──────────────────────── embedding 配置（M1） ────────────────────────
@@ -122,6 +129,22 @@ async def test_reranker_cfg(cfg: RerankerConfigIn, request: Request):
     return result
 
 
+# ──────────────────────── 分块参数 ────────────────────────
+
+@router.get("/chunking/config")
+async def get_chunking_cfg(request: Request):
+    """读取当前分块参数。"""
+    return await kb_chunking.get_chunking_config(request.state.user["id"])
+
+
+@router.post("/chunking/config")
+async def set_chunking_cfg(cfg: ChunkingConfigIn, request: Request):
+    """保存分块参数（立即对后续重建/索引生效）。"""
+    payload = {k: v for k, v in cfg.dict().items() if v is not None}
+    saved = await kb_chunking.save_chunking_config(payload, request.state.user["id"])
+    return {"status": "ok", "config": saved}
+
+
 # ──────────────────────── 索引管理（M2） ────────────────────────
 
 async def _run_rebuild(full: bool, user_id: int, kb_path: str):
@@ -183,46 +206,45 @@ async def index_status(request: Request):
 
 @router.post("/search")
 async def semantic_search(req: SearchIn, request: Request):
-    """界面内语义搜索（可选 reranker 精排）。"""
+    """知识库检索。method: semantic（向量）/ keyword（FTS5 关键词）/ hybrid（RRF 混合）。"""
     if not req.query or not req.query.strip():
         raise HTTPException(400, "检索内容不能为空。")
     top_k = max(1, min(int(req.top_k or 8), 20))
+    method = (req.method or "semantic").lower()
+    user_id = request.state.user["id"]
     try:
-        hits = await kb_indexer.search(
-            req.query.strip(), top_k,
-            use_rerank=req.use_rerank,
-            user_id=request.state.user["id"],
-        )
+        if method == "keyword":
+            hits = await kb_indexer.keyword_search(req.query.strip(), top_k)
+        elif method == "hybrid":
+            hits = await kb_indexer.hybrid_search(
+                req.query.strip(), top_k, use_rerank=req.use_rerank, user_id=user_id
+            )
+        else:
+            hits = await kb_indexer.search(
+                req.query.strip(), top_k,
+                use_rerank=req.use_rerank,
+                user_id=user_id,
+            )
     except KbNotConfiguredError as e:
         raise HTTPException(400, str(e))
     except RuntimeError as e:
         raise HTTPException(400, str(e))
-    return {"query": req.query, "hits": hits}
+    return {"query": req.query, "hits": hits, "method": method}
 
 
 @router.get("/keyword-search")
 async def keyword_search(q: str = "", limit: int = 20):
-    """FTS5 关键词全文搜索。"""
+    """FTS5 关键词全文搜索（jieba 分词，中文友好）。"""
     if not q or not q.strip():
         raise HTTPException(400, "检索内容不能为空。")
     limit = max(1, min(limit, 50))
-    db = await get_db()
     try:
-        cursor = await db.execute(
-            """SELECT kc.id, kc.file_path, kc.heading_path,
-                      snippet(kb_chunks_fts, 2, '<mark>', '</mark>', '...', 40) as snippet
-               FROM kb_chunks_fts JOIN kb_chunks kc ON kc.id = kb_chunks_fts.rowid
-               WHERE kb_chunks_fts MATCH ? ORDER BY rank LIMIT ?""",
-            (q.strip(), limit),
-        )
-        rows = await cursor.fetchall()
-        hits = [
-            {"id": r[0], "file_path": r[1], "heading_path": r[2], "snippet": r[3]}
-            for r in rows
-        ]
-        return {"query": q, "hits": hits, "method": "keyword"}
-    finally:
-        await db.close()
+        hits = await kb_indexer.keyword_search(q.strip(), limit)
+    except KbNotConfiguredError as e:
+        raise HTTPException(400, str(e))
+    except RuntimeError as e:
+        raise HTTPException(400, str(e))
+    return {"query": q, "hits": hits, "method": "keyword"}
 
 
 # ──────────────────────── 双链与图谱（M3 / M4） ────────────────────────

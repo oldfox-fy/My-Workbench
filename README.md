@@ -64,6 +64,7 @@ My Workbench 是My Workbench 是目前唯一将 "Obsidian 笔记 + AI RAG + Skil
 - **一键分享迁移**：技能可导出/导入为 `.zip` 包（`SKILL.md` frontmatter + 可选 `skill.py`），对齐 Claude Agent Skills 习惯
 - **绑定到角色**：为不同角色勾选技能，`prompt` 型自动注入指令并展开工具白名单，`code` 型作为可被 LLM 调用的 function
 - **受限沙箱**：`code` 型在白名单内建 + 白名单 import 的受限命名空间中执行，支持上下文隔离；身份分级（admin / user）划分创建权限
+- **技能商店 (SkillHub)**：内置 skillhub.cn 商店，搜索 / 一键安装社区技能，即装即用
 
 ###  我的知识库，双链 + 语义检索
 - **本地笔记管理**：选定任意目录作为知识库，界面内浏览目录树、读写 Markdown、增删文件夹（兼容 Obsidian 仓库）
@@ -90,9 +91,11 @@ My Workbench 是My Workbench 是目前唯一将 "Obsidian 笔记 + AI RAG + Skil
 - **Token 用量统计**：每次对话消耗一目了然，支持随时停止生成
 
 ### ️ 语音交互，开口即用
-- **语音输入**：浏览器原生 `SpeechRecognition`，Chrome/Edge 内置，无需 API
-- **语音朗读**：浏览器原生 `speechSynthesis`，AI 回复自动朗读
-- **零配置**：纯浏览器端完成，不依赖任何语音模型 API
+- **浏览器原生兜底**：`SpeechRecognition` 语音输入 + `speechSynthesis` 朗读，零配置即可用
+- **免按键唤醒**：自定义唤醒词（默认「你好，海之芯」）+ 本地 `faster-whisper` 中文转写，说完指令自动收音
+- **本地引擎，免 key**：`edge-tts` 本地播报（窗口最小化也能出声、可打断）+ `faster-whisper` 本地 STT，可离线运行
+- **悬浮球常驻**：桌面悬浮球左键唤醒 / 打断、右键菜单开关助手；语音助手关闭时自动隐藏悬浮球
+- **云端增强（可选）**：可切换 whisper-1 / tts-1 云端语音，复用聊天模型的 Key 与 Base URL
 
 ###  跨会话记忆，越用越懂你
 - **自动索引**：AI 回复完成后自动向量化存入会话记忆库
@@ -103,6 +106,25 @@ My Workbench 是My Workbench 是目前唯一将 "Obsidian 笔记 + AI RAG + Skil
 - **文件监听**：后台轮询检测知识库文件变更（新增/修改/删除）
 - **自动增量索引**：变更后 30s 内自动触发增量索引，RAG 始终最新
 - **去抖合并**：快速连续变更在 5s 窗口内合并批次，避免重复索引
+
+### 🔍 联网搜索，实时信息随手查
+- **免 key 免注册**：内置联网搜索 MCP（百度 + Bing 中国源融合），国内直连无需 VPN、无需 API Key
+- **搜索 + 正文抽取**：`web_search`（多引擎检索）、`web_fetch`（网页转干净 Markdown）、`site_search`（站内搜）
+- **自动触发**：遇到实时 / 近期 / 时效性问题（会议、论坛、新闻、政策等），模型先检索再回答，并标注来源链接
+
+### 🚀 开机自启动，后台常驻
+- **一键注册**：`install_autostart.bat` 注册开机自启动，静默后台启动（托盘 + 悬浮球常驻）
+- **静默模式**：开机以 `--silent` 启动，隐藏主窗口与控制台，日志写入 `logs/autostart.log`
+- **一键取消**：`uninstall_autostart.bat` 取消；`python autostart.py status` 查看状态
+
+### ⏰ 定时提醒 + AI 定时任务
+- **定时提醒**：到点弹 Windows Toast + 本地语音播报，支持循环提醒
+- **AI 定时任务**：一句话任务 + 时间规则（一次性 / 每天 / 每周 / 每月），到点自动用 LLM 执行并生成对话
+- **可视化面板**：界面内管理任务、查看执行日志
+
+### 📧 邮件 / 微信外发
+- **邮件**：`system_send_email` 通过 SMTP 发送邮件（支持 QQ / 163 / Gmail 等授权码）
+- **微信**：`system_send_wechat` 推送消息到「你自己的微信」（PushPlus 或 Server酱，扫码绑定即可）
 
 ---
 
@@ -121,7 +143,7 @@ My Workbench 是My Workbench 是目前唯一将 "Obsidian 笔记 + AI RAG + Skil
 | 文档解析 | markitdown + pytesseract + pdfplumber + PyPDF2 | OCR 识别、PDF 表格提取、图片/Word/PDF/Excel 等多格式内容提取 |
 | 可观测性 | Span 追踪 + Trace 面板 + 计划可视化 | Agent 执行全链路追踪、瀑布图时间线、步骤进度卡片 |
 | 渲染增强 | marked + highlight.js + mermaid | 完整 Markdown 生态，代码与图表原生支持 |
-| 语音交互 | Web Speech API (SpeechRecognition + SpeechSynthesis) | 浏览器原生语音输入/朗读，零 API 依赖 |
+| 语音交互 | Web Speech API + faster-whisper + edge-tts | 浏览器原生兜底 + 本地唤醒词/STT/TTS，悬浮球与托盘常驻 |
 | 容错降级 | 指数退避重试 + fallback 模型切换 | API 故障自动恢复，保障服务连续性 |
 | 上下文管理 | 自动摘要压缩 + Prompt Cache 优化 | 长对话不爆 token，重复前缀节省费用 |
 | 打包分发 | PyInstaller | 跨平台一键构建可执行文件 |
@@ -140,6 +162,11 @@ My Workbench/
 ├── system_prompt.md          # 系统内置角色 Prompt 模板
 ├── tools_config.yaml         # 本地工具配置文件
 ├── mcp_config.json           # MCP 服务器配置文件（运行时自动创建）
+├── main_standalone.py        # 离线单用户桌面版入口（免登录）
+├── start_desktop.py          # 一键启动桌面版（前端 + 后端 + 原生窗口）
+├── autostart.py              # 开机自启动管理（install / uninstall / status）
+├── install_autostart.bat     # 注册开机自启动
+├── uninstall_autostart.bat   # 取消开机自启动
 ├── .venv/                    # Python 虚拟环境（开发用，gitignore）
 ├── data/                     # 运行时数据目录（gitignore）
 │   ├── lumneo.db             # SQLite 数据库（聊天、角色、技能、RAG 等）
@@ -177,7 +204,9 @@ My Workbench/
 │   │   ├── skills.py         # 技能 CRUD / 启停 / 导入导出 / 身份
 │   │   ├── knowledge.py      # 知识库文件浏览 / 读写 / 增删
 │   │   ├── kb_rag.py         # embedding 配置、索引管理、语义搜索、图谱、反链
-│   │   └── voice.py           # 语音 STT/TTS API（OpenAI 兼容，可选增强）
+│   │   ├── voice.py           # 语音 STT/TTS API（OpenAI 兼容，可选增强）
+│   │   ├── assistant.py      # 语音助手 WebSocket 状态通道（/ws/assistant）
+│   │   └── scheduled_tasks.py# AI 定时任务接口
 │   ├── services/
 │   │   ├── llm_service.py    # 大模型调用服务（含工具循环、重试降级、流式执行）
 │   │   ├── embedding.py      # 可配置 embedding 层（Ollama / OpenAI 双引擎）
@@ -189,7 +218,15 @@ My Workbench/
 │   │   ├── skills.py         # 技能注册表与受限沙箱执行引擎（热重载）
 │   │   ├── skill_package.py  # SKILL.md 技能包解析与打包
 │   │   ├── chat_export.py    # 会话导出/导入服务（Markdown / JSON / ZIP 格式）
-│   │   └── tools.py          # 本地工具动态导入定义与执行引擎
+│   │   ├── tools.py          # 本地工具动态导入定义与执行引擎
+│   │   ├── intent_router.py  # 意图识别路由（关键词 + LLM 分类器，动态调整步数上限）
+│   │   └── scheduled_tasks.py# AI 定时任务调度与执行
+│   ├── voice/                # 语音助手（唤醒词、本地 STT/TTS、状态广播）
+│   │   ├── assistant.py      # 语音助手状态机与编排
+│   │   ├── settings.py       # 语音设置持久化（voice_settings.json）
+│   │   ├── state.py          # 状态广播（WebSocket 推送）
+│   │   ├── tts.py            # edge-tts 本地播报
+│   │   └── reminders.py      # 定时提醒调度
 │   ├── system_tools/         # 系统内置工具（供 LLM 调用）
 │   │   ├── reader.py         # 文件读取与解析
 │   │   ├── writer.py         # 文件写入
@@ -202,7 +239,11 @@ My Workbench/
 │   │   ├── ask_user.py       # Human-in-the-loop 用户提问/审批工具
 │   │   ├── web_fetch.py      # 网页抓取→知识库工具
 │   │   ├── todo.py           # 任务清单管理工具
-│   │   └── weather.py        # 天气查询示例工具
+│   │   ├── weather.py        # 天气查询示例工具
+│   │   ├── reminder.py       # 提醒工具（结构化落库）
+│   │   ├── email.py          # 邮件外发工具（SMTP）
+│   │   ├── wechat.py         # 微信推送工具（PushPlus / Server酱）
+│   │   └── ppt_generator.py  # PPT 生成工具
 │   └── utils/
 │       ├── base.py           # 路径工具函数
 │       └── validators.py     # 路径安全校验
@@ -311,6 +352,20 @@ build.bat
 
 ---
 
+## 🚀 开机自启动（可选）
+
+桌面版支持开机自动后台常驻（托盘 + 悬浮球，静默启动）：
+
+```bash
+install_autostart.bat      # 注册开机自启动
+python autostart.py status # 查看状态
+uninstall_autostart.bat    # 取消开机自启动
+```
+
+> 静默模式以 `--silent` 启动，隐藏主窗口与控制台，日志写入 `logs/autostart.log`；点托盘或悬浮球即可唤起主窗口。
+
+---
+
 ## ️ 配置 MCP 服务器
 
 ### 方式一：前台界面配置（推荐）
@@ -409,6 +464,14 @@ myskill.zip
 ```
 
 `SKILL.md` 的 frontmatter 字段：`name`、`title`、`description`、`skill_type`(`prompt`|`code`)、`enabled`、`instruction`、`tools`(list)、`parameters`(JSON Schema)、`isolated`(bool)。在技能页点击 **导出** 下载，或 **导入** 上传（`name` 冲突时可选择覆盖）。
+
+### 4. 技能商店 (SkillHub)
+
+内置 **skillhub.cn 技能商店**，可直接搜索、一键安装社区技能：
+
+1. 打开 **设置 →「技能」**，切换到「技能商店」
+2. 搜索关键词（如「PPT」「图表」），浏览社区技能
+3. 点击 **安装** → 自动下载、解压并注册为 `prompt` 型技能，无需重启
 
 ---
 

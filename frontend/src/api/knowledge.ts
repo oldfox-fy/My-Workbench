@@ -70,6 +70,36 @@ export async function testRerankerConfig(
   return res.json()
 }
 
+// ---------- 分块参数 ----------
+
+export interface ChunkingConfig {
+  chunk_max_chars: number
+  chunk_overlap: number
+  chunk_min_chars: number
+}
+
+export async function getChunkingConfig(): Promise<ChunkingConfig> {
+  const res = await apiFetch('/api/kb/chunking/config')
+  if (!res.ok) throw new Error('获取分块参数失败')
+  return res.json()
+}
+
+export async function saveChunkingConfig(
+  cfg: Partial<ChunkingConfig>
+): Promise<ChunkingConfig> {
+  const res = await apiFetch('/api/kb/chunking/config', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(cfg),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.detail || '保存分块参数失败')
+  }
+  const data = await res.json()
+  return data.config as ChunkingConfig
+}
+
 // ---------- embedding 配置（M1） ----------
 
 export async function getEmbeddingConfig(): Promise<EmbeddingConfig> {
@@ -126,6 +156,8 @@ export interface SearchHit {
   file_path: string
   heading_path: string
   content: string
+  snippet?: string
+  source?: string
   distance: number
   rerank_score?: number
   citation_id?: string
@@ -153,11 +185,16 @@ export async function rebuildIndex(full: boolean): Promise<{ status: string }> {
   return res.json()
 }
 
-export async function kbSearch(query: string, topK = 8, useRerank = false): Promise<SearchHit[]> {
+export async function kbSearch(
+  query: string,
+  topK = 8,
+  useRerank = false,
+  method: 'semantic' | 'keyword' | 'hybrid' = 'hybrid',
+): Promise<SearchHit[]> {
   const res = await apiFetch('/api/kb/search', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query, top_k: topK, use_rerank: useRerank }),
+    body: JSON.stringify({ query, top_k: topK, use_rerank: useRerank, method }),
   })
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))
@@ -264,5 +301,56 @@ export async function saveSidecar(path: string, content: string): Promise<Sideca
     const err = await res.json().catch(() => ({}))
     throw new Error(err.detail || '保存附注失败')
   }
+  return res.json()
+}
+
+// ---------- 分块预览 ----------
+
+export interface KbChunk {
+  chunk_index: number
+  heading_path: string
+  content: string
+  chunk_type: string
+  page_number?: number | null
+  citation_id: string
+}
+
+export async function getChunks(path: string): Promise<KbChunk[]> {
+  const res = await apiFetch(`/api/kb/chunks?path=${encodeURIComponent(path)}`)
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.detail || '获取分块失败')
+  }
+  const data = await res.json()
+  return data.chunks || []
+}
+
+// ---------- 网页导入 ----------
+
+export async function importUrl(url: string, subdir = '网页收藏'): Promise<{ path: string; title: string }> {
+  const res = await apiFetch('/api/kb/url/import', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url, subdir }),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.detail || '导入网页失败')
+  }
+  return res.json()
+}
+
+// ---------- OCR 状态 ----------
+
+export interface OcrStatus {
+  tesseract_available: boolean
+  pdfplumber_available: boolean
+  ocr_engine: string | null
+  ocr_languages: string[]
+}
+
+export async function getOcrStatus(): Promise<OcrStatus> {
+  const res = await apiFetch('/api/kb/ocr-status')
+  if (!res.ok) throw new Error('获取 OCR 状态失败')
   return res.json()
 }

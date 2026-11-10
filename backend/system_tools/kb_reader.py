@@ -50,6 +50,56 @@ def _resolve_in_kb(rel_or_abs: str, root: Path) -> Path:
         raise FileReadError(f"路径校验失败：{e}", code="PATH_DENIED") from e
 
 
+# LLM 常把中文弯引号「“”」写成直引号「""」，导致按文件名读不到真实文件。
+# 对常见 Unicode 引号/全角符号做归一化，做模糊兜底匹配。
+_QUOTE_NORM = str.maketrans({
+    "“": '"', "”": '"', "„": '"', "‟": '"', "＂": '"',
+    "‘": "'", "’": "'", "‚": "'", "‛": "'", "＇": "'",
+})
+
+
+def _norm_quotes(s: str) -> str:
+    return s.translate(_QUOTE_NORM)
+
+
+def _resolve_in_kb_fuzzy(rel_or_abs: str, root: Path) -> Path:
+    """
+    先按精确路径解析；若不存在，则逐级组件对引号等 Unicode 字符做归一化匹配，
+    以兼容 LLM 把中文弯引号写成直引号导致的「文件不存在」问题。
+    仍严格限制在知识库根目录内。
+    """
+    exact = _resolve_in_kb(rel_or_abs, root)
+    if exact.exists():
+        return exact
+
+    # 仅对相对根目录、且不含 .. 的路径做模糊兜底
+    if Path(rel_or_abs).is_absolute():
+        return exact
+    parts = [x for x in rel_or_abs.replace("\\", "/").split("/") if x not in ("", ".")]
+    if not parts or ".." in parts:
+        return exact
+
+    cur = root
+    for part in parts:
+        candidate = cur / part
+        if candidate.exists():
+            cur = candidate
+            continue
+        norm = _norm_quotes(part)
+        matched = None
+        try:
+            for entry in cur.iterdir():
+                if _norm_quotes(entry.name) == norm:
+                    matched = entry
+                    break
+        except OSError:
+            matched = None
+        if matched is None:
+            return exact
+        cur = matched
+    return cur
+
+
 async def kb_list(
     subpath: str = "",
     max_files: int = 500,
@@ -71,7 +121,7 @@ async def kb_list(
     except KbNotConfiguredError as e:
         return str(e)
 
-    start = _resolve_in_kb(subpath, root) if subpath else root
+    start = _resolve_in_kb_fuzzy(subpath, root) if subpath else root
     if not start.exists():
         return f"目录不存在：{subpath or '.'}"
     if not start.is_dir():
@@ -136,7 +186,7 @@ async def kb_read(
         return {"success": False, "error": str(e)}
 
     try:
-        safe_path = _resolve_in_kb(path, root)
+        safe_path = _resolve_in_kb_fuzzy(path, root)
     except FileReadError as e:
         return {"success": False, "error": str(e)}
 

@@ -56,53 +56,21 @@ async def _semantic_search(query: str, top_k: int,
 
 
 async def _keyword_search(query: str, top_k: int) -> Dict[str, Any]:
-    from backend.database import get_db
-    db = await get_db()
-    try:
-        cursor = await db.execute(
-            """SELECT kc.id, kc.file_path, kc.heading_path, kc.content,
-                      snippet(kb_chunks_fts, 2, '', '', '...', 40) as snippet
-               FROM kb_chunks_fts JOIN kb_chunks kc ON kc.id = kb_chunks_fts.rowid
-               WHERE kb_chunks_fts MATCH ? ORDER BY rank LIMIT ?""",
-            (query, top_k),
-        )
-        rows = await cursor.fetchall()
-        hits = [
-            {"file_path": r[1], "heading_path": r[2], "content": r[3], "snippet": r[4]}
-            for r in rows
-        ]
-        return {"success": True, "count": len(hits), "hits": hits, "method": "keyword"}
-    finally:
-        await db.close()
+    from backend.services.kb_indexer import keyword_search as _kw
+    hits = await _kw(query, top_k)
+    if not hits:
+        return {"success": True, "hits": [], "method": "keyword",
+                "message": "未检索到相关内容。知识库可能尚未建立索引。"}
+    return {"success": True, "count": len(hits), "hits": hits, "method": "keyword"}
 
 
 async def _hybrid_search(query: str, top_k: int,
                        use_rerank: bool = False) -> Dict[str, Any]:
-    """混合搜索：语义 + 关键词取并集，按分数排序（可选 reranker 精排）。"""
-    try:
-        sem = await _semantic_search(query, top_k, use_rerank=use_rerank)
-        kw = await _keyword_search(query, top_k)
-    except Exception:
-        return await _semantic_search(query, top_k, use_rerank=use_rerank)
-
-    sem_hits = sem.get("hits", [])
-    kw_hits = kw.get("hits", [])
-
-    # 按 content 前 80 字符去重，语义结果优先
-    seen = set()
-    merged = []
-    for h in sem_hits:
-        key = h.get("content", "")[:80]
-        if key not in seen:
-            seen.add(key)
-            h["_source"] = "semantic"
-            merged.append(h)
-    for h in kw_hits:
-        key = h.get("content", "")[:80]
-        if key not in seen:
-            seen.add(key)
-            h["_source"] = "keyword"
-            merged.append(h)
-
+    """混合搜索：语义 + 关键词 RRF 融合（可选 reranker 精排）。"""
+    from backend.services.kb_indexer import hybrid_search as _hy
+    hits = await _hy(query, top_k, use_rerank=use_rerank)
     label = "hybrid+rerank" if use_rerank else "hybrid"
-    return {"success": True, "count": len(merged), "hits": merged[:top_k], "method": label}
+    if not hits:
+        return {"success": True, "hits": [], "method": label,
+                "message": "未检索到相关内容。知识库可能尚未建立索引。"}
+    return {"success": True, "count": len(hits), "hits": hits, "method": label}

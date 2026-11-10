@@ -36,6 +36,9 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
   const rawUrl = ref('')           // image/pdf 的原始字节地址（内嵌查看用）
   const absPath = ref('')          // 当前文件的绝对路径（供"用系统程序打开"）
 
+  // 左键单击选中的“对话引用文件”（与内容面板“打开”状态解耦，供后续对话读取）
+  const selectedChatFile = ref<{ path: string; label: string } | null>(null)
+
   // 打开并读取一个文件，更新共享选中态
   // 以后端返回的 editable 为准（若后端未返回则回退到传入的 hint）
   async function openFile(path: string, editable: boolean) {
@@ -48,6 +51,16 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
     rawUrl.value = data.raw_url || ''
     absPath.value = data.abs_path || ''
     selectedKey.value = data.path
+  }
+
+  // 登记/切换“对话引用文件”（左键单击文件时调用；选中其它文件自动覆盖）
+  function selectFileForChat(path: string, label: string) {
+    selectedChatFile.value = { path, label }
+  }
+
+  // 清除“对话引用文件”
+  function clearChatFile() {
+    selectedChatFile.value = null
   }
 
   // 清空选中态（切换目录、删除当前文件时调用）
@@ -173,6 +186,9 @@ export const useKnowledgeStore = defineStore('knowledge', () => {
     fileFormat,
     rawUrl,
     absPath,
+    selectedChatFile,
+    selectFileForChat,
+    clearChatFile,
     openFile,
     resetSelection,
     loadRoot,

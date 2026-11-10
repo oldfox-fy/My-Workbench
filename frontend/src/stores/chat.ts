@@ -7,6 +7,7 @@ export interface Message {
   role: 'user' | 'assistant' | 'system'
   content: any
   file_ref?: any
+  kb_file?: { path: string; label: string } | null
 }
 
 export interface Chat {

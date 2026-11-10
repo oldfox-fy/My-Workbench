@@ -59,6 +59,23 @@ def _get_file_concurrency() -> int:
         return _FILE_CONCURRENCY
 
 
+# 切片参数（可被 app_config.yaml 的 kb_index.* 或设置页覆盖；重建索引生效）。
+# 实际分块逻辑在 kb_parser.chunk_elements，此处的 getter 供旧版 fallback 使用。
+def _chunk_max_chars() -> int:
+    from backend.services.kb_chunking import get_chunk_max_chars
+    return get_chunk_max_chars()
+
+
+def _chunk_overlap() -> int:
+    from backend.services.kb_chunking import get_chunk_overlap
+    return get_chunk_overlap()
+
+
+def _chunk_min_chars() -> int:
+    from backend.services.kb_chunking import get_chunk_min_chars
+    return get_chunk_min_chars()
+
+
 # 串行化知识库「写库」临界区：SQLite 单写者模型下，file_concurrency 个文件并发写
 # kb_chunks / kb_index_meta / vec_chunks（各自独立连接）会撞写锁，超过 busy_timeout
 # 就抛 "database is locked"。embedding 网络请求仍在锁外并行，只有写库被串行化。
@@ -90,17 +107,17 @@ def _file_hash(path: Path) -> str:
 def _split_long(text: str) -> List[str]:
     """按字数 + 重叠窗口切分过长文本。"""
     text = text.strip()
-    if len(text) <= _MAX_CHARS:
+    if len(text) <= _chunk_max_chars():
         return [text] if text else []
     parts: List[str] = []
     start = 0
     n = len(text)
     while start < n:
-        end = min(start + _MAX_CHARS, n)
+        end = min(start + _chunk_max_chars(), n)
         parts.append(text[start:end])
         if end >= n:
             break
-        start = end - _OVERLAP
+        start = end - _chunk_overlap()
     return parts
 
 
@@ -120,11 +137,11 @@ def _chunk_markdown(text: str) -> List[Tuple[str, str]]:
     def _flush():
         content = "\n".join(buf).strip()
         buf.clear()
-        if len(content) < _MIN_CHARS:
+        if len(content) < _chunk_min_chars():
             return
         hp = _current_path()
         for piece in _split_long(content):
-            if len(piece.strip()) >= _MIN_CHARS:
+            if len(piece.strip()) >= _chunk_min_chars():
                 chunks.append((hp, piece.strip()))
 
     heading_re = re.compile(r"^(#{1,6})\s+(.*)$")
@@ -147,7 +164,7 @@ def _chunk_markdown(text: str) -> List[Tuple[str, str]]:
 
 def _chunk_plain(text: str) -> List[Tuple[str, str]]:
     """非 Markdown：无标题结构，直接按字数切分，heading_path 为空。"""
-    return [("", p.strip()) for p in _split_long(text) if len(p.strip()) >= _MIN_CHARS]
+    return [("", p.strip()) for p in _split_long(text) if len(p.strip()) >= _chunk_min_chars()]
 
 
 async def _read_text(abs_path: Path, root: Path) -> Optional[str]:
@@ -249,7 +266,7 @@ async def _index_file(rel: str, abs_path: Path, root: Path, full: bool,
         # 非 MD：纯文本分块，标记为 text 类型
         elements = _parse_to_elements(text)
         pieces = chunk_elements(elements) if elements else [
-            ("", p.strip(), "text") for p in _split_long(text) if len(p.strip()) >= _MIN_CHARS
+            ("", p.strip(), "text") for p in _split_long(text) if len(p.strip()) >= _chunk_min_chars()
         ]
     if not pieces:
         async with _db_write_lock:
@@ -448,9 +465,11 @@ async def search(query: str, top_k: int = 8,
         if not m:
             return None
         r = {
+            "chunk_id": cid,
             "file_path": m["file_path"],
             "heading_path": m["heading_path"],
             "content": m["content"],
+            "snippet": (m["content"] or "")[:200],
             "distance": round(distance, 4),
             "citation_id": m.get("citation_id", ""),
             "citation_text": f"[来源: {m['file_path']}{' > ' + m['heading_path'] if m['heading_path'] else ''}](cite://{m.get('citation_id', '')})" if m.get("citation_id") else "",
@@ -494,3 +513,142 @@ async def search(query: str, top_k: int = 8,
             # 回退：保持向量距离排序即可，无需额外处理
 
     return results[:top_k]
+
+
+# ──────────────────────── 关键词检索（jieba 分词 + FTS5）────────────────────────
+
+_FTS_SNIPPET_SQL = """
+    SELECT kc.id, kc.file_path, kc.heading_path, kc.content,
+           snippet(kb_chunks_fts, 0, '<mark>', '</mark>', '...', 40) as snippet
+    FROM kb_chunks_fts JOIN kb_chunks kc ON kc.id = kb_chunks_fts.rowid
+    WHERE kb_chunks_fts MATCH ? ORDER BY rank LIMIT ?
+"""
+
+
+async def keyword_search(query: str, top_k: int = 8) -> List[Dict[str, Any]]:
+    """
+    FTS5 关键词检索（jieba 分词后词级匹配，中文友好）。
+    优先 AND（精确），无结果时降级 OR（召回）。返回按相关度降序。
+    """
+    from backend.services import kb_seg
+    from backend.database import get_db
+
+    q = (query or "").strip()
+    if not q:
+        return []
+    top_k = max(1, min(int(top_k), 50))
+
+    db = await get_db()
+    try:
+        rows = []
+        and_q = kb_seg.build_match_query(q, mode="and")
+        if and_q:
+            cur = await db.execute(_FTS_SNIPPET_SQL, (and_q, top_k))
+            rows = await cur.fetchall()
+        if not rows:
+            or_q = kb_seg.build_match_query(q, mode="or")
+            if or_q and or_q != and_q:
+                cur = await db.execute(_FTS_SNIPPET_SQL, (or_q, top_k))
+                rows = await cur.fetchall()
+    finally:
+        await db.close()
+
+    return _fts_rows_to_hits(rows)
+
+
+def _fts_rows_to_hits(rows) -> List[Dict[str, Any]]:
+    hits: List[Dict[str, Any]] = []
+    for r in rows:
+        hits.append({
+            "chunk_id": int(r[0]),
+            "file_path": r[1],
+            "heading_path": r[2],
+            "content": r[3],
+            "snippet": r[4],
+        })
+    return hits
+
+
+# ──────────────────────── 混合检索（RRF 融合）────────────────────────
+
+_RRF_K = 60
+
+
+def _rrf_fuse(semantic: List[Dict[str, Any]],
+              keyword: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """用 Reciprocal Rank Fusion 融合语义与关键词两路结果，按融合分降序。"""
+    fused: Dict[int, Dict[str, Any]] = {}
+
+    def _add(hits, src: str):
+        for rank, hit in enumerate(hits):
+            cid = hit.get("chunk_id")
+            if cid is None:
+                continue
+            entry = fused.get(cid)
+            if entry is None:
+                entry = dict(hit)
+                entry["_rrf"] = 0.0
+                entry["_src"] = set()
+                fused[cid] = entry
+            else:
+                for k, v in hit.items():
+                    if entry.get(k) in (None, ""):
+                        entry[k] = v
+            entry["_rrf"] += 1.0 / (_RRF_K + rank + 1)
+            entry["_src"].add(src)
+
+    _add(semantic, "semantic")
+    _add(keyword, "keyword")
+
+    items = list(fused.values())
+    items.sort(key=lambda x: x["_rrf"], reverse=True)
+    for it in items:
+        it["rrf_score"] = round(it["_rrf"], 4)
+        it["source"] = "+".join(sorted(it.pop("_src", [])))
+        it.pop("_rrf", None)
+    return items
+
+
+async def hybrid_search(query: str, top_k: int = 8, use_rerank: bool = False,
+                        user_id: int = DEFAULT_USER_ID) -> List[Dict[str, Any]]:
+    """
+    混合检索：语义（向量）+ 关键词（FTS5）两路召回 → RRF 融合 → 可选 reranker 精排。
+    """
+    q = (query or "").strip()
+    if not q:
+        return []
+    top_k = max(1, min(int(top_k), 20))
+    recall_k = min(max(top_k, 20), 50)
+
+    sem = await search(q, recall_k, use_rerank=False, user_id=user_id)
+    kw = await keyword_search(q, recall_k)
+
+    fused = _rrf_fuse(sem, kw)
+    if not fused:
+        return []
+
+    if use_rerank:
+        try:
+            from backend.services.reranker import get_reranker
+            reranker = await get_reranker(user_id)
+            if reranker:
+                cands = fused[:64]
+                contents = [c.get("content", "") for c in cands]
+                reranked = await reranker.rerank(q, contents, top_n=top_k)
+                if reranked:
+                    rescored: List[Dict[str, Any]] = []
+                    for item in reranked:
+                        idx = item.get("index", 0)
+                        score = item.get("relevance_score", 0)
+                        if 0 <= idx < len(cands):
+                            cands[idx]["rerank_score"] = round(score, 4)
+                            rescored.append(cands[idx])
+                    if rescored:
+                        logger.info(
+                            f"[kb_indexer] 混合检索 Reranker 精排：{len(fused)} 候选 → {len(rescored)} 结果"
+                        )
+                        return rescored
+        except Exception as e:
+            logger.warning(f"[kb_indexer] 混合检索 Reranker 失败，回退 RRF 排序：{e}")
+
+    return fused[:top_k]

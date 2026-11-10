@@ -1,5 +1,6 @@
 # backend/database.py
 import os
+import asyncio
 import aiosqlite
 from config_loader import config
 from backend.bootstrap import logger
@@ -107,6 +108,7 @@ async def init_db():
             chunk_index INTEGER NOT NULL,
             heading_path TEXT DEFAULT '',
             content TEXT NOT NULL,
+            content_seg TEXT DEFAULT '',
             file_hash TEXT NOT NULL,
             model_name TEXT NOT NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -116,35 +118,9 @@ async def init_db():
         "CREATE INDEX IF NOT EXISTS idx_kb_chunks_file ON kb_chunks(file_path)"
     )
 
-    # FTS5 全文搜索（知识库关键词检索）
-    await db.execute("""
-        CREATE VIRTUAL TABLE IF NOT EXISTS kb_chunks_fts USING fts5(
-            content, heading_path, content='kb_chunks', content_rowid='id'
-        )
-    """)
-    # 触发器：INSERT 时自动同步 FTS 索引
-    await db.execute("""
-        CREATE TRIGGER IF NOT EXISTS kb_chunks_fts_ai AFTER INSERT ON kb_chunks BEGIN
-            INSERT INTO kb_chunks_fts(rowid, content, heading_path)
-            VALUES (new.id, new.content, new.heading_path);
-        END
-    """)
-    # 触发器：DELETE 时自动移除 FTS 条目
-    await db.execute("""
-        CREATE TRIGGER IF NOT EXISTS kb_chunks_fts_ad AFTER DELETE ON kb_chunks BEGIN
-            INSERT INTO kb_chunks_fts(kb_chunks_fts, rowid, content, heading_path)
-            VALUES ('delete', old.id, old.content, old.heading_path);
-        END
-    """)
-    # 触发器：UPDATE 时自动同步
-    await db.execute("""
-        CREATE TRIGGER IF NOT EXISTS kb_chunks_fts_au AFTER UPDATE ON kb_chunks BEGIN
-            INSERT INTO kb_chunks_fts(kb_chunks_fts, rowid, content, heading_path)
-            VALUES ('delete', old.id, old.content, old.heading_path);
-            INSERT INTO kb_chunks_fts(rowid, content, heading_path)
-            VALUES (new.id, new.content, new.heading_path);
-        END
-    """)
+    # FTS5 全文搜索（知识库关键词检索）。
+    # content_seg 列为 jieba 分词后的中文友好索引（解决 unicode61 整段中文当一个 token 的问题）。
+    await _create_kb_fts(db)
 
     # 知识库 RAG：索引状态（增量索引依据 file_hash / mtime）
     await db.execute("""
@@ -219,6 +195,18 @@ async def init_db():
     await _ensure_column(db, "kb_chunks", "chunk_type", "TEXT NOT NULL DEFAULT 'text'")
     await _ensure_column(db, "kb_chunks", "page_number", "INTEGER DEFAULT NULL")
     await _ensure_column(db, "kb_chunks", "citation_id", "TEXT DEFAULT ''")
+    # 中文分词索引列
+    await _ensure_column(db, "kb_chunks", "content_seg", "TEXT DEFAULT ''")
+    # 知识库 FTS 结构升级：旧库 (content, heading_path) → 新库 (content_seg, heading_path)，
+    # 并为历史 chunk 回填 jieba 分词（幂等，仅旧库首次执行）
+    await _migrate_kb_fts_seg(db)
+    # 分块参数运行时配置：从 app_settings 读回设置页保存的覆盖值（内存缓存）。
+    # 失败不影响启动——分块参数回退到 config_loader / app_config.yaml 默认值。
+    try:
+        from backend.services.kb_chunking import load_chunking_config
+        await load_chunking_config()
+    except Exception:
+        pass
     # OCR 缓存
     await _ensure_column(db, "kb_index_meta", "ocr_text", "TEXT DEFAULT ''")
     await _ensure_column(db, "kb_index_meta", "image_description", "TEXT DEFAULT ''")
@@ -569,6 +557,102 @@ async def _ensure_column(db, table: str, column: str, ddl: str):
         await db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
 
 
+async def _create_kb_fts(db):
+    """创建知识库 FTS5 表与同步触发器（content_seg = jieba 分词后的中文友好索引）。"""
+    await db.execute("""
+        CREATE VIRTUAL TABLE IF NOT EXISTS kb_chunks_fts USING fts5(
+            content_seg, heading_path, content='kb_chunks', content_rowid='id'
+        )
+    """)
+    await db.execute("""
+        CREATE TRIGGER IF NOT EXISTS kb_chunks_fts_ai AFTER INSERT ON kb_chunks BEGIN
+            INSERT INTO kb_chunks_fts(rowid, content_seg, heading_path)
+            VALUES (new.id, new.content_seg, new.heading_path);
+        END
+    """)
+    await db.execute("""
+        CREATE TRIGGER IF NOT EXISTS kb_chunks_fts_ad AFTER DELETE ON kb_chunks BEGIN
+            INSERT INTO kb_chunks_fts(kb_chunks_fts, rowid, content_seg, heading_path)
+            VALUES ('delete', old.id, old.content_seg, old.heading_path);
+        END
+    """)
+    await db.execute("""
+        CREATE TRIGGER IF NOT EXISTS kb_chunks_fts_au AFTER UPDATE ON kb_chunks BEGIN
+            INSERT INTO kb_chunks_fts(kb_chunks_fts, rowid, content_seg, heading_path)
+            VALUES ('delete', old.id, old.content_seg, old.heading_path);
+            INSERT INTO kb_chunks_fts(rowid, content_seg, heading_path)
+            VALUES (new.id, new.content_seg, new.heading_path);
+        END
+    """)
+
+
+async def _drop_kb_fts(db):
+    """删除知识库 FTS 虚表与全部触发器（迁移/修复前调用）。"""
+    for trig in ("kb_chunks_fts_ai", "kb_chunks_fts_ad", "kb_chunks_fts_au"):
+        try:
+            await db.execute(f"DROP TRIGGER IF EXISTS {trig}")
+        except Exception:
+            pass
+    try:
+        await db.execute("DROP TABLE IF EXISTS kb_chunks_fts")
+    except Exception:
+        pass
+
+
+async def _fts_backfill(db):
+    """从 kb_chunks 全量回填 FTS（历史行 content_seg 为空时退回原 content）。"""
+    await db.execute(
+        "INSERT INTO kb_chunks_fts(rowid, content_seg, heading_path) "
+        "SELECT id, COALESCE(NULLIF(content_seg, ''), content), heading_path FROM kb_chunks"
+    )
+
+
+async def _backfill_content_seg(db):
+    """为历史 chunk 用 jieba 分词回填 content_seg（一次性迁移，幂等）。"""
+    from backend.services.kb_seg import seg_text
+
+    cur = await db.execute(
+        "SELECT COUNT(*) FROM kb_chunks WHERE content_seg IS NULL OR content_seg = ''"
+    )
+    total = (await cur.fetchone())[0]
+    if not total:
+        return
+    logger.info(f"[DB] 回填 content_seg 中文分词索引，共 {total} 个 chunk ...")
+
+    cur = await db.execute(
+        "SELECT id, content FROM kb_chunks WHERE content_seg IS NULL OR content_seg = ''"
+    )
+    rows = await cur.fetchall()
+
+    def _seg_all(rows):
+        return [(seg_text(r[1] or ""), r[0]) for r in rows]
+
+    pairs = await asyncio.to_thread(_seg_all, rows)
+    for i in range(0, len(pairs), 500):
+        await db.executemany(
+            "UPDATE kb_chunks SET content_seg = ? WHERE id = ?", pairs[i:i + 500]
+        )
+        await db.commit()
+    logger.info(f"[DB] content_seg 回填完成 {len(pairs)} 个")
+
+
+async def _migrate_kb_fts_seg(db):
+    """将 kb_chunks_fts 从旧结构 (content, heading_path) 迁移到 (content_seg, heading_path)。幂等。"""
+    cur = await db.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='kb_chunks_fts'"
+    )
+    row = await cur.fetchone()
+    if row and row[0] and "content_seg" in row[0]:
+        return  # 已是新结构
+
+    logger.info("[DB] 迁移 kb_chunks_fts → content_seg 中文分词索引 ...")
+    await _drop_kb_fts(db)
+    await _create_kb_fts(db)
+    # 先回填分词列，再据此回填 FTS
+    await _backfill_content_seg(db)
+    await _fts_backfill(db)
+
+
 async def _check_and_repair(db):
     """
     启动时检测数据库完整性，自动修复最常见的两种损坏：
@@ -666,7 +750,7 @@ async def _probe_fts_write(db) -> bool:
         # 用一个不存在的 rowid 做 INSERT + DELETE 压力测试
         # 这会在 FTS5 影子表上产生真实的写入
         await db.execute(
-            "INSERT INTO kb_chunks_fts(kb_chunks_fts, rowid, content, heading_path) "
+            "INSERT INTO kb_chunks_fts(kb_chunks_fts, rowid, content_seg, heading_path) "
             "VALUES ('delete', -99999, '__probe__', '')"
         )
         return False  # 写入成功，表健康
@@ -763,6 +847,7 @@ async def _try_repair_kb_tables(db) -> bool:
                 chunk_index INTEGER NOT NULL,
                 heading_path TEXT DEFAULT '',
                 content TEXT NOT NULL,
+                content_seg TEXT DEFAULT '',
                 file_hash TEXT NOT NULL,
                 model_name TEXT NOT NULL,
                 chunk_type TEXT NOT NULL DEFAULT 'text',
@@ -789,31 +874,7 @@ async def _try_repair_kb_tables(db) -> bool:
         """)
 
         # 重建 kb_chunks_fts
-        await db.execute("""
-            CREATE VIRTUAL TABLE IF NOT EXISTS kb_chunks_fts USING fts5(
-                content, heading_path, content='kb_chunks', content_rowid='id'
-            )
-        """)
-        await db.execute("""
-            CREATE TRIGGER IF NOT EXISTS kb_chunks_fts_ai AFTER INSERT ON kb_chunks BEGIN
-                INSERT INTO kb_chunks_fts(rowid, content, heading_path)
-                VALUES (new.id, new.content, new.heading_path);
-            END
-        """)
-        await db.execute("""
-            CREATE TRIGGER IF NOT EXISTS kb_chunks_fts_ad AFTER DELETE ON kb_chunks BEGIN
-                INSERT INTO kb_chunks_fts(kb_chunks_fts, rowid, content, heading_path)
-                VALUES ('delete', old.id, old.content, old.heading_path);
-            END
-        """)
-        await db.execute("""
-            CREATE TRIGGER IF NOT EXISTS kb_chunks_fts_au AFTER UPDATE ON kb_chunks BEGIN
-                INSERT INTO kb_chunks_fts(kb_chunks_fts, rowid, content, heading_path)
-                VALUES ('delete', old.id, old.content, old.heading_path);
-                INSERT INTO kb_chunks_fts(rowid, content, heading_path)
-                VALUES (new.id, new.content, new.heading_path);
-            END
-        """)
+        await _create_kb_fts(db)
 
         logger.info("[DB] KB 表结构重建完成（kb_chunks + kb_index_meta + kb_chunks_fts）")
         return True
@@ -829,49 +890,9 @@ async def _try_repair_fts(db) -> bool:
     """
     logger.warning("[DB] kb_chunks_fts 损坏，自动重建 FTS 索引...")
     try:
-        # 先尝试 DROP（可能失败，取决于损坏程度）
-        try:
-            await db.execute("DROP TABLE IF EXISTS kb_chunks_fts")
-        except Exception:
-            pass
-
-        # 重建虚表
-        await db.execute("""
-            CREATE VIRTUAL TABLE IF NOT EXISTS kb_chunks_fts USING fts5(
-                content, heading_path, content='kb_chunks', content_rowid='id'
-            )
-        """)
-
-        # 重建触发器
-        await db.execute("DROP TRIGGER IF EXISTS kb_chunks_fts_ai")
-        await db.execute("""
-            CREATE TRIGGER kb_chunks_fts_ai AFTER INSERT ON kb_chunks BEGIN
-                INSERT INTO kb_chunks_fts(rowid, content, heading_path)
-                VALUES (new.id, new.content, new.heading_path);
-            END
-        """)
-        await db.execute("DROP TRIGGER IF EXISTS kb_chunks_fts_ad")
-        await db.execute("""
-            CREATE TRIGGER kb_chunks_fts_ad AFTER DELETE ON kb_chunks BEGIN
-                INSERT INTO kb_chunks_fts(kb_chunks_fts, rowid, content, heading_path)
-                VALUES ('delete', old.id, old.content, old.heading_path);
-            END
-        """)
-        await db.execute("DROP TRIGGER IF EXISTS kb_chunks_fts_au")
-        await db.execute("""
-            CREATE TRIGGER kb_chunks_fts_au AFTER UPDATE ON kb_chunks BEGIN
-                INSERT INTO kb_chunks_fts(kb_chunks_fts, rowid, content, heading_path)
-                VALUES ('delete', old.id, old.content, old.heading_path);
-                INSERT INTO kb_chunks_fts(rowid, content, heading_path)
-                VALUES (new.id, new.content, new.heading_path);
-            END
-        """)
-
-        # 从 kb_chunks 全量重建 FTS 索引
-        await db.execute(
-            "INSERT INTO kb_chunks_fts(rowid, content, heading_path) "
-            "SELECT id, content, heading_path FROM kb_chunks"
-        )
+        await _drop_kb_fts(db)
+        await _create_kb_fts(db)
+        await _fts_backfill(db)
         logger.info("[DB] kb_chunks_fts 重建完成")
         return True
     except Exception as e:

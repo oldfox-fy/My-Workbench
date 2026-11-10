@@ -174,3 +174,7 @@ intent_router:
 kb_index:
   embedding_concurrency: 1   # embedding 请求并发数（云端 TPM 限流，调低避免 429）
   file_concurrency: 2        # 同时处理的文件数（配合 embedding 并发控制总吞吐）
+  # 分块参数（修改后需重建索引生效）
+  chunk_max_chars: 800       # 单块最大字符数
+  chunk_overlap: 100         # 二次切分的重叠字符数
+  chunk_min_chars: 30        # 过短块丢弃阈值（如孤立标题）

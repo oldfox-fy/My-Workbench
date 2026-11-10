@@ -8,6 +8,16 @@
       </n-button>
     </transition>
 
+    <!-- 选中的知识库文件 -->
+    <div v-if="kbSelectedFile" class="kb-selected-file">
+      <n-icon :size="16"><LibraryOutline /></n-icon>
+      <span class="kb-selected-file-name" :title="kbSelectedFile.path">{{ kbSelectedFile.label }}</span>
+      <n-tag size="tiny" type="info" round>知识库</n-tag>
+      <n-button text class="kb-selected-file-close" title="取消选中" @click="$emit('removeKbFile')">
+        <template #icon><m-svg name="close" /></template>
+      </n-button>
+    </div>
+
     <!-- 文件预览列表 -->
     <div v-if="uploadedFiles.length" class="file-preview-list">
       <div v-for="(f, index) in uploadedFiles" :key="f.filename" class="file-preview-item">
@@ -125,8 +135,8 @@
 
 <script setup lang="ts">
 import { ref, watch, PropType } from 'vue'
-import { NButton, NInput, NUpload, NIcon, type UploadFileInfo } from 'naive-ui'
-import { ArrowDownOutline, DocumentOutline, VolumeHighOutline, SparklesOutline } from '@vicons/ionicons5'
+import { NButton, NInput, NUpload, NIcon, NTag, type UploadFileInfo } from 'naive-ui'
+import { ArrowDownOutline, DocumentOutline, VolumeHighOutline, SparklesOutline, LibraryOutline } from '@vicons/ionicons5'
 import mSvg from '@/components/mSvg.vue'
 import { useVoiceRecorder } from '@/composables/useVoice'
 import { useAssistant } from '@/composables/useAssistant'
@@ -137,6 +147,7 @@ const props = defineProps({
   isLoading: { type: Boolean, required: true },
   disabled: { type: Boolean, default: false },
   uploadedFiles: { type: Array<{ filename: string; type: string; url: string }>, default: () => [] },
+  kbSelectedFile: { type: Object as PropType<{ path: string; label: string } | null>, default: null },
   selected: { type: Boolean, default: false },
   showScrollBtn: { type: Boolean, default: false },
   showRegenerateHint: { type: Boolean, default: false },
@@ -157,6 +168,7 @@ const emit = defineEmits<{
   stop: []
   scrollBottom: []
   removeFile: [index: number]
+  removeKbFile: []
   regenerateCurrent: []
   'update:selected': [value: boolean]
   'filesPaste': [files: File[]]
@@ -383,6 +395,30 @@ function triggerJelly() {
   border: none !important;
   color: white !important;
   box-shadow: var(--shadow-glow);
+}
+
+.kb-selected-file {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  margin-bottom: 8px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  font-size: 0.85rem;
+  color: var(--text-primary);
+  max-width: 100%;
+}
+.kb-selected-file-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.kb-selected-file-close {
+  color: var(--text-secondary);
+  cursor: pointer;
+  flex-shrink: 0;
 }
 
 .file-preview-list {

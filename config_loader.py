@@ -166,6 +166,10 @@ class AppConfig:
         ki = self.raw_config.get("kb_index", {}) or {}
         self.kb_embedding_concurrency = int(ki.get("embedding_concurrency", 8))
         self.kb_file_concurrency = int(ki.get("file_concurrency", 8))
+        # 分块参数（可配置，重建索引后生效）
+        self.kb_chunk_max_chars = int(ki.get("chunk_max_chars", 800))
+        self.kb_chunk_overlap = int(ki.get("chunk_overlap", 100))
+        self.kb_chunk_min_chars = int(ki.get("chunk_min_chars", 30))
 
     def _resolve_path(self, path_str: str, base: Path) -> Path:
         """将路径字符串解析为 Path 对象，支持绝对路径和相对路径"""

@@ -186,8 +186,17 @@ export async function cleanMessages(msgs: Message[]): Promise<{ role: string; co
     const imageFiles = fileRefs.filter(f => f.type?.startsWith('image/'))
     const nonImageFiles = fileRefs.filter(f => !f.type?.startsWith('image/'))
 
-    // 如果没有文件，直接返回原内容
+    // 知识库选中文件提示（左键单击知识库文件后，后续对话据此读取）
+    const kbHint = msg.kb_file
+      ? `\n\n[知识库文件] 用户当前选中的知识库文件：${msg.kb_file.path}（${msg.kb_file.label}）。请先用 system_kb_read 读取该文件内容，再结合其内容回答；若读取失败请直接告知用户。`
+      : ''
+
+    // 如果没有上传文件，仅需处理知识库提示
     if (imageFiles.length === 0 && nonImageFiles.length === 0) {
+      if (kbHint) {
+        const content = typeof msg.content === 'string' ? msg.content : ''
+        return { role: msg.role, content: content + kbHint }
+      }
       return { role: msg.role, content: msg.content }
     }
 
@@ -208,9 +217,11 @@ export async function cleanMessages(msgs: Message[]): Promise<{ role: string; co
         })
       }
 
-      // 2. 文本部分
+      // 2. 文本部分（含知识库提示）
       if (typeof msg.content === 'string' && msg.content.trim()) {
-        contentArray.push({ type: 'text', text: msg.content.trim() })
+        contentArray.push({ type: 'text', text: msg.content.trim() + kbHint })
+      } else if (kbHint) {
+        contentArray.push({ type: 'text', text: kbHint.trim() })
       }
 
       // 3. 非图片文件提示（如果有）
@@ -232,6 +243,7 @@ export async function cleanMessages(msgs: Message[]): Promise<{ role: string; co
         const mcp_fileTips = nonImageFiles.map(f => f.url.replace('/files/', `http://${urlhost}/files/`)).join('\n')
         text += `\n\n 读取上传文件，若使用系统内置工具(system_)，路径为：\n ${fileTips} \n\n 否则使用url：${mcp_fileTips}`
       }
+      text += kbHint
       contentForModel = text
     }
 

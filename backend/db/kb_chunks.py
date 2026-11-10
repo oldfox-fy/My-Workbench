@@ -73,6 +73,7 @@ async def insert_chunks(
     """
     # 生成 citation 前缀
     import hashlib
+    from backend.services.kb_seg import seg_text
     doc_id = hashlib.md5(file_path.encode()).hexdigest()[:8]
     db = await get_db()
     try:
@@ -82,11 +83,12 @@ async def insert_chunks(
             content = item[1] if len(item) > 1 else ""
             chunk_type = item[2] if len(item) > 2 else "text"
             citation_id = f"{doc_id}::chunk_{idx + 1:03d}"
+            content_seg = seg_text(content)
             cursor = await db.execute(
-                """INSERT INTO kb_chunks (file_path, chunk_index, heading_path, content,
+                """INSERT INTO kb_chunks (file_path, chunk_index, heading_path, content, content_seg,
                    file_hash, model_name, chunk_type, citation_id)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                (file_path, idx, heading_path, content, file_hash, model_name, chunk_type, citation_id),
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (file_path, idx, heading_path, content, content_seg, file_hash, model_name, chunk_type, citation_id),
             )
             result.append((cursor.lastrowid, content))
         await db.commit()
@@ -107,6 +109,31 @@ async def upsert_meta(file_path: str, file_hash: str, mtime: float, chunk_count:
             (file_path, file_hash, mtime, chunk_count),
         )
         await db.commit()
+    finally:
+        await db.close()
+
+
+async def list_chunks(file_path: str) -> List[Dict[str, Any]]:
+    """返回某文件的所有分块（按 chunk_index 排序），供前端「查看分块」预览。"""
+    db = await get_db()
+    try:
+        cursor = await db.execute(
+            "SELECT chunk_index, heading_path, content, chunk_type, page_number, citation_id "
+            "FROM kb_chunks WHERE file_path = ? ORDER BY chunk_index",
+            (file_path,),
+        )
+        rows = await cursor.fetchall()
+        return [
+            {
+                "chunk_index": r[0],
+                "heading_path": r[1] or "",
+                "content": r[2] or "",
+                "chunk_type": r[3] or "text",
+                "page_number": r[4],
+                "citation_id": r[5] or "",
+            }
+            for r in rows
+        ]
     finally:
         await db.close()
 

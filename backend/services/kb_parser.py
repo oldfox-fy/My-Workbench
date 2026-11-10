@@ -44,11 +44,26 @@ TEXT_EXTS = {".txt", ".rst", ".html", ".htm"}
 PDF_EXT = ".pdf"
 
 
-# ── 分块参数 ──
-MAX_CHARS = 800        # 单块最大字符数
-OVERLAP = 100          # 二次切分重叠字符数
-MIN_CHARS = 30         # 过短块丢弃阈值
-MAX_TABLE_CHARS = 3000 # 表格块最大字符数（可超过 MAX_CHARS）
+# ── 分块参数（默认值，可被 app_config.yaml 的 kb_index.* 覆盖，重建索引生效）──
+_DEFAULT_MAX_CHARS = 800        # 单块最大字符数
+_DEFAULT_OVERLAP = 100          # 二次切分重叠字符数
+_DEFAULT_MIN_CHARS = 30         # 过短块丢弃阈值
+_DEFAULT_MAX_TABLE_CHARS = 3000 # 表格块最大字符数（可超过 MAX_CHARS）
+
+
+def _max_chars() -> int:
+    from backend.services.kb_chunking import get_chunk_max_chars
+    return get_chunk_max_chars()
+
+
+def _overlap() -> int:
+    from backend.services.kb_chunking import get_chunk_overlap
+    return get_chunk_overlap()
+
+
+def _min_chars() -> int:
+    from backend.services.kb_chunking import get_chunk_min_chars
+    return get_chunk_min_chars()
 
 
 # ── 数据结构 ──
@@ -279,7 +294,7 @@ def _parse_to_elements(text: str) -> List[DocumentElement]:
         nonlocal current_type
         content = "\n".join(buf).strip()
         buf.clear()
-        if len(content) < MIN_CHARS:
+        if len(content) < _min_chars():
             return
         elements.append(DocumentElement(
             type=current_type,
@@ -372,12 +387,12 @@ def chunk_elements(elements: List[DocumentElement]) -> List[Tuple[str, str, str]
         content = "\n".join(buf).strip()
         buf.clear()
         buf_len = 0
-        if len(content) < MIN_CHARS:
+        if len(content) < _min_chars():
             return
         # 大块按字符切分
-        if buf_type in ("text", "paragraph") and len(content) > MAX_CHARS:
+        if buf_type in ("text", "paragraph") and len(content) > _max_chars():
             for piece in _split_long(content):
-                if len(piece.strip()) >= MIN_CHARS:
+                if len(piece.strip()) >= _min_chars():
                     chunks.append((buf_heading, piece.strip(), buf_type))
         else:
             chunks.append((buf_heading, content, buf_type))
@@ -403,7 +418,7 @@ def chunk_elements(elements: List[DocumentElement]) -> List[Tuple[str, str, str]
             buf_type = chunk_type
             buf_heading = el.heading_path or buf_heading
 
-        if buf_len + el_len > MAX_CHARS and buf:
+        if buf_len + el_len > _max_chars() and buf:
             _emit()
             buf_type = chunk_type
             buf_heading = el.heading_path or buf_heading
@@ -430,17 +445,17 @@ def _map_type(el_type: str) -> str:
 def _split_long(text: str) -> List[str]:
     """按字数 + 重叠窗口切分过长文本"""
     text = text.strip()
-    if len(text) <= MAX_CHARS:
+    if len(text) <= _max_chars():
         return [text] if text else []
     parts = []
     start = 0
     n = len(text)
     while start < n:
-        end = min(start + MAX_CHARS, n)
+        end = min(start + _max_chars(), n)
         parts.append(text[start:end])
         if end >= n:
             break
-        start = end - OVERLAP
+        start = end - _overlap()
     return parts
 
 
