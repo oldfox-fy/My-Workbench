@@ -895,17 +895,34 @@ async def serve_generated_file(request: Request, file_path: str):
     import backend as _backend
     from backend.utils.validators import validate_path
 
-    rel = unquote(file_path)
-    allowed = [
-        _Path(_backend.workspace_path).resolve() if _backend.workspace_path else None,
-        _Path(config.generate_dir).resolve(),
-        _Path(config.uploads_dir).resolve(),
-        _Path(_backend.kb_path).resolve() if getattr(_backend, "kb_path", "") else None,
-    ]
-    allowed = [a for a in allowed if a is not None]
+    rel = unquote(file_path).lstrip('/')
 
-    for root in allowed:
-        candidate = (root / rel)
+    allowed = []
+    raw_roots = [
+        getattr(_backend, "workspace_path", ""),
+        (_backend.get_user_workspace_path() if hasattr(_backend, "get_user_workspace_path") else ""),
+        str(config.generate_dir),
+        str(config.uploads_dir),
+        getattr(_backend, "kb_path", ""),
+    ]
+    for d in raw_roots:
+        if not d:
+            continue
+        try:
+            resolved = _Path(d).resolve()
+        except (OSError, ValueError, RuntimeError):
+            continue
+        if resolved not in allowed:
+            allowed.append(resolved)
+
+    candidates = []
+    if _Path(rel).is_absolute():
+        candidates.append(_Path(rel))
+    else:
+        for root in allowed:
+            candidates.append(root / rel)
+
+    for candidate in candidates:
         try:
             safe = validate_path(str(candidate), allowed)
         except (ValueError, RuntimeError):

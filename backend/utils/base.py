@@ -104,6 +104,39 @@ def normalize_base_url(url: str) -> str:
     return base
 
 
+def to_download_url(file_path: str) -> str:
+    """
+    把服务端可访问的文件路径转换为 /files/generate/ 下载链接。
+
+    按「工作区 / 用户工作区 / 知识库 / 生成目录 / 上传目录」依次寻找能包含
+    该文件的根目录，返回相对根目录的下载链接；都找不到时退化为仅用文件名。
+    与 main.py 的 /files/generate/{file_path} 端点解析逻辑保持一致。
+    """
+    import backend as _backend
+    from config_loader import config as _config
+
+    file_path = os.path.abspath(str(file_path or ""))
+    roots = [
+        getattr(_backend, "workspace_path", ""),
+        (_backend.get_user_workspace_path() if hasattr(_backend, "get_user_workspace_path") else ""),
+        getattr(_backend, "kb_path", ""),
+        str(getattr(_config, "generate_dir", "")),
+        str(getattr(_config, "uploads_dir", "")),
+    ]
+    for root in roots:
+        if not root:
+            continue
+        try:
+            rel = os.path.relpath(file_path, root)
+        except ValueError:
+            continue
+        if rel == "." or rel.startswith("..") or os.path.isabs(rel):
+            continue
+        rel = rel.replace(os.sep, "/")
+        return f"/files/generate/{rel}"
+    return f"/files/generate/{os.path.basename(file_path)}"
+
+
 def get_local_ip():
     """获取本机IP地址"""
     try:

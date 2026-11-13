@@ -282,8 +282,15 @@ def _write_sync(
 # ──────────────────────── 工具函数 ────────────────────────
 
 def _ok(safe_path: Path, enc: str, n: int) -> Dict[str, Any]:
-    """构造成功返回值。"""
-    return {"success": True, "path": str(safe_path), "bytes_written": n, "encoding": enc}
+    """构造成功返回值，附带可点击的下载链接。"""
+    from backend.utils.base import to_download_url
+    return {
+        "success": True,
+        "path": str(safe_path),
+        "bytes_written": n,
+        "encoding": enc,
+        "download_url": to_download_url(str(safe_path)),
+    }
 
 
 def _atomic_write(path: Path, content: str, enc: str) -> None:

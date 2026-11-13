@@ -45,7 +45,7 @@
 
 <script setup lang="ts">
 import { ref, computed } from 'vue'
-import { isRunningInPyWebView } from '@/utils/common'
+import { downloadFile } from '@/utils/common'
 
 interface SlidePreview {
   title: string
@@ -109,17 +109,11 @@ function typeLabel(type: string): string {
   return labels[type] || type
 }
 
-function handleDownload(e: MouseEvent) {
+async function handleDownload(e: MouseEvent) {
   const url = fullDownloadUrl.value
   if (!url) return
-
-  if (isRunningInPyWebView()) {
-    e.preventDefault()
-    const fullUrl = url.startsWith('/') ? window.location.origin + url : url
-    if (window.pywebview?.api?.download_file) {
-      window.pywebview.api.download_file(fullUrl, data.value.filename || 'presentation.pptx')
-    }
-  }
+  e.preventDefault()
+  await downloadFile(url, data.value.filename || 'presentation.pptx')
 }
 </script>
 

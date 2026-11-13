@@ -20,6 +20,7 @@ import sys
 import shlex
 import subprocess
 import logging
+import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -29,6 +30,20 @@ from backend.utils.base import is_absolute
 import backend
 
 logger = logging.getLogger("My Workbench")
+
+# 命令执行过程中「新生成产物」的常见扩展名（用于自动给出下载链接）
+_GENERATED_EXTS = {
+    ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx", ".pdf",
+    ".md", ".markdown", ".txt", ".csv", ".tsv", ".json",
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp",
+    ".html", ".htm", ".zip",
+}
+
+# 扫描时忽略的目录（避免把依赖/缓存误判为产物，也避免整树遍历过慢）
+_EXCLUDE_DIRS = {
+    "node_modules", ".git", "__pycache__", ".venv", "venv",
+    "dist", "build", ".image_cache", ".idea", ".vscode",
+}
 
 # 单次命令最长执行时间（秒），可被参数覆盖，但不超过硬上限
 DEFAULT_TIMEOUT = 30
@@ -85,6 +100,37 @@ def _truncate(text: str) -> str:
         return text
     head = text[:MAX_OUTPUT_CHARS]
     return f"{head}\n...（输出过长，已截断，共 {len(text)} 字符）"
+
+
+def _find_generated_files(root: Path, since_ts: float, max_depth: int = 6, max_files: int = 5000) -> list[str]:
+    """
+    扫描 root 下在 since_ts 之后被创建/修改的「产物」文件（按扩展名过滤），
+    返回它们的绝对路径列表。用于命令执行成功后自动给出下载链接。
+    """
+    results: list[str] = []
+    root = Path(root).resolve()
+    scanned = 0
+    for dirpath, dirnames, filenames in os.walk(str(root)):
+        try:
+            depth = len(Path(dirpath).resolve().relative_to(root).parts)
+        except ValueError:
+            depth = 0
+        dirnames[:] = [d for d in dirnames if d not in _EXCLUDE_DIRS and not d.startswith('.')]
+        if depth >= max_depth:
+            dirnames[:] = []
+        for fn in filenames:
+            if scanned >= max_files:
+                return results
+            scanned += 1
+            if os.path.splitext(fn)[1].lower() not in _GENERATED_EXTS:
+                continue
+            fp = os.path.join(dirpath, fn)
+            try:
+                if os.path.getmtime(fp) >= since_ts:
+                    results.append(fp)
+            except OSError:
+                continue
+    return results
 
 
 def _run_sync(
@@ -180,6 +226,7 @@ async def run_command(
     # ── 核心：用 ThreadPoolExecutor + subprocess.run 替代 asyncio 子进程 API ──
     # 优势：不依赖 ProactorEventLoop，uvicorn reload / 任何事件循环都能正常工作。
     loop = asyncio.get_running_loop()
+    start_ts = time.time()
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
             result = await asyncio.wait_for(
@@ -216,7 +263,7 @@ async def run_command(
     stderr = _truncate(_decode(result.stderr or b""))
     return_code = result.returncode if result.returncode is not None else -1
 
-    return {
+    res: Dict[str, Any] = {
         "success": return_code == 0,
         "return_code": return_code,
         "timed_out": False,
@@ -225,3 +272,19 @@ async def run_command(
         "stdout": stdout,
         "stderr": stderr,
     }
+
+    # 命令成功后，自动扫描本次执行期间生成/修改的产物，附带可直接下载的链接，
+    # 供模型在正文中渲染，避免「没给链接 / 链接不对」的问题。
+    if return_code == 0:
+        try:
+            gen_paths = _find_generated_files(safe_cwd, start_ts - 5)
+        except Exception:
+            gen_paths = []
+        if gen_paths:
+            from backend.utils.base import to_download_url
+            res["generated_files"] = [
+                {"path": p, "download_url": to_download_url(p)}
+                for p in gen_paths[:30]
+            ]
+
+    return res

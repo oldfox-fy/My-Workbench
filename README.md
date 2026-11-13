@@ -71,8 +71,10 @@ My Workbench 是My Workbench 是目前唯一将 "Obsidian 笔记 + AI RAG + Skil
 - **Obsidian 式双链**：`[[笔记名]]` 输入即补全、点击即跳转，笔记底部自动汇总「反向链接」
 - **知识图谱**：力导向可视化笔记关系网络，拖拽 / 缩放 / 双击打开，未创建的笔记以虚节点提示
 - **RAG 语义检索**：本地 Ollama 或云端 OpenAI 双引擎向量化，AI 在对话中先语义命中相关笔记再精读
-- **全文关键词搜索**：SQLite FTS5 引擎驱动的关键词搜索，与语义检索互补，支持混合模式精准命中
+- **全文关键词搜索**：SQLite FTS5 + jieba 中文分词的关键词搜索，中文友好，与语义检索互补
+- **混合检索 (RRF)**：语义向量 + 关键词两路召回 → RRF 融合 → 可选 Reranker 精排，精准命中
 - **引用溯源**：检索结果附带引用 ID，AI 回答中自动标注来源，点击引用标签直达源文件对应位置
+- **分块参数可调**：`chunk_max_chars` / `chunk_overlap` / `chunk_min_chars` 三大分块参数在设置页动态调整，适配不同文档结构与检索效果
 - **增强文档解析**：支持 OCR 识别扫描件/图片文字；PDF 表格结构化提取；布局感知分块保留表格与代码块完整性
 - **标签系统**：为知识库文件自定义标签（创建、删除、按标签筛选文件），多维分类管理笔记
 - **网页一键入库**：`system_web_fetch` 工具可将任意网页内容抓取后保存为知识库笔记，扩展知识边界
@@ -112,6 +114,14 @@ My Workbench 是My Workbench 是目前唯一将 "Obsidian 笔记 + AI RAG + Skil
 - **搜索 + 正文抽取**：`web_search`（多引擎检索）、`web_fetch`（网页转干净 Markdown）、`site_search`（站内搜）
 - **自动触发**：遇到实时 / 近期 / 时效性问题（会议、论坛、新闻、政策等），模型先检索再回答，并标注来源链接
 
+### 📊 SQLBot 智能问数，自然语言查数
+- **text-to-SQL**：连接本地 SQLBot（dataease/SQLBot，Docker 部署），用自然语言查询业务数据库，返回数据表格与图表
+- **免手动 MCP 配置**：自动完成「获取 token → 建会话 → 提问」全流程，LLM 无需直接操作 SQLBot 原始 MCP 工具
+- **模型实时同步**：工作台模型自动同步到 SQLBot（新增 / 更新 / 删除 + 工作空间绑定），问数复用已配置的大模型
+- **数据源可视管理**：界面内添加 / 测试 / 删除数据库连接，支持 MySQL / PostgreSQL / SQL Server / Oracle / ClickHouse / Doris / StarRocks / Hive / 达梦 / 人大金仓
+- **意图自动触发**：询问「上个月销售额」「各部门占比」「排行榜」等业务数据时，模型自动切换「智能问数」模式并调用问数工具
+- **图表内联渲染**：问数返回的图表图片直接以 Markdown 内联展示在对话中
+
 ### 🚀 开机自启动，后台常驻
 - **一键注册**：`install_autostart.bat` 注册开机自启动，静默后台启动（托盘 + 悬浮球常驻）
 - **静默模式**：开机以 `--silent` 启动，隐藏主窗口与控制台，日志写入 `logs/autostart.log`
@@ -139,8 +149,9 @@ My Workbench 是My Workbench 是目前唯一将 "Obsidian 笔记 + AI RAG + Skil
 | 模型调用 | openai 库 | 统一兼容 OpenAI / Ollama / LM Studio 等主流协议 |
 | 工具扩展 | MCP SDK (fastmcp) | 支持 stdio / SSE / streamable-http 三种传输方式 |
 | 技能系统 | 受限 exec 沙箱 + PyYAML + zipfile | prompt / code 双类技能，SKILL.md 包导入导出 |
-| 知识库检索 | sqlite-vec + FTS5 + numpy | 向量语义检索 + 全文关键词搜索 + 引用溯源，标签多维分类，全部本地 SQLite |
+| 知识库检索 | sqlite-vec + FTS5(jieba) + RRF + numpy | 向量语义 + 中文关键词 + RRF 混合检索 + 引用溯源，分块参数可调，全部本地 SQLite |
 | 文档解析 | markitdown + pytesseract + pdfplumber + PyPDF2 | OCR 识别、PDF 表格提取、图片/Word/PDF/Excel 等多格式内容提取 |
+| 智能问数 | SQLBot (dataease) + MCP + cryptography | text-to-SQL 查数，模型同步 + 数据源管理 + 图表渲染，本地 Docker 部署 |
 | 可观测性 | Span 追踪 + Trace 面板 + 计划可视化 | Agent 执行全链路追踪、瀑布图时间线、步骤进度卡片 |
 | 渲染增强 | marked + highlight.js + mermaid | 完整 Markdown 生态，代码与图表原生支持 |
 | 语音交互 | Web Speech API + faster-whisper + edge-tts | 浏览器原生兜底 + 本地唤醒词/STT/TTS，悬浮球与托盘常驻 |
@@ -206,7 +217,8 @@ My Workbench/
 │   │   ├── kb_rag.py         # embedding 配置、索引管理、语义搜索、图谱、反链
 │   │   ├── voice.py           # 语音 STT/TTS API（OpenAI 兼容，可选增强）
 │   │   ├── assistant.py      # 语音助手 WebSocket 状态通道（/ws/assistant）
-│   │   └── scheduled_tasks.py# AI 定时任务接口
+│   │   ├── scheduled_tasks.py# AI 定时任务接口
+│   │   └── sqlbot.py         # SQLBot 智能问数路由（模型同步 / 数据源管理）
 │   ├── services/
 │   │   ├── llm_service.py    # 大模型调用服务（含工具循环、重试降级、流式执行）
 │   │   ├── embedding.py      # 可配置 embedding 层（Ollama / OpenAI 双引擎）
@@ -220,7 +232,9 @@ My Workbench/
 │   │   ├── chat_export.py    # 会话导出/导入服务（Markdown / JSON / ZIP 格式）
 │   │   ├── tools.py          # 本地工具动态导入定义与执行引擎
 │   │   ├── intent_router.py  # 意图识别路由（关键词 + LLM 分类器，动态调整步数上限）
-│   │   └── scheduled_tasks.py# AI 定时任务调度与执行
+│   │   ├── scheduled_tasks.py# AI 定时任务调度与执行
+│   │   ├── sqlbot_sync.py     # SQLBot 模型同步（工作台模型 ↔ SQLBot 模型映射）
+│   │   └── sqlbot_datasource.py # SQLBot 数据源代理（AES 加密配置、连接测试）
 │   ├── voice/                # 语音助手（唤醒词、本地 STT/TTS、状态广播）
 │   │   ├── assistant.py      # 语音助手状态机与编排
 │   │   ├── settings.py       # 语音设置持久化（voice_settings.json）
@@ -243,7 +257,8 @@ My Workbench/
 │   │   ├── reminder.py       # 提醒工具（结构化落库）
 │   │   ├── email.py          # 邮件外发工具（SMTP）
 │   │   ├── wechat.py         # 微信推送工具（PushPlus / Server酱）
-│   │   └── ppt_generator.py  # PPT 生成工具
+│   │   ├── ppt_generator.py  # PPT 生成工具
+│   │   └── sqlbot.py         # SQLBot 智能问数工具（text-to-SQL）
 │   └── utils/
 │       ├── base.py           # 路径工具函数
 │       └── validators.py     # 路径安全校验

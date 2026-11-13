@@ -309,6 +309,10 @@ async def serve_generated_file(request: Request, file_path: str):
     智能体生成产物（如 node compile.js 产出的 .pptx）后，会在正文中给出
     /files/generate/<相对工作区的路径> 链接；前端桌面端点击后弹出保存对话框下载。
     路径被限制在工作区 / 生成目录 / 上传目录内，防止任意文件读取。
+
+    兼容性增强：
+    - 同时支持相对路径与绝对路径（模型偶尔直接给绝对路径）
+    - 兼容用户自定义工作区路径（contextvar 兜底）
     """
     from urllib.parse import unquote
     from pathlib import Path as _Path
@@ -316,18 +320,36 @@ async def serve_generated_file(request: Request, file_path: str):
     import backend as _backend
     from backend.utils.validators import validate_path
 
-    rel = unquote(file_path)
-    allowed = [
-        _Path(_backend.workspace_path).resolve() if _backend.workspace_path else None,
-        _Path(config.generate_dir).resolve(),
-        _Path(config.uploads_dir).resolve(),
-        _Path(_backend.kb_path).resolve() if getattr(_backend, "kb_path", "") else None,
-    ]
-    allowed = [d for d in allowed if d]
+    rel = unquote(file_path).lstrip('/')
 
-    # 依次尝试把相对路径拼到各允许根目录下，命中存在的文件即返回
-    for root in allowed:
-        candidate = (root / rel)
+    # 收集所有允许的根目录（去重、规范化）
+    allowed = []
+    raw_roots = [
+        getattr(_backend, "workspace_path", ""),
+        (_backend.get_user_workspace_path() if hasattr(_backend, "get_user_workspace_path") else ""),
+        str(config.generate_dir),
+        str(config.uploads_dir),
+        getattr(_backend, "kb_path", ""),
+    ]
+    for d in raw_roots:
+        if not d:
+            continue
+        try:
+            resolved = _Path(d).resolve()
+        except (OSError, ValueError, RuntimeError):
+            continue
+        if resolved not in allowed:
+            allowed.append(resolved)
+
+    # 候选路径：绝对路径直接使用；相对路径依次拼到各根目录下
+    candidates: list[_Path] = []
+    if _Path(rel).is_absolute():
+        candidates.append(_Path(rel))
+    else:
+        for root in allowed:
+            candidates.append(root / rel)
+
+    for candidate in candidates:
         try:
             safe = validate_path(str(candidate), allowed)
         except (ValueError, RuntimeError):

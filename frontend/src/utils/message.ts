@@ -8,6 +8,37 @@ export const localIP = ref('')
 export const uploadDir = ref('')
 
 
+/**
+ * 把正文里「裸」的生成/上传文件路径自动转成可点击的 Markdown 链接，
+ * 这样即使模型忘了用 `[名称](路径)` 语法，前端也能渲染出下载按钮。
+ * - 保护代码块：``` 内的路径不做转换
+ * - 跳过已经处于链接目标位置（前面紧跟 ]( ）的 URL，避免重复包裹
+ */
+function autoLinkifyFiles(text: string): string {
+  if (!text) return text
+  const parts = text.split(/(```[\s\S]*?```)/g)
+  return parts
+    .map((part) => {
+      if (part.startsWith('```')) return part
+      let out = part
+      // 服务端生成/上传文件裸链接：/files/generate/xxx 或 /files/uploads/xxx
+      // 排除「已是链接目标（前面是 ]( ）」以及「紧跟在 [ 后面」的情况，避免重复包裹
+      out = out.replace(/(?<!\]\()(?<!\[)\/files\/(?:generate|uploads)\/[^\s"'<>()\]]+/g, (url) => {
+        const name = url.split('/').filter(Boolean).pop() || url
+        return `[${name}](${url})`
+      })
+      // Windows 盘符绝对路径：C:\...\file.docx / D:/.../file.pptx（反斜杠统一为正斜杠，避免 markdown 转义问题）
+      out = out.replace(/(?<!\]\()(?<!\[)\b[A-Za-z]:[\\/][^\s"'<>()]+\.[A-Za-z0-9]{2,5}\b/g, (p) => {
+        const name = p.split(/[\\/]/).filter(Boolean).pop() || p
+        const href = p.replace(/\\/g, '/')
+        return `[${name}](${href})`
+      })
+      return out
+    })
+    .join('')
+}
+
+
 /** 解析思考块和工具调用，输出 markstream-vue 自定义标签格式 */
 /** 解析工具预览标记，输出 <toolpreview> 自定义标签 */
 export function processMessageContent(text: string, isStreaming = false): string {
@@ -152,6 +183,8 @@ export function processMessageContent(text: string, isStreaming = false): string
   )
   // 清理多余换行
   processedText = processedText.replace(/\n{3,}/g, '\n\n')
+  // 5. 自动把裸的文件路径转成可下载链接（生成的文件即使没写 markdown 链接也能点击下载）
+  processedText = autoLinkifyFiles(processedText)
   return processedText.trim()
 }
 

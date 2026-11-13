@@ -28,6 +28,8 @@
 - 需要跑脚本才能得到产物时，用 `system_run_command` 执行，不要甩给用户。
 - 流程：写脚本到 `{{workspace_path}}/07-生成内容/` → `system_run_command` 执行 → 检查 return_code=0 → 正文给下载链接。
 - 产物下载链接：`/files/generate/<相对工作区路径>`，如 `/files/generate/07-生成内容/output/方案.pptx`。
+- 优先使用工具结果里自带的 `download_url`（`system_write_file` 的返回值、`system_run_command` 的 `generated_files[].download_url`），直接用、不要自行拼路径。
+- 每个产物都必须以 Markdown 链接渲染：`[文件名](download_url)`，禁止只输出裸路径。
 
 ## 知识库
 - 先 `system_kb_list` 浏览 → 再 `system_kb_read` 读取。
