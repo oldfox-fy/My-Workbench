@@ -26,7 +26,10 @@
         <n-grid cols="2" :x-gap="8" :y-gap="8">
           <n-gi><n-card size="small" title="对话"><div class="stat-num">{{ data?.chats || 0 }}</div></n-card></n-gi>
           <n-gi><n-card size="small" title="消息"><div class="stat-num">{{ data?.messages || 0 }}</div></n-card></n-gi>
-          <n-gi><n-card size="small" title="工具调用"><div class="stat-num">{{ data?.tool_calls?.total || 0 }}</div></n-card></n-gi>
+          <n-gi><n-card size="small" title="工具调用">
+            <div class="stat-num">{{ data?.tool_calls?.total || 0 }}</div>
+            <div v-if="data?.tool_calls?.incomplete" class="stat-sub">未完成 {{ data.tool_calls.incomplete }}</div>
+          </n-card></n-gi>
           <n-gi><n-card size="small" title="成功率"><div class="stat-num" :style="{ color: successRate > 90 ? '#22c55e' : '#f59e0b' }">{{ successRate }}%</div></n-card></n-gi>
         </n-grid>
 
@@ -97,7 +100,7 @@ interface TokenUsage {
 
 interface StatsData {
   chats: number; messages: number
-  tool_calls: { total: number; success: number; error: number }
+  tool_calls: { total: number; success: number; error: number; incomplete: number }
   tool_top: { name: string; count: number }[]
   token_usage: TokenUsage
 }
@@ -138,8 +141,9 @@ function formatDate(): string {
 
 const successRate = computed(() => {
   const tc = data.value?.tool_calls
-  if (!tc || tc.total === 0) return 100
-  return Math.round((tc.success / tc.total) * 100)
+  const completed = (tc?.success || 0) + (tc?.error || 0)
+  if (!tc || completed === 0) return 100
+  return Math.round((tc.success / completed) * 100)
 })
 
 function fmtTokens(n: number | undefined): string {
@@ -170,6 +174,7 @@ watch([() => props.show, period, pickerValue], () => {
 .filter-row { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
 .filter-label { font-size: 12px; color: var(--text-secondary); margin-bottom: 12px; }
 .stat-num { font-size: 28px; font-weight: 700; }
+.stat-sub { font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
 .empty { color: var(--text-secondary); font-size: 13px; text-align: center; padding: 16px; }
 .tool-row { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
 .tool-rank { width: 20px; font-weight: 600; color: var(--accent); }

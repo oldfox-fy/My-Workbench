@@ -1,4 +1,5 @@
 # backend/routes/models.py
+import asyncio
 import uuid
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
@@ -7,6 +8,18 @@ from backend.database import get_db
 from backend.auth import get_current_user
 
 router = APIRouter(prefix="/api", tags=["models"])
+
+
+def _trigger_sqlbot_sync():
+    """后台触发 SQLBot 模型同步（失败静默，绝不影响模型 CRUD 主流程）。"""
+    try:
+        from backend.services.sqlbot_sync import sync_models_to_sqlbot
+        from config_loader import config as _cfg
+        if not getattr(_cfg, "sqlbot_enabled", True):
+            return
+        asyncio.create_task(sync_models_to_sqlbot())
+    except Exception as e:
+        print(f"[SQLBot] 触发模型同步失败: {e}")
 
 # 模型角色：default(通用) / vision(视觉) / reasoning(推理) / audio(语音) / video(视频) / image_gen(生图)
 MODEL_ROLES = ["default", "vision", "reasoning", "audio", "video", "image_gen"]
@@ -71,6 +84,7 @@ async def create_model(data: ModelConfigBase, request: Request):
     )
     await db.commit()
     await db.close()
+    _trigger_sqlbot_sync()
     return {**data.dict(), "id": model_id}
 
 
@@ -120,6 +134,7 @@ async def update_model(model_id: str, data: UpdateModelRequest, request: Request
         raise HTTPException(status_code=404, detail="Model not found")
     await db.commit()
     await db.close()
+    _trigger_sqlbot_sync()
     return {"status": "ok"}
 
 
@@ -139,6 +154,7 @@ async def delete_model(model_id: str, request: Request):
     await db.execute("DELETE FROM models WHERE id = ?", (model_id,))
     await db.commit()
     await db.close()
+    _trigger_sqlbot_sync()
     return {"status": "ok"}
 
 

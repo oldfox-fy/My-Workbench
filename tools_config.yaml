@@ -651,3 +651,27 @@ tools:
       required: ["title", "message"]
     module: backend.system_tools.notify
     function_name: send_notification
+
+  - name: system_sqlbot_ask
+    title: 智能问数
+    description: >
+      向已连接的 SQLBot 智能问数系统（本地部署的 dataease/SQLBot）提问，让它基于你
+      配置的业务数据库做自然语言查数（text-to-SQL），并返回数据结果与图表。
+      当用户问的是具体业务数据、指标统计、报表数字、数据查询等问题时应使用本工具。
+      例如「上个月各产品线的销售额」「今年各部门的离职率」等。
+      注意：本工具依赖 SQLBot 已启动并已配置好数据源与大模型；若未就绪会返回错误提示。
+    parameters:
+      type: object
+      properties:
+        question:
+          type: string
+          description: 要问的自然语言问题，例如「上个月各产品线的销售额是多少？」。
+        datasource_id:
+          type: integer
+          description: SQLBot 数据源 ID（可选）。省略时使用会话默认数据源。
+        custom_model:
+          type: string
+          description: SQLBot 侧的大模型 ID（可选）。省略时使用 SQLBot 默认模型。
+      required: ["question"]
+    module: backend.system_tools.sqlbot
+    function_name: sqlbot_ask

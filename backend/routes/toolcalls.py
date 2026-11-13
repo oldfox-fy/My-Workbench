@@ -87,16 +87,18 @@ async def get_stats(request: Request, period: str = "day", date: str = ""):
         )
         msg_count = (await cur.fetchone())[0]
 
-        # 工具调用总数 + 成功/失败
+        # 工具调用总数 + 成功/失败/未完成（calling 为中断或进行中遗留）
         cur = await db.execute(
             f"SELECT COUNT(*), SUM(CASE WHEN status='success' THEN 1 ELSE 0 END), "
-            f"SUM(CASE WHEN status='error' THEN 1 ELSE 0 END) FROM tool_calls WHERE user_id = ?{range_clause}",
+            f"SUM(CASE WHEN status='error' THEN 1 ELSE 0 END), "
+            f"SUM(CASE WHEN status='calling' THEN 1 ELSE 0 END) FROM tool_calls WHERE user_id = ?{range_clause}",
             (user_id, *range_params),
         )
         row = await cur.fetchone()
         tool_total = row[0] or 0
         tool_success = row[1] or 0
         tool_error = row[2] or 0
+        tool_incomplete = row[3] or 0
 
         # TOP 10 工具
         cur = await db.execute(
@@ -115,7 +117,7 @@ async def get_stats(request: Request, period: str = "day", date: str = ""):
             "date": date,
             "chats": chat_count,
             "messages": msg_count,
-            "tool_calls": {"total": tool_total, "success": tool_success, "error": tool_error},
+            "tool_calls": {"total": tool_total, "success": tool_success, "error": tool_error, "incomplete": tool_incomplete},
             "tool_top": tool_top,
             "token_usage": {
                 "request_count": token_stats["request_count"],

@@ -171,6 +171,16 @@ class AppConfig:
         self.kb_chunk_overlap = int(ki.get("chunk_overlap", 100))
         self.kb_chunk_min_chars = int(ki.get("chunk_min_chars", 30))
 
+        # SQLBot 智能问数配置（本地 Docker 部署，MCP 接入）
+        # 连接地址在 mcp_config.json 的 sqlbot 节（MCP，端口 8001）；这里放认证账号、
+        # MCP 服务名，以及模型管理的 REST 地址（端口 8000，与 MCP 不同端口）。
+        sb = self.raw_config.get("sqlbot", {}) or {}
+        self.sqlbot_enabled = bool(sb.get("enabled", True))
+        self.sqlbot_username = sb.get("username", "admin") or "admin"
+        self.sqlbot_password = sb.get("password", "SQLBot@123456") or ""
+        self.sqlbot_server_name = sb.get("server_name", "sqlbot") or "sqlbot"
+        self.sqlbot_rest_url = sb.get("rest_url", "http://localhost:8000") or "http://localhost:8000"
+
     def _resolve_path(self, path_str: str, base: Path) -> Path:
         """将路径字符串解析为 Path 对象，支持绝对路径和相对路径"""
         p = Path(path_str)

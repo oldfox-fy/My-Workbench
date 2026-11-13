@@ -1,0 +1,33 @@
+services:
+  sqlbot:
+    image: registry.cn-qingdao.aliyuncs.com/dataease/sqlbot:v1.10.3
+    container_name: sqlbot
+    restart: unless-stopped
+    privileged: true
+    ports:
+      - "8000:8000"   # Web 控制台（配数据源/大模型）
+      - "8001:8001"   # MCP 服务（My Workbench 接入点）
+    environment:
+      # 内置 PostgreSQL
+      POSTGRES_SERVER: localhost
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: sqlbot
+      POSTGRES_USER: root
+      POSTGRES_PASSWORD: Password123@pg
+      # 基础设置
+      PROJECT_NAME: "SQLBot"
+      DEFAULT_PWD: "SQLBot@123456"
+      # 固定密钥（避免重启后 token 失效；正式/内网部署请换一个）
+      SECRET_KEY: ${SECRET_KEY}
+      # 图表图片访问地址（本地用 localhost:8001）
+      SERVER_IMAGE_HOST: http://localhost:8001/images/
+      # CORS（本地调试）
+      BACKEND_CORS_ORIGINS: "http://localhost,http://localhost:5173,http://127.0.0.1,http://127.0.0.1:5173"
+      LOG_LEVEL: "INFO"
+      SQL_DEBUG: "false"
+    volumes:
+      - ./data/sqlbot/excel:/opt/sqlbot/data/excel
+      - ./data/sqlbot/file:/opt/sqlbot/data/file
+      - ./data/sqlbot/images:/opt/sqlbot/images
+      - ./data/sqlbot/logs:/opt/sqlbot/app/logs
+      - ./data/postgresql:/var/lib/postgresql/data

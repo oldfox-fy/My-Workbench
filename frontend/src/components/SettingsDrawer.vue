@@ -207,6 +207,11 @@
           </n-space>
         </n-tab-pane>
 
+        <!-- 智能问数（SQLBot） -->
+        <n-tab-pane name="sqlbot" tab="智能问数">
+          <SqlbotSettingsPanel />
+        </n-tab-pane>
+
         <!-- MCP 接入 -->
         <n-tab-pane name="mcp" tab="MCP接入">
           <n-space vertical>
@@ -920,6 +925,7 @@ import { useAuthStore } from '@/stores/auth'
 import { apiFetch } from '@/api/client'
 import mSvg from '@/components/mSvg.vue'
 import KbSettingsPanel from '@/components/kb/KbSettingsPanel.vue'
+import SqlbotSettingsPanel from '@/components/SqlbotSettingsPanel.vue'
 import { useAssistant, type VoiceConfig } from '@/composables/useAssistant'
 
 

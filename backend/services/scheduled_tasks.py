@@ -23,7 +23,7 @@ from typing import List, Optional
 
 logger = logging.getLogger("My Workbench")
 
-from backend.database import get_db
+from backend.database import get_db, utc_now_str
 from backend.services.model_router import get_default_model
 from config_loader import config as app_config
 
@@ -543,7 +543,7 @@ async def _persist_result_chat(task: dict, output_text: str, error_text: str, st
     title = task.get("title") or "定时任务"
     content = output_text if status == "success" else (error_text or "执行失败")
     chat_id = str(uuid.uuid4())
-    now = datetime.now().isoformat()
+    now = utc_now_str()
     try:
         db = await get_db()
         try:

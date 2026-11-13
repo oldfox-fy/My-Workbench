@@ -31,6 +31,21 @@ async def record_token_usage(
         await db.close()
 
 
+async def lookup_chat_id_by_message(message_id: Optional[int]) -> str:
+    """根据消息 id 反查所属 chat_id（token 用量记录需要，此前始终写入空串）。"""
+    if not message_id:
+        return ""
+    db = await get_db()
+    try:
+        cursor = await db.execute("SELECT chat_id FROM messages WHERE id = ?", (message_id,))
+        row = await cursor.fetchone()
+        return (row[0] if row and row[0] else "")
+    except Exception:
+        return ""
+    finally:
+        await db.close()
+
+
 async def get_user_token_stats(user_id: int,
                                start_ts: Optional[str] = None,
                                end_ts: Optional[str] = None) -> Dict[str, Any]:

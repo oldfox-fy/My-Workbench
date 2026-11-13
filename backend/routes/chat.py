@@ -581,7 +581,7 @@ async def chat(
                             usage = json.loads(usage_json_str)
                             user_id = fastapi_request.state.user.get("id") if hasattr(fastapi_request.state, "user") else None
                             if user_id:
-                                from backend.db.token_usage import record_token_usage
+                                from backend.db.token_usage import record_token_usage, lookup_chat_id_by_message
                                 model_name = ""
                                 if request.llm_config:
                                     model_name = request.llm_config.model_name or ""
@@ -590,9 +590,10 @@ async def chat(
                                 prompt_tokens = agg.get("prompt_tokens", 0) or 0
                                 completion_tokens = agg.get("completion_tokens", 0) or 0
                                 total_tokens = agg.get("total_tokens", 0) or (prompt_tokens + completion_tokens)
+                                chat_id = await lookup_chat_id_by_message(request.message_id)
                                 asyncio.create_task(record_token_usage(
                                     user_id=user_id,
-                                    chat_id="",
+                                    chat_id=chat_id,
                                     model_name=model_name,
                                     prompt_tokens=prompt_tokens,
                                     completion_tokens=completion_tokens,

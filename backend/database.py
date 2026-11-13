@@ -1,9 +1,19 @@
 # backend/database.py
 import os
 import asyncio
+from datetime import datetime, timezone
 import aiosqlite
 from config_loader import config
 from backend.bootstrap import logger
+
+
+def utc_now_str() -> str:
+    """返回与 SQLite CURRENT_TIMESTAMP 一致的 UTC 时间字符串（'YYYY-MM-DD HH:MM:SS'）。
+
+    所有 created_at 字段统一使用 UTC + 空格分隔格式，避免使用统计按
+    本地/UTC 字符串比较时出现错位（历史 bug：chats 曾用本地 ISO 格式）。
+    """
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 
 async def get_db():
@@ -71,6 +81,18 @@ async def init_db():
             modelName TEXT NOT NULL,
             baseUrl TEXT NOT NULL,
             apiKey TEXT NOT NULL
+        )
+    """)
+
+    # SQLBot 模型同步映射：My Workbench 模型 id ↔ SQLBot 模型 id。
+    # 问数时 system_sqlbot_ask 用当前模型查此表，得到 custom_model（SQLBot 模型 id）。
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS sqlbot_model_map (
+            wb_model_id TEXT PRIMARY KEY,
+            sqlbot_model_id TEXT NOT NULL,
+            user_id INTEGER DEFAULT NULL,
+            workspace_id TEXT DEFAULT '',
+            synced_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
 
@@ -453,6 +475,12 @@ async def init_db():
     # ── 回填旧数据：将 user_id IS NULL 的数据归属到 admin（id=1）──
     await _backfill_null_user_ids(db)
 
+    # ── 修复历史 bug：chats.created_at 本地 ISO 时间 → UTC 空格格式 ──
+    await _migrate_chats_created_at_to_utc(db)
+
+    # ── 清理遗留 calling 工具调用（中断/崩溃残留，永不再更新）──
+    await _cleanup_stale_calling_tool_calls(db)
+
     # ── 数据库完整性检测与自动修复 ──
     await _check_and_repair(db)
 
@@ -546,6 +574,62 @@ async def _backfill_null_user_ids(db):
                 logger.info(f"[DB] 已将 {tbl} 表 {count} 行 NULL user_id 回填到 admin")
     except Exception as e:
         logger.warning(f"[DB] user_id 回填失败（非致命）: {e}")
+
+
+async def _migrate_chats_created_at_to_utc(db):
+    """
+    修复历史 bug：chats.created_at 曾用本地时间 datetime.now().isoformat()（含 'T' 分隔符、
+    微秒）写入，与其它表（messages/tool_calls/token_usage 用 SQLite CURRENT_TIMESTAMP = UTC，
+    空格分隔）不一致，导致使用统计按日/月/年过滤时「对话数」错位。
+
+    将含 'T' 的历史值从本地时间换算为 UTC，统一为 'YYYY-MM-DD HH:MM:SS'（幂等：
+    已迁移的值为空格分隔，不会再命中 LIKE '%T%'）。
+    """
+    try:
+        cursor = await db.execute("SELECT id, created_at FROM chats WHERE created_at LIKE '%T%'")
+        rows = await cursor.fetchall()
+        if not rows:
+            return
+        local_tz = datetime.now().astimezone().tzinfo
+        updated = 0
+        for cid, created in rows:
+            if not created:
+                continue
+            try:
+                dt = datetime.fromisoformat(created)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=local_tz)
+                dt_utc = dt.astimezone(timezone.utc)
+                await db.execute(
+                    "UPDATE chats SET created_at = ? WHERE id = ?",
+                    (dt_utc.strftime("%Y-%m-%d %H:%M:%S"), cid),
+                )
+                updated += 1
+            except (ValueError, TypeError):
+                continue
+        if updated:
+            logger.info(f"[DB] 已将 {updated} 行 chats.created_at 从本地时间迁移为 UTC")
+    except Exception as e:
+        logger.warning(f"[DB] chats.created_at 迁移失败（非致命）: {e}")
+
+
+async def _cleanup_stale_calling_tool_calls(db):
+    """
+    清理遗留的 status='calling' 工具调用记录：这类记录意味着请求在工具执行完成前
+    被中断/崩溃，永远不会再有后续状态更新。启动时将它们标记为 error，避免使用统计
+    里「工具调用总数」虚高、成功率被拉低。init_db 在服务启动、尚无请求时运行，故安全。
+    """
+    try:
+        cursor = await db.execute("SELECT COUNT(*) FROM tool_calls WHERE status = 'calling'")
+        count = (await cursor.fetchone())[0]
+        if count > 0:
+            await db.execute(
+                "UPDATE tool_calls SET status = 'error', error_message = '执行中断（历史遗留）', "
+                "updated_at = CURRENT_TIMESTAMP WHERE status = 'calling'"
+            )
+            logger.info(f"[DB] 已将 {count} 条遗留 calling 工具调用标记为 error")
+    except Exception as e:
+        logger.warning(f"[DB] calling 工具调用清理失败（非致命）: {e}")
 
 
 async def _ensure_column(db, table: str, column: str, ddl: str):

@@ -11,7 +11,7 @@ import zipfile
 import io
 from datetime import datetime
 from typing import Dict, List, Any, Optional
-from backend.database import get_db
+from backend.database import get_db, utc_now_str
 
 
 async def get_chat_data(chat_id: str) -> Optional[Dict[str, Any]]:
@@ -115,7 +115,7 @@ async def import_from_json(payload: Dict[str, Any]) -> str:
         raise ValueError("JSON 中无消息数据")
 
     chat_id = str(uuid.uuid4())
-    now = datetime.now().isoformat()
+    now = utc_now_str()
 
     db = await get_db()
     try:

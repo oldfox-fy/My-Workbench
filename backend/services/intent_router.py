@@ -71,6 +71,21 @@ _CODE_TASK_KEYWORDS = [
     "create a program",
 ]
 
+_DATA_QUERY_KEYWORDS = [
+    # 中文 — 业务数据/指标统计/报表
+    "销售额", "销量", "营收", "营业额", "利润", "毛利", "成本",
+    "订单数", "订单量", "用户数", "注册数", "留存率", "转化率",
+    "占比", "环比", "同比", "增长率", "下降", "趋势",
+    "报表", "统计", "排行", "排名", "指标", "查数", "问数",
+    "查询数据", "数据查询", "经营数据", "业务数据", "财务数据",
+    "按产品线", "按部门", "按地区", "按月份", "按季度", "按年度",
+    "各产品", "各部门", "各渠道", "各区域", "各品类",
+    "数据库里有", "数据库里", "有多少", "总共有多少",
+    # 英文
+    "sales revenue", "revenue", "kpi", "metrics", "dashboard",
+    "query the database", "how many", "report",
+]
+
 
 @dataclass
 class IntentResult:
@@ -116,6 +131,11 @@ def _keyword_detect(text: str) -> Optional[str]:
         if kw in text_lower:
             return "deep_research"
 
+    # 数据问数（在代码任务之前，因为「统计/报表/销售额」等更明确指向查数）
+    for kw in _DATA_QUERY_KEYWORDS:
+        if kw in text_lower:
+            return "data_query"
+
     # 代码任务
     for kw in _CODE_TASK_KEYWORDS:
         if kw in text_lower:
@@ -139,6 +159,7 @@ _INTENT_CLASSIFY_PROMPT = """你是一个意图分类器。根据用户消息，
 - deep_research：需要多步骤分析、深度研究、技术方案设计、代码审查、竞品分析等复杂任务。
 - code_task：编写/修改/调试代码、运行脚本。
 - content_create：创建 PPT、文档、报告等内容。
+- data_query：用户询问具体业务数据、指标统计、报表数字、数据库查询（如「上个月销售额」「各部门占比」「排行榜」）。
 - standard：以上均不符合，或无法明确判断。
 
 用户消息：
@@ -185,7 +206,7 @@ async def _llm_classify(user_message: str, llm_service=None) -> Tuple[str, float
         intent = result.get("intent", "standard")
         confidence = float(result.get("confidence", 0.0))
 
-        valid_intents = {"simple_qa", "kb_query", "deep_research", "code_task", "content_create", "standard"}
+        valid_intents = {"simple_qa", "kb_query", "deep_research", "code_task", "content_create", "data_query", "standard"}
         if intent not in valid_intents:
             intent = "standard"
 
@@ -227,6 +248,12 @@ _INTENT_PARAMS = {
         "auto_inject_tools": ["system_generate_pptx", "system_run_command"],
         "prompt_style": "standard",
     },
+    "data_query": {
+        "max_steps": 60,
+        "max_tokens": 8192,
+        "auto_inject_tools": ["system_sqlbot_ask"],
+        "prompt_style": "data_query",
+    },
     "standard": {
         "max_steps": 80,
         "max_tokens": 16384,
@@ -250,6 +277,15 @@ _PROMPT_STYLE_SUFFIX = {
         "\n\n**当前模式：代码任务**\n"
         "用户需要编写或调试代码。写代码后如需运行验证，可使用 system_run_command。"
         "输出代码时注意语法正确性和错误处理。"
+    ),
+    "data_query": (
+        "\n\n**当前模式：智能问数**\n"
+        "用户正在询问具体业务数据、指标统计或报表数字。请优先调用 system_sqlbot_ask 工具，"
+        "把用户的问题（可稍作改写）作为 question 传入，再基于返回的 SQL、数据和图表回答用户。"
+        "若返回结果中包含 image_url（图表图片链接），务必在最终回答中用 Markdown 图片语法 "
+        "`![图表](image_url)` 原样展示该图表。"
+        "若 SQLBot 未连接或未配置数据源（工具返回错误），请如实告知用户，"
+        "并引导其在「设置 → 智能问数」中连接数据库并同步模型。"
     ),
     "standard": "",  # 不追加额外指令
 }

@@ -13,20 +13,23 @@ class MCPClientManager:
     def __init__(self):
         self.clients: Dict[str, Client] = {}
         self.tools_cache: Dict[str, List[Dict]] = {}
+        self.hidden_servers: set = set()
 
     # 重写连接方法，利用 infer_transport 自动选择模式
-    async def _connect_server(self, name: str, config_dict: dict):
+    async def _connect_server(self, name: str, config_dict: dict, hidden: bool = False):
         """支持自动选择 Streamable HTTP 或 SSE 模式的核心连接方法"""
         try:
             client = Client(config_dict)
             await client.__aenter__()
             self.clients[name] = client
             await self._fetch_tools(name, client)
+            if hidden:
+                self.hidden_servers.add(name)
             logger.info(f"MCP 服务器 '{name}' 已连接，工具: {self._tool_names(name)}")
         except Exception as e:
             logger.error(f"服务器 '{name}' 连接失败: {e}")
 
-    async def connect_server_stdio(self, name: str, command: str, args: List[str]):
+    async def connect_server_stdio(self, name: str, command: str, args: List[str], hidden: bool = False):
         """通过 stdio 连接到本地 MCP 服务器"""
         config_dict = {
             "mcpServers": {
@@ -36,15 +39,17 @@ class MCPClientManager:
                 }
             }
         }
-        await self._connect_server(name, config_dict)
+        await self._connect_server(name, config_dict, hidden=hidden)
 
-    async def connect_server_sse(self, name: str, url: str, headers: Dict = None):
-        """连接远程 MCP 服务器，支持自动识别 Streamable HTTP 或 SSE"""
+    async def connect_server_sse(self, name: str, url: str, headers: Dict = None, transport: str = None, hidden: bool = False):
+        """连接远程 MCP 服务器，支持自动识别 Streamable HTTP 或 SSE（可显式指定 transport）"""
         server_cfg = {"url": url}
+        if transport:
+            server_cfg["transport"] = transport
         if headers:
             server_cfg["headers"] = headers
         config_dict = {"mcpServers": {name: server_cfg}}
-        await self._connect_server(name, config_dict)
+        await self._connect_server(name, config_dict, hidden=hidden)
 
     async def _fetch_tools(self, name: str, client: Client):
         """获取并缓存工具列表"""
@@ -65,15 +70,19 @@ class MCPClientManager:
     async def add_server(self, name: str, server_config: dict) -> dict:
         """动态连接单个 MCP 服务器（用于运行时新增/更新）。
 
-        server_config 形如 {"url": ...} 或 {"command": ..., "args": [...]}。
+        server_config 形如 {"url": ..., "transport": ...} 或 {"command": ..., "args": [...]}。
+        hidden 为 True 时该服务器的工具不暴露给 LLM（仅供内部工具调用）。
         返回连接结果 {success, tools, error}。
         """
         # 若已存在同名连接，先断开，保证配置更新后能重连
         if name in self.clients:
             await self.remove_server(name)
 
+        hidden = bool(server_config.get("hidden", False))
         if "url" in server_config:
             server_cfg = {"url": server_config["url"]}
+            if "transport" in server_config:
+                server_cfg["transport"] = server_config["transport"]
             if "headers" in server_config:
                 server_cfg["headers"] = server_config["headers"]
             config_dict = {"mcpServers": {name: server_cfg}}
@@ -88,6 +97,8 @@ class MCPClientManager:
             client = Client(config_dict)
             await client.__aenter__()
             self.clients[name] = client
+            if hidden:
+                self.hidden_servers.add(name)
             await self._fetch_tools(name, client)
             tool_names = self._tool_names(name)
             logger.info(f"MCP 服务器 '{name}' 已连接，工具: {tool_names}")
@@ -97,12 +108,14 @@ class MCPClientManager:
             # 清理可能的半连接状态
             self.clients.pop(name, None)
             self.tools_cache.pop(name, None)
+            self.hidden_servers.discard(name)
             return {"success": False, "tools": [], "error": str(e)}
 
     async def remove_server(self, name: str):
         """断开并移除指定 MCP 服务器"""
         client = self.clients.pop(name, None)
         self.tools_cache.pop(name, None)
+        self.hidden_servers.discard(name)
         if client:
             try:
                 await client.__aexit__(None, None, None)
@@ -133,18 +146,27 @@ class MCPClientManager:
         servers = config.get("mcpServers", {})
         for server_name, server_config in servers.items():
             if "url" in server_config:
-                await self.connect_server_sse(server_name, server_config["url"], server_config.get("headers"))
+                await self.connect_server_sse(
+                    server_name,
+                    server_config["url"],
+                    server_config.get("headers"),
+                    transport=server_config.get("transport"),
+                    hidden=bool(server_config.get("hidden", False)),
+                )
             elif "command" in server_config or "commad" in server_config:
                 command = server_config.get("command") or server_config.get("commad")
                 args = server_config.get("args", [])
-                await self.connect_server_stdio(server_name, command, args)
+                await self.connect_server_stdio(server_name, command, args, hidden=bool(server_config.get("hidden", False)))
             else:
                 logger.warning(f"服务器 '{server_name}' 缺少有效的连接配置（command/url）")
 
     async def get_all_tools(self) -> List[Dict]:
-        """获取所有 MCP 服务器的工具列表，转换为 OpenAI function calling 格式"""
+        """获取所有 MCP 服务器的工具列表，转换为 OpenAI function calling 格式。
+        隐藏（hidden）服务器的工具不暴露给 LLM，仅供内部工具调用。"""
         all_tools = []
         for server_name, tools in self.tools_cache.items():
+            if server_name in self.hidden_servers:
+                continue
             for tool in tools:
                 all_tools.append({
                     "type": "function",

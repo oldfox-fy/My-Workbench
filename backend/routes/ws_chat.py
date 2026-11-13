@@ -46,7 +46,7 @@ def set_ws_approval(call_id: str, approved: bool):
         ev.set()
 
 
-async def _stream_to_ws(ws: WebSocket, generator, cancel_event: asyncio.Event):
+async def _stream_to_ws(ws: WebSocket, generator, cancel_event: asyncio.Event, message_id: int = None):
     """将 LLMService.generate_response 的 SSE 输出转为 WebSocket JSON 消息。"""
     approval_regex_pattern = None  # lazy import
 
@@ -102,7 +102,7 @@ async def _stream_to_ws(ws: WebSocket, generator, cancel_event: asyncio.Event):
                 try:
                     user = getattr(ws.state, "user", None)
                     if user and user.get("id"):
-                        from backend.db.token_usage import record_token_usage
+                        from backend.db.token_usage import record_token_usage, lookup_chat_id_by_message
                         model_name = ws.state._ws_llm_model if hasattr(ws.state, "_ws_llm_model") else ""
                         # token_info 结构：{"final_answer_usage": {...}, "total_usage_all_steps": {...}, "speed": ...}
                         # 顶层没有 prompt/completion/total_tokens，需从嵌套字段提取，否则会记录为全 0。
@@ -110,9 +110,10 @@ async def _stream_to_ws(ws: WebSocket, generator, cancel_event: asyncio.Event):
                         prompt_tokens = agg.get("prompt_tokens", 0) or 0
                         completion_tokens = agg.get("completion_tokens", 0) or 0
                         total_tokens = agg.get("total_tokens", 0) or (prompt_tokens + completion_tokens)
+                        chat_id = await lookup_chat_id_by_message(message_id)
                         asyncio.create_task(record_token_usage(
                             user_id=user["id"],
-                            chat_id="",
+                            chat_id=chat_id,
                             model_name=model_name,
                             prompt_tokens=prompt_tokens,
                             completion_tokens=completion_tokens,
@@ -448,7 +449,7 @@ async def _handle_chat(ws: WebSocket, data: dict, cancel_event: asyncio.Event,
         # 发送意图路由通知
         if intent_notice:
             await ws.send_json({"type": "chunk", "content": f"\n{intent_notice}\n"})
-        await _stream_to_ws(ws, gen, cancel_event)
+        await _stream_to_ws(ws, gen, cancel_event, ws_message_id)
 
     except Exception as e:
         await ws.send_json({"type": "error", "message": str(e)})

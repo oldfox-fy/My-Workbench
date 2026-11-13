@@ -4,7 +4,7 @@ from http.client import HTTPException
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 from typing import List, Optional, Any, Union
-from backend.database import get_db
+from backend.database import get_db, utc_now_str
 from backend.auth import get_current_user
 
 
@@ -38,9 +38,8 @@ class UpdateChatTitle(BaseModel):
 @router.post("/", response_model=ChatResponse)
 async def create_chat(request: Request):
     import uuid
-    from datetime import datetime
     chat_id = str(uuid.uuid4())
-    now = datetime.now().isoformat()
+    now = utc_now_str()
     user_id = request.state.user["id"]
     db = await get_db()
     await db.execute("INSERT INTO chats (id, title, created_at, user_id) VALUES (?, ?, ?, ?)", (chat_id, "新对话", now, user_id))
@@ -221,7 +220,6 @@ async def import_chat(body: ImportRequest):
 
 # ──────────── 对话分叉 ────────────
 import uuid
-from datetime import datetime
 
 
 @router.post("/{chat_id}/branch")
@@ -250,7 +248,7 @@ async def branch_chat(chat_id: str, message_id: int, request: Request):
         # 创建新对话
         new_id = str(uuid.uuid4())
         new_title = f"{parent[0]} (分叉)"
-        now = datetime.now().isoformat()
+        now = utc_now_str()
         await db.execute(
             "INSERT INTO chats (id, title, created_at, parent_chat_id, branched_at_message_id, user_id) VALUES (?, ?, ?, ?, ?, ?)",
             (new_id, new_title, now, chat_id, message_id, user_id),

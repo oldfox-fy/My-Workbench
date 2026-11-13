@@ -21,6 +21,22 @@
           <template #icon><n-icon><FolderOutline /></n-icon></template>
           新建文件夹
         </n-button>
+        <n-popover trigger="manual" :show="showUrlImport" placement="bottom-start" :width="300" raw @clickoutside="showUrlImport = false">
+          <template #trigger>
+            <n-button size="tiny" secondary @click="showUrlImport = !showUrlImport" title="导入网页到知识库">
+              <template #icon><n-icon><GlobeOutline /></n-icon></template>
+              导入网页
+            </n-button>
+          </template>
+          <div class="kb-url-import">
+            <div class="kb-url-import-title">导入网页到知识库</div>
+            <n-input v-model:value="urlImport.url" size="small" placeholder="https://…" />
+            <n-input v-model:value="urlImport.subdir" size="small" placeholder="保存目录（默认：网页收藏）" style="margin-top:8px" />
+            <n-button size="small" type="primary" block :loading="urlImporting" style="margin-top:8px" @click="doImportUrl">
+              抓取并保存
+            </n-button>
+          </div>
+        </n-popover>
         <n-button size="tiny" text @click="refreshTree" title="刷新">
           <template #icon><n-icon><RefreshOutline /></n-icon></template>
         </n-button>
@@ -128,16 +144,16 @@ import { ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   NButton, NIcon, NText, NTree, NScrollbar, NSpin, NEmpty,
-  NInput, NModal, NDropdown, NTag, useMessage, useDialog
+  NInput, NModal, NDropdown, NTag, NPopover, useMessage, useDialog
 } from 'naive-ui'
 import type { TreeOption } from 'naive-ui'
 import { h } from 'vue'
 import {
   LibraryOutline, CloseOutline, FolderOpenOutline, FolderOutline,
-  DocumentTextOutline, RefreshOutline, LockClosedOutline, GitNetworkOutline
+  DocumentTextOutline, RefreshOutline, LockClosedOutline, GitNetworkOutline, GlobeOutline
 } from '@vicons/ionicons5'
 import { useKnowledgeStore, type KbTreeNode } from '@/stores/knowledge'
-import { getChunks, type KbChunk } from '@/api/knowledge'
+import { getChunks, importUrl, type KbChunk } from '@/api/knowledge'
 
 const props = defineProps<{ showClose?: boolean; width?: number }>()
 const emit = defineEmits<{ (e: 'close'): void }>()
@@ -174,6 +190,31 @@ async function selectFolder() {
 
 async function refreshTree() {
   await kbStore.loadTree()
+}
+
+// ---------- 导入网页 ----------
+const showUrlImport = ref(false)
+const urlImporting = ref(false)
+const urlImport = ref({ url: '', subdir: '网页收藏' })
+
+async function doImportUrl() {
+  const url = urlImport.value.url.trim()
+  if (!url) {
+    message.warning('请输入网页地址')
+    return
+  }
+  urlImporting.value = true
+  try {
+    const r = await importUrl(url, urlImport.value.subdir || '网页收藏')
+    message.success(`已导入「${r.title}」`)
+    showUrlImport.value = false
+    urlImport.value.url = ''
+    await kbStore.loadTree()
+  } catch (e: any) {
+    message.error(e.message || '导入失败')
+  } finally {
+    urlImporting.value = false
+  }
 }
 
 // 目录树节点：自定义标签（只读节点加锁图标）
@@ -448,6 +489,19 @@ function confirmDelete(node: KbTreeNode) {
   align-items: center;
 }
 .kb-tree-scroll { flex: 1; padding: 0 8px; }
+
+.kb-url-import {
+  padding: 8px;
+  background: var(--bg-secondary, #1e1e1e);
+  border: var(--glass-border);
+  border-radius: 10px;
+}
+.kb-url-import-title {
+  font-size: 0.82rem;
+  font-weight: 700;
+  margin-bottom: 8px;
+  color: var(--text-primary);
+}
 
 .kb-empty-root {
   flex: 1;

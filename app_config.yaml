@@ -178,3 +178,13 @@ kb_index:
   chunk_max_chars: 800       # 单块最大字符数
   chunk_overlap: 100         # 二次切分的重叠字符数
   chunk_min_chars: 30        # 过短块丢弃阈值（如孤立标题）
+
+# SQLBot 智能问数（本地 Docker 部署，通过 MCP 接入）
+# 连接地址在 mcp_config.json 的 sqlbot 节（url + transport: "sse"，MCP 端口 8001）；
+# 这里放认证账号、MCP 服务名，以及模型管理用的 REST 地址（端口 8000）。
+sqlbot:
+  enabled: true           # 总开关
+  username: "admin"       # SQLBot 登录账号
+  password: "SQLBot@123456"  # SQLBot 登录密码
+  server_name: "sqlbot"   # 对应 mcp_config.json 里的服务器名（一般无需改）
+  rest_url: "http://localhost:8000"  # SQLBot REST API 地址（模型同步用，端口 8000）
